@@ -132,7 +132,7 @@ async function responseError(response) {
     }
   }
   if (response.status >= 500) {
-    return `The backend failed while analyzing this job (HTTP ${response.status}). Deploy the latest backend and check its server logs for the AI provider error.`;
+    return `The analysis server returned HTTP ${response.status}. This is a backend-side failure, not a browser extension error. Redeploy the latest backend, then check its deployment logs and verify GEMINI_API_KEY and GEMINI_MODEL.`;
   }
   return `Request failed (${response.status}). Please try again.`;
 }
@@ -175,9 +175,13 @@ function updateJobSummary(captured = jobWasCaptured) {
   const title = cleanText($('jobTitleInput').value);
   const company = cleanText($('companyInput').value);
   const location = cleanText($('locationInput').value);
-  const hasDescription = Boolean($('jobDescription').value.trim());
+  const description = cleanText($('jobDescription').value);
+  const hasDescription = Boolean(description);
   $('jobTitle').textContent = title || 'No job captured yet';
   $('companyMark').textContent = (company || title || 'J').slice(0, 1).toUpperCase();
+  $('jobDescriptionPreview').textContent = description
+    ? `${description.slice(0, 800)}${description.length > 800 ? '…' : ''}`
+    : 'Detected job description will appear here.';
   $('jobMeta').textContent = [company, location].filter(Boolean).join(' · ')
     || (hasDescription ? 'Job details detected on this page' : 'Open a job listing to detect its details');
   const badge = $('jobDetected');

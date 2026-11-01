@@ -270,3 +270,7 @@ body{min-width:320px;background:#0b1017}
 .skill-icon{flex-shrink:0;color:#22c55e;font-weight:800}
 .skill-review .skill-icon{color:#ff6659}
 .skill-empty{color:#8e9aaa!important;font-size:7px!important}
+.job-description-preview{margin:8px 0 0 38px;padding:7px 8px;border:1px solid #293646;border-radius:8px;background:#0b1017}
+.job-description-preview strong{display:block;margin-bottom:4px;color:#a7b0be;font-size:8px}
+.job-description-preview p{max-height:88px;margin:0;overflow:auto;white-space:pre-wrap;color:#d4dbe5;font-size:8px;line-height:1.45;overflow-wrap:anywhere}
+@media(max-width:350px){.job-description-preview{margin-left:0}}

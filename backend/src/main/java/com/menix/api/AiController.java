@@ -67,7 +67,14 @@ public class AiController {
   try {
    result=RestClient.create().post().uri(url).contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(Map.class);
   } catch (RestClientResponseException ex) {
-   logger.warn("Gemini analysis request failed with HTTP status {}", ex.getStatusCode().value());
+   String providerMessage = ex.getResponseBodyAsString()
+    .replace(apiKey, "[redacted]")
+    .replaceAll("(?i)(key=)[^&\\s\"]+", "$1[redacted]")
+    .replaceAll("[\\r\\n\\t]+", " ")
+    .trim();
+   if (providerMessage.length() > 500) providerMessage = providerMessage.substring(0, 500);
+   logger.warn("Gemini analysis request failed with HTTP status {}: {}",
+    ex.getStatusCode().value(), providerMessage);
    HttpStatus status = ex.getStatusCode().value() == 429
     ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.BAD_GATEWAY;
    String message = switch (ex.getStatusCode().value()) {
