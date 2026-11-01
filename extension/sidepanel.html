@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Menix AI</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand-mark">M</div>
+      <div class="brand"><strong>Menix AI</strong><span>JOB ASSISTANT</span></div>
+      <button id="settingsToggle" class="icon-btn" title="Settings">⚙</button>
+    </header>
+
+    <section id="settings" class="settings hidden">
+      <label>Backend API URL<input id="apiBase" value="http://localhost:8080/api" /></label>
+      <p>Keep your Gemini key on the backend. Never put API keys in this extension.</p>
+      <button id="saveSettings" class="btn secondary">Save settings</button>
+    </section>
+
+    <section class="job-card">
+      <div class="eyebrow">CURRENT JOB</div>
+      <h1 id="jobTitle">No job captured yet</h1>
+      <p id="jobMeta" class="muted">Open a Naukri job and choose Capture visible job, or paste its details below.</p>
+      <div class="job-actions">
+        <button id="captureBtn" class="btn primary">Capture visible job</button>
+        <button id="clearJob" class="btn secondary">Clear</button>
+      </div>
+      <p class="hint">Capture runs only after you click. It reads visible page text from the active tab; it does not log in, click Apply, or submit applications.</p>
+    </section>
+
+    <section class="section">
+      <div class="section-heading"><h2>Job description</h2><span class="step">01</span></div>
+      <label class="field-label" for="jobDescription">Paste or review the job description</label>
+      <textarea id="jobDescription" rows="9" placeholder="Paste the full job description here..."></textarea>
+      <div class="field-grid">
+        <label>Job title<input id="jobTitleInput" placeholder="Full Stack Developer" /></label>
+        <label>Company<input id="companyInput" placeholder="Company name" /></label>
+        <label>Location<input id="locationInput" placeholder="Jaipur / Remote" /></label>
+      </div>
+      <label class="field-label" for="jobUrl">Job URL</label>
+      <input id="jobUrl" placeholder="https://www.naukri.com/..." />
+      <button id="saveJobBtn" class="btn secondary full">Save job to MenixJobAI</button>
+    </section>
+
+    <section class="section">
+      <div class="section-heading"><h2>Master resume</h2><span class="step">02</span></div>
+      <p class="muted small">Upload a PDF/DOCX or paste your resume text. The original file is not overwritten.</p>
+      <input id="resumeFile" type="file" accept=".pdf,.docx" />
+      <label class="field-label" for="resumeText">Resume text</label>
+      <textarea id="resumeText" rows="8" placeholder="Paste your master resume text here, or upload a PDF/DOCX above..."></textarea>
+      <button id="saveResumeBtn" class="btn secondary full">Save master resume on this browser</button>
+      <p id="resumeStatus" class="hint">Resume text is stored locally in this browser profile until you clear it.</p>
+    </section>
+
+    <section class="section analysis-section">
+      <div class="section-heading"><h2>AI resume analysis</h2><span class="step">03</span></div>
+      <button id="analyzeBtn" class="btn primary full">✦ Analyze job & resume</button>
+      <div id="analysis" class="analysis hidden"></div>
+      <button id="generateBtn" class="btn accent full" disabled>Generate tailored DOCX</button>
+      <p class="hint">AI suggestions must be reviewed. The system must not invent skills, employers, dates, qualifications, or achievements.</p>
+    </section>
+
+    <section class="section">
+      <div class="section-heading"><h2>Application</h2><span class="step">04</span></div>
+      <div id="fileResult" class="file-result hidden"></div>
+      <button id="continueBtn" class="btn secondary full" disabled>Continue to job application ↗</button>
+      <p class="hint">Menix prepares the resume. You review it, upload it on the job site, and submit the application yourself.</p>
+    </section>
+
+    <div id="status" class="status" role="status">Ready. Connect your local MenixJobAI backend to begin.</div>
+    <footer>MenixJobAI · Your data stays under your control</footer>
+  </main>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

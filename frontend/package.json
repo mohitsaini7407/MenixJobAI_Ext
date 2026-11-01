@@ -1,0 +1,6 @@
+{
+ "name":"menixjobai-desktop","version":"0.1.0","private":true,"type":"module",
+ "scripts":{"dev":"vite --host 127.0.0.1","build":"vite build","preview":"vite preview","electron":"wait-on http://127.0.0.1:5173 && electron electron/main.cjs"},
+ "dependencies":{"@vitejs/plugin-react":"latest","vite":"latest","react":"latest","react-dom":"latest","lucide-react":"^0.468.0"},
+ "devDependencies":{"electron":"^34.0.0","wait-on":"^8.0.1"}
+}

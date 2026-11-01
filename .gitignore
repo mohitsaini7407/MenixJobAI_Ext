@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+target/
+backend/uploads/*
+!backend/uploads/.gitkeep
+*.log
+.DS_Store
+.idea/
+.vscode/

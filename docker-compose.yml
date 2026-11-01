@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16
+    container_name: menixjobai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: menixjobai
+      POSTGRES_USER: menix
+      POSTGRES_PASSWORD: menix_local_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - menix_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U menix -d menixjobai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  menix_pgdata:
