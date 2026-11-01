@@ -13,12 +13,17 @@ import java.io.ByteArrayOutputStream;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/api/ai")
 public class TailoredResumeController {
     private static final String DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     private static final Logger logger = LoggerFactory.getLogger(TailoredResumeController.class);
+    private static final Pattern LINK_PATTERN = Pattern.compile(
+        "\\[([^\\]]+)]\\((https?://[^\\s)]+|mailto:[^\\s)]+)\\)|(https?://[^\\s<>]+|mailto:[^\\s<>]+)",
+        Pattern.CASE_INSENSITIVE);
     public record TailoredDocxRequest(String resumeText, String jobDescription, String fullName) {}
     private record ResumeLine(String text, boolean entry) {}
     private record ResumeSection(String heading, List<ResumeLine> lines) {}
@@ -110,8 +115,7 @@ public class TailoredResumeController {
             if (!resume.contact().isBlank()) {
                 XWPFParagraph contactP = doc.createParagraph(); contactP.setAlignment(ParagraphAlignment.CENTER);
                 contactP.setSpacingAfter(130); contactP.setKeepNext(true);
-                XWPFRun contactRun = contactP.createRun(); contactRun.setText(resume.contact());
-                contactRun.setFontFamily("Aptos"); contactRun.setFontSize(8); contactRun.setColor("475569");
+                addTextWithLinks(doc, contactP, resume.contact(), "Aptos", 8, "475569", false);
             }
 
             for (ResumeSection section : resume.sections()) {
@@ -148,11 +152,9 @@ public class TailoredResumeController {
     private void addEntryLine(XWPFDocument doc, String text) {
         String[] parts = text.split("\\t+");
         XWPFParagraph p = doc.createParagraph(); p.setSpacingBefore(65); p.setSpacingAfter(25); p.setKeepNext(true);
-        XWPFRun main = p.createRun(); main.setText(parts[0].trim()); main.setBold(true);
-        main.setFontFamily("Aptos"); main.setFontSize(9); main.setColor("172B4D");
+        addTextWithLinks(doc, p, parts[0].trim(), "Aptos", 9, "172B4D", true);
         for (int i = 1; i < parts.length; i++) {
-            XWPFRun extra = p.createRun(); extra.setText("  |  " + parts[i].trim());
-            extra.setFontFamily("Aptos"); extra.setFontSize(8); extra.setColor("475569");
+            addTextWithLinks(doc, p, "  |  " + parts[i].trim(), "Aptos", 8, "475569", false);
         }
     }
 
@@ -160,20 +162,52 @@ public class TailoredResumeController {
         int colon = text.indexOf(':'); XWPFParagraph p = doc.createParagraph(); p.setSpacingAfter(35);
         XWPFRun label = p.createRun(); label.setText(text.substring(0, colon + 1) + " "); label.setBold(true);
         label.setFontFamily("Aptos"); label.setFontSize(8.7); label.setColor("172B4D");
-        XWPFRun value = p.createRun(); value.setText(text.substring(colon + 1).trim());
-        value.setFontFamily("Aptos"); value.setFontSize(8.7); value.setColor("334155");
+        addTextWithLinks(doc, p, text.substring(colon + 1).trim(), "Aptos", 8.7, "334155", false);
     }
 
     private void addBodyLine(XWPFDocument doc, String text) {
         XWPFParagraph p = doc.createParagraph(); p.setSpacingAfter(45); p.setSpacingBetween(1.05);
-        XWPFRun r = p.createRun(); r.setText(text); r.setFontFamily("Aptos"); r.setFontSize(9); r.setColor("263445");
+        addTextWithLinks(doc, p, text, "Aptos", 9, "263445", false);
     }
 
     private void addBullet(XWPFDocument doc, String text) {
         XWPFParagraph p = doc.createParagraph(); p.setIndentationLeft(260); p.setFirstLineIndent(-150);
         p.setSpacingAfter(40); p.setSpacingBetween(1.03);
         XWPFRun bullet = p.createRun(); bullet.setText("•  "); bullet.setFontFamily("Aptos"); bullet.setFontSize(9); bullet.setColor("1D4ED8");
-        XWPFRun body = p.createRun(); body.setText(text); body.setFontFamily("Aptos"); body.setFontSize(9); body.setColor("263445");
+        addTextWithLinks(doc, p, text, "Aptos", 9, "263445", false);
+    }
+
+    private void addTextWithLinks(XWPFDocument doc, XWPFParagraph paragraph, String text,
+                                  String font, double size, String color, boolean bold) {
+        Matcher matcher = LINK_PATTERN.matcher(text);
+        int cursor = 0;
+        while (matcher.find()) {
+            if (matcher.start() > cursor) {
+                addFormattedRun(paragraph.createRun(), text.substring(cursor, matcher.start()), font, size, color, bold);
+            }
+            String label = matcher.group(1);
+            String url = matcher.group(2);
+            if (url == null) {
+                label = matcher.group(3);
+                url = label;
+            }
+            XWPFHyperlinkRun hyperlinkRun = paragraph.createHyperlinkRun(url);
+            hyperlinkRun.setText(label);
+            addFormattedRun(hyperlinkRun, label, font, size, "0563C1", bold);
+            cursor = matcher.end();
+        }
+        if (cursor < text.length()) {
+            addFormattedRun(paragraph.createRun(), text.substring(cursor), font, size, color, bold);
+        }
+    }
+
+    private void addFormattedRun(XWPFRun run, String text, String font, double size, String color, boolean bold) {
+        run.setText(text);
+        run.setFontFamily(font);
+        run.setFontSize(size);
+        run.setColor(color);
+        run.setBold(bold);
+        if (run instanceof XWPFHyperlinkRun) run.setUnderline(UnderlinePatterns.SINGLE);
     }
 
     private boolean looksLikeBullet(String text) {

@@ -3,7 +3,10 @@ package com.menix.api;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFHyperlink;
+import org.apache.poi.xwpf.usermodel.XWPFHyperlinkRun;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -32,7 +35,8 @@ public class ResumeTextController {
                 try (var doc = new XWPFDocument(new ByteArrayInputStream(file.getBytes()))) {
                     StringBuilder out = new StringBuilder();
                     for (XWPFParagraph paragraph : doc.getParagraphs()) {
-                        if (!paragraph.getText().isBlank()) out.append(paragraph.getText()).append("\n");
+                        String paragraphText = extractParagraphText(paragraph, doc);
+                        if (!paragraphText.isBlank()) out.append(paragraphText).append("\n");
                     }
                     text = out.toString();
                 }
@@ -52,5 +56,21 @@ public class ResumeTextController {
         } catch (Exception ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Could not read this resume: " + ex.getMessage());
         }
+    }
+
+    private String extractParagraphText(XWPFParagraph paragraph, XWPFDocument document) {
+        StringBuilder text = new StringBuilder();
+        for (XWPFRun run : paragraph.getRuns()) {
+            String runText = run.text();
+            if (run instanceof XWPFHyperlinkRun hyperlinkRun) {
+                XWPFHyperlink hyperlink = hyperlinkRun.getHyperlink(document);
+                if (hyperlink != null && hyperlink.getURL() != null && !runText.isBlank()) {
+                    text.append('[').append(runText).append("](").append(hyperlink.getURL()).append(')');
+                    continue;
+                }
+            }
+            text.append(runText);
+        }
+        return text.isEmpty() ? paragraph.getText() : text.toString();
     }
 }
