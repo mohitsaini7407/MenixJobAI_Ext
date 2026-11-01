@@ -130,7 +130,13 @@ public class TailoredResumeController {
 
     private void addSectionHeading(XWPFDocument doc, String heading) {
         XWPFParagraph p = doc.createParagraph(); p.setSpacingBefore(135); p.setSpacingAfter(55); p.setKeepNext(true);
-        p.setBorderBottom(Borders.SINGLE); p.setBorderBottomSize(6); p.setBorderBottomColor("CBD5E1");
+        CTPPr paragraphProperties = p.getCTP().getPPr();
+        if (paragraphProperties == null) paragraphProperties = p.getCTP().addNewPPr();
+        CTPBdr borders = paragraphProperties.isSetPBdr() ? paragraphProperties.getPBdr() : paragraphProperties.addNewPBdr();
+        CTBorder bottomBorder = borders.isSetBottom() ? borders.getBottom() : borders.addNewBottom();
+        bottomBorder.setVal(STBorder.SINGLE);
+        bottomBorder.setSz(java.math.BigInteger.valueOf(6));
+        bottomBorder.setColor("CBD5E1");
         XWPFRun r = p.createRun(); r.setText(heading); r.setBold(true); r.setFontFamily("Aptos");
         r.setFontSize(10); r.setColor("1D4ED8");
     }
