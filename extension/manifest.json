@@ -4,9 +4,12 @@
   "version": "1.0.0",
   "description": "Analyze job descriptions and prepare truthful, job-specific resumes from your Brave side panel.",
   "permissions": ["sidePanel", "storage", "tabs", "scripting"],
-  "host_permissions": [
-    "https://menixjobai-api.onrender.com/*"
-  ],
+  
+"host_permissions": [
+  "http://localhost:8080/*",
+  "http://127.0.0.1:8080/*",
+  "https://menixjobai-api.onrender.com/*"
+],
   "optional_host_permissions": ["https://www.naukri.com/*", "https://*.naukri.com/*"],
   "background": { "service_worker": "background.js" },
   "action": { "default_title": "Open MenixJobAI" },
