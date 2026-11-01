@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const DEFAULT_API = 'http://localhost:8080/api';
+const DEFAULT_API = 'https://menixjobai-api.onrender.com/api';
 let apiBase = DEFAULT_API;
 let lastAnalysis = null;
 let generatedBlobUrl = null;
