@@ -28,8 +28,23 @@ async function loadSettings() {
 $('settingsToggle').addEventListener('click', () => $('settings').classList.toggle('hidden'));
 $('saveSettings').addEventListener('click', async () => {
   const value = $('apiBase').value.trim().replace(/\/$/, '');
-  if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/api$/.test(value)) return setStatus('For this local build, use http://localhost:8080/api or http://127.0.0.1:8080/api.', 'error');
-  apiBase = value; await chrome.storage.local.set({apiBase}); setStatus('Backend URL saved.', 'success');
+ 
+$('saveSettings').addEventListener('click', async () => {
+  const value = $('apiBase').value.trim().replace(/\/$/, '');
+
+  if (!/^https:\/\/[a-zA-Z0-9.-]+\/api$/.test(value)) {
+    return setStatus(
+      'Enter a valid HTTPS backend URL ending with /api.',
+      'error'
+    );
+  }
+
+  apiBase = value;
+  await chrome.storage.local.set({ apiBase });
+
+  setStatus('Backend URL saved successfully.', 'success');
+});
+ apiBase = value; await chrome.storage.local.set({apiBase}); setStatus('Backend URL saved.', 'success');
 });
 
 $('captureBtn').addEventListener('click', async () => {
