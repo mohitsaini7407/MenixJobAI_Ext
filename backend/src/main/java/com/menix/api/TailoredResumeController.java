@@ -1,6 +1,7 @@
 package com.menix.api;
 
 import org.apache.poi.xwpf.usermodel.*;
+import org.apache.poi.wp.usermodel.HeaderFooterType;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.*;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
@@ -154,13 +155,13 @@ public class TailoredResumeController {
     }
 
     private void addBodyLine(XWPFDocument doc, String text) {
-        XWPFParagraph p = doc.createParagraph(); p.setSpacingAfter(45); p.setLineSpacing(1.05);
+        XWPFParagraph p = doc.createParagraph(); p.setSpacingAfter(45); p.setSpacingBetween(1.05);
         XWPFRun r = p.createRun(); r.setText(text); r.setFontFamily("Aptos"); r.setFontSize(9); r.setColor("263445");
     }
 
     private void addBullet(XWPFDocument doc, String text) {
-        XWPFParagraph p = doc.createParagraph(); p.setIndentationLeft(260); p.setFirstLineIndentation(-150);
-        p.setSpacingAfter(40); p.setLineSpacing(1.03);
+        XWPFParagraph p = doc.createParagraph(); p.setIndentationLeft(260); p.setFirstLineIndent(-150);
+        p.setSpacingAfter(40); p.setSpacingBetween(1.03);
         XWPFRun bullet = p.createRun(); bullet.setText("•  "); bullet.setFontFamily("Aptos"); bullet.setFontSize(9); bullet.setColor("1D4ED8");
         XWPFRun body = p.createRun(); body.setText(text); body.setFontFamily("Aptos"); body.setFontSize(9); body.setColor("263445");
     }
