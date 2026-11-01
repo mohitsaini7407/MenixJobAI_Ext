@@ -43,14 +43,13 @@
           <div id="companyMark" class="company-mark" aria-hidden="true">J</div>
           <div class="job-title-content">
             <h1 id="jobTitle">Open a job listing</h1>
-            <p id="jobMeta" class="muted">Job details will appear here</p>
+            <p id="jobMeta" class="muted">
+              <span id="jobCompanyName">Job details will appear here</span>
+              <span id="jobRating" class="job-rating hidden"></span>
+            </p>
           </div>
         </div>
         <div id="jobTags" class="job-tags"></div>
-        <div class="job-description-preview">
-          <strong>Job description</strong>
-          <p id="jobDescriptionPreview">Detected job description will appear here.</p>
-        </div>
         <button id="editJobBtn" class="text-button job-edit" type="button">Edit details</button>
         <details id="jobDetails" class="resume-details job-details">
           <label for="jobTitleInput">Job title<input id="jobTitleInput" /></label>
@@ -91,7 +90,7 @@
           <span id="masterResumeBadge" class="status-badge resume-badge">Not saved</span>
         </div>
         <div class="resume-row">
-          <div class="resume-icon" aria-hidden="true">▤</div>
+          <div id="resumeFileIcon" class="resume-icon doc-file-icon" aria-hidden="true"></div>
           <div class="resume-info"><strong id="resumeName">No resume uploaded</strong><span id="resumeStatus">Choose your master resume</span></div>
           <input id="resumeFile" class="file-input" type="file" accept=".pdf,.docx" />
         </div>

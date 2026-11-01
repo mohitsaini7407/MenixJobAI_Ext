@@ -255,6 +255,8 @@ body{min-width:320px;background:#0b1017}
 .match-metric{display:flex;align-items:center;justify-content:space-between;gap:6px;padding-top:4px;border-top:1px solid #293646;color:#c4ccd7;font-size:8px}
 .match-metric strong{color:#f8fafc;font-size:9px}
 .match-overview .analysis-summary{margin:7px 0 0;padding:6px;border:0;background:#0b1017;font-size:8px}
+.match-analyze-button{width:100%;margin-top:7px;padding:7px;border:1px solid #ff7900;border-radius:7px;background:#2c2117;color:#ffbd55;font-size:9px;font-weight:700;cursor:pointer}
+.match-analyze-button:hover{background:#3a2818}
 .skills-analysis{padding:0;overflow:hidden}
 .skills-analysis summary{display:flex;align-items:center;justify-content:space-between;padding:8px;color:#f8fafc;font-size:10px;font-weight:700;cursor:pointer;list-style:none}
 .skills-analysis summary::-webkit-details-marker{display:none}
@@ -270,7 +272,5 @@ body{min-width:320px;background:#0b1017}
 .skill-icon{flex-shrink:0;color:#22c55e;font-weight:800}
 .skill-review .skill-icon{color:#ff6659}
 .skill-empty{color:#8e9aaa!important;font-size:7px!important}
-.job-description-preview{margin:8px 0 0 38px;padding:7px 8px;border:1px solid #293646;border-radius:8px;background:#0b1017}
-.job-description-preview strong{display:block;margin-bottom:4px;color:#a7b0be;font-size:8px}
-.job-description-preview p{max-height:88px;margin:0;overflow:auto;white-space:pre-wrap;color:#d4dbe5;font-size:8px;line-height:1.45;overflow-wrap:anywhere}
-@media(max-width:350px){.job-description-preview{margin-left:0}}
+.job-rating{display:inline-block;margin-left:6px;color:#ffbd55;font-size:9px;white-space:nowrap;vertical-align:baseline}
+.resume-icon svg{display:block}

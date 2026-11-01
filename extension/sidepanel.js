@@ -16,6 +16,10 @@ let generatedResumes = [];
 let currentJobTabUrl = '';
 let captureRequestId = 0;
 let captureDebounceTimer = null;
+let jobMetadata = {};
+let automaticAnalysisTimer = null;
+let lastAutomaticAnalysisInput = '';
+let analysisPromise = null;
 
 const RESUME_DB_NAME = 'menixjobai-resumes';
 const RESUME_STORE_NAME = 'files';
@@ -132,7 +136,7 @@ async function responseError(response) {
     }
   }
   if (response.status >= 500) {
-    return `The analysis server returned HTTP ${response.status}. This is a backend-side failure, not a browser extension error. Redeploy the latest backend, then check its deployment logs and verify GEMINI_API_KEY and GEMINI_MODEL.`;
+    return `The analysis backend returned HTTP ${response.status}. The AI route is failing server-side. Check the Render service logs at this request time for /api/ai/tailor-review, verify GEMINI_API_KEY and GEMINI_MODEL, then redeploy the backend after fixing the logged cause.`;
   }
   return `Request failed (${response.status}). Please try again.`;
 }
@@ -141,6 +145,14 @@ function updateResumeCard(fileName = resumeFileName) {
   resumeFileName = fileName || '';
   const hasResume = Boolean($('resumeText').value.trim());
   $('resumeName').textContent = resumeFileName || (hasResume ? 'Saved master resume' : 'No resume uploaded');
+  const fileExtension = (resumeFileName.split('.').pop() || '').toLowerCase();
+  const fileIcon = $('resumeFileIcon');
+  const iconType = fileExtension === 'pdf' ? 'PDF' : ['doc', 'docx'].includes(fileExtension) ? 'DOC' : '';
+  fileIcon.classList.toggle('pdf-file-icon', iconType === 'PDF');
+  fileIcon.classList.toggle('doc-file-icon', iconType === 'DOC');
+  fileIcon.classList.toggle('unknown-file-icon', !iconType);
+  fileIcon.innerHTML = createResumeFileIcon(iconType || 'FILE');
+  fileIcon.setAttribute('aria-label', iconType ? `${iconType} resume file` : 'Resume file');
   const sizeLabel = resumeFileSize ? `${Math.round(resumeFileSize / 1024)} KB · ` : '';
   $('resumeStatus').textContent = !hasResume
     ? 'Choose your master resume'
@@ -175,25 +187,27 @@ function updateJobSummary(captured = jobWasCaptured) {
   const title = cleanText($('jobTitleInput').value);
   const company = cleanText($('companyInput').value);
   const location = cleanText($('locationInput').value);
-  const description = cleanText($('jobDescription').value);
-  const hasDescription = Boolean(description);
+  const hasDescription = Boolean($('jobDescription').value.trim());
   $('jobTitle').textContent = title || 'No job captured yet';
   $('companyMark').textContent = (company || title || 'J').slice(0, 1).toUpperCase();
-  $('jobDescriptionPreview').textContent = description
-    ? `${description.slice(0, 800)}${description.length > 800 ? '…' : ''}`
-    : 'Detected job description will appear here.';
-  $('jobMeta').textContent = [company, location].filter(Boolean).join(' · ')
-    || (hasDescription ? 'Job details detected on this page' : 'Open a job listing to detect its details');
+  $('jobCompanyName').textContent = company || (hasDescription ? 'Job details detected on this page' : 'Open a job listing to detect its details');
+  const ratingText = jobMetadata.rating ? `★ ${jobMetadata.rating}` : '';
+  $('jobRating').textContent = ratingText;
+  $('jobRating').classList.toggle('hidden', !ratingText);
   const badge = $('jobDetected');
   badge.textContent = captured ? '✓ Detected' : hasDescription ? 'Saved details' : 'Not detected';
   badge.classList.toggle('success-badge', captured || hasDescription);
   const tags = $('jobTags');
   tags.replaceChildren();
-  [
-    company,
-    location,
-    ...extractExperienceTags($('jobDescription').value)
-  ].filter(Boolean).slice(0, 3).forEach(value => {
+  const tagValues = [
+    jobMetadata.experience || extractExperienceTags($('jobDescription').value)[0],
+    jobMetadata.salary,
+    jobMetadata.location || location
+  ].filter(Boolean).filter((value, index, values) => {
+    const normalize = item => item.toLowerCase().replace(/\b(?:years?|yrs?)\b/g, '').replace(/[^a-z0-9]/g, '');
+    return values.findIndex(candidate => normalize(candidate) === normalize(value)) === index;
+  }).slice(0, 3);
+  tagValues.forEach(value => {
     const tag = document.createElement('span');
     tag.className = 'job-tag';
     tag.textContent = value;
@@ -201,9 +215,35 @@ function updateJobSummary(captured = jobWasCaptured) {
   });
 }
 
+function createResumeFileIcon(type) {
+  if (type === 'DOC') {
+    return `<svg viewBox="0 0 32 36" width="25" height="28" role="img" aria-label="Word document">
+      <path d="M10 2.5h13l6 6V33H10z" fill="#fff" stroke="#185abd" stroke-width="1.5" stroke-linejoin="round"/>
+      <path d="M23 2.5v6h6" fill="#dbeafe" stroke="#185abd" stroke-width="1.3" stroke-linejoin="round"/>
+      <path d="M16 14h9M16 17h9M16 20h9" stroke="#8ab4f8" stroke-width="1.4" stroke-linecap="round"/>
+      <rect x="2" y="12" width="19" height="17" rx="2" fill="#185abd"/>
+      <path d="m5.5 16 1.8 9 2.1-5.8 2.1 5.8 1.8-9" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`;
+  }
+
+  const accent = type === 'PDF' ? '#ef4444' : '#94a3b8';
+  const label = type;
+  return `<svg viewBox="0 0 32 36" width="25" height="28" role="img" aria-label="${label} file">
+    <path d="M6 2.5h13l7 7V33H6z" fill="#f8fafc" stroke="${accent}" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M19 2.5v7h7" fill="#dbeafe" stroke="${accent}" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M10 14h12M10 17h12" stroke="#94a3b8" stroke-width="1.2" stroke-linecap="round"/>
+    <rect x="8" y="21" width="18" height="8" rx="1.8" fill="${accent}"/>
+    <text x="17" y="26.8" fill="#fff" font-family="Arial,sans-serif" font-size="${label.length > 3 ? 5 : 6}" font-weight="700" text-anchor="middle">${label}</text>
+  </svg>`;
+}
+
 function extractExperienceTags(description) {
   const match = description.match(/\b\d+\s*[-–]\s*\d+\s*(?:years?|yrs?)\b|\b\d+\+?\s*(?:years?|yrs?)\b/i);
   return match ? [match[0].replace(/\s+/g, ' ')] : [];
+}
+
+function cleanCompanyName(company) {
+  return cleanText(company.replace(/\s*[★·|]?\s*[0-5](?:\.\d)?\s*[\d,.]+\s*[KMB]?\s*Reviews?.*$/i, ''));
 }
 
 function invalidateAnalysis() {
@@ -214,6 +254,25 @@ function invalidateAnalysis() {
   $('generateBtn').disabled = true;
   $('fileResult').classList.add('hidden');
   updateActionBar();
+}
+
+function scheduleAutomaticAnalysis() {
+  const resumeText = $('resumeText').value.trim();
+  const jobDescription = $('jobDescription').value.trim();
+  if (!resumeText || !jobDescription || lastAnalysis) return;
+
+  const inputKey = JSON.stringify([resumeText, jobDescription]);
+  if (inputKey === lastAutomaticAnalysisInput) return;
+  if (automaticAnalysisTimer) window.clearTimeout(automaticAnalysisTimer);
+  automaticAnalysisTimer = window.setTimeout(() => {
+    automaticAnalysisTimer = null;
+    if (inputKey !== JSON.stringify([
+      $('resumeText').value.trim(),
+      $('jobDescription').value.trim()
+    ])) return;
+    lastAutomaticAnalysisInput = inputKey;
+    void analyzeCurrentMatch(true);
+  }, 350);
 }
 
 function switchView(viewId) {
@@ -383,11 +442,18 @@ $('saveJobDetailsBtn').addEventListener('click', () => {
     return setStatus('Enter or paste the visible job description before saving.', 'error');
   }
   jobWasCaptured = false;
+  jobMetadata = {
+    ...jobMetadata,
+    experience: extractExperienceTags($('jobDescription').value)[0] || '',
+    location: cleanText($('locationInput').value),
+    salary: ''
+  };
   updateJobSummary(false);
   updateJobApplicationButton();
   invalidateAnalysis();
   $('jobDetails').open = false;
   setStatus('Job details saved locally for this review.', 'success');
+  scheduleAutomaticAnalysis();
 });
 
 $('jobUrl').addEventListener('input', updateJobApplicationButton);
@@ -481,6 +547,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       $('locationInput').value = '';
       $('jobUrl').value = tab.url;
       $('jobDescription').value = '';
+      jobMetadata = {};
       jobWasCaptured = false;
       updateJobSummary(false);
       updateJobApplicationButton();
@@ -492,12 +559,35 @@ async function captureActiveJob(tabId = null, attempt = 0) {
         tabId: tab.id
       },
 
-      func: () => ({
+      func: () => {
+        const bodyText = document.body?.innerText || '';
+        const companyText = document.querySelector('[data-testid*="company" i], [class*="companyName" i], [class*="company-name" i], [class*="comp-name" i], [class*="jd-header-comp-name" i]')?.textContent?.trim() || '';
+        const ratingMatch = companyText.match(/([0-5](?:\.\d)?)\s*(?:★\s*)?[\d,.]+\s*[KMB]?\s+Reviews?\b/i)
+          || bodyText.match(/\b([0-5](?:\.\d)?)\s*(?:★\s*)?[\d,.]+\s*[KMB]?\s+Reviews?\b/i);
+        return {
         title: document.title,
         url: location.href,
         heading: document.querySelector('h1')?.textContent?.trim() || '',
-        company: document.querySelector('[data-testid*="company" i], [class*="companyName" i], [class*="company-name" i], [class*="comp-name" i], [class*="jd-header-comp-name" i]')?.textContent?.trim() || '',
+        company: companyText,
         location: document.querySelector('[data-testid*="location" i], [class*="location" i], [class*="locWdth" i]')?.textContent?.trim() || '',
+        experience: (() => {
+          const text = document.body?.innerText || '';
+          return text.match(/\b\d+\s*(?:-|–|to)\s*\d+\s*(?:years?|yrs?)\b|\b\d+\+?\s*(?:years?|yrs?)\b/i)?.[0]?.replace(/\s+/g, ' ') || '';
+        })(),
+        salary: (() => {
+          const lines = (document.body?.innerText || '').split('\n').map(line => line.trim()).filter(Boolean);
+          const salaryLine = lines.find(line => /(?:salary|ctc|₹|INR|Rs\.?)/i.test(line));
+          if (salaryLine) {
+            if (/not disclosed/i.test(salaryLine)) return 'Not Disclosed';
+            const amount = salaryLine.match(/(?:₹|INR|Rs\.?)?\s*[\d,.]+\s*(?:-|–|to)\s*(?:₹|INR|Rs\.?)?\s*[\d,.]+\s*(?:LPA|lakhs?|per annum|\/year)?/i)
+              || salaryLine.match(/(?:₹|INR|Rs\.?)\s*[\d,.]+(?:\s*(?:LPA|lakhs?|per annum|\/year))?/i);
+            return amount?.[0]?.trim() || '';
+          }
+          return '';
+        })(),
+        rating: (() => {
+          return ratingMatch?.[1] || '';
+        })(),
         text: (() => {
           const selectors = [
             '[data-testid*="job-description" i]',
@@ -525,7 +615,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
           return '';
         })(),
         isJobPage: (() => {
-          const text = `${document.title} ${document.body?.innerText || ''}`.toLowerCase();
+          const text = `${document.title} ${bodyText}`.toLowerCase();
           const isNaukriJobListing = location.hostname.endsWith('naukri.com')
             && /\/job-listings?-/i.test(location.pathname);
           const indicators = [
@@ -540,7 +630,8 @@ async function captureActiveJob(tabId = null, attempt = 0) {
           ];
           return isNaukriJobListing || indicators.filter(Boolean).length >= 2;
         })()
-      })
+        };
+      }
     });
 
     if (requestId !== captureRequestId) return;
@@ -555,15 +646,22 @@ async function captureActiveJob(tabId = null, attempt = 0) {
 
     $('jobUrl').value = result.url;
     $('jobTitleInput').value = cleanText(result.heading || result.title.replace(/\s*[-|].*$/, ''));
-    $('companyInput').value = cleanText(result.company);
+    $('companyInput').value = cleanCompanyName(result.company);
     $('locationInput').value = cleanText(result.location);
     $('jobDescription').value = pageText;
+    jobMetadata = {
+      experience: cleanText(result.experience),
+      salary: cleanText(result.salary),
+      location: cleanText(result.location),
+      rating: cleanText(result.rating)
+    };
     jobWasCaptured = true;
     updateJobSummary(true);
     updateJobApplicationButton();
     $('jobDetails').open = false;
     invalidateAnalysis();
     setStatus(`Job detected from ${url.hostname}. Ready to analyze.`, 'success');
+    scheduleAutomaticAnalysis();
   } catch (error) {
     if (requestId !== captureRequestId) return;
     if (attempt < 3 && currentJobTabUrl && !/cannot access contents|manifest must request permission|does not allow/i.test(error.message || '')) {
@@ -579,6 +677,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       $('companyInput').value = '';
       $('locationInput').value = '';
       $('jobDescription').value = '';
+      jobMetadata = {};
       updateJobSummary(false);
       updateJobApplicationButton();
       invalidateAnalysis();
@@ -641,6 +740,7 @@ $('resumeFile').addEventListener('change', async (event) => {
       'Resume text extracted. Check it for accuracy.',
       'success'
     );
+    scheduleAutomaticAnalysis();
 
   } catch (error) {
     setStatus(
@@ -859,6 +959,7 @@ $('saveResumeBtn').addEventListener('click', async () => {
       'Master resume saved locally.',
       'success'
     );
+    scheduleAutomaticAnalysis();
 
   } catch (error) {
     setStatus(
@@ -873,12 +974,17 @@ $('saveResumeBtn').addEventListener('click', async () => {
 // ------------------------------
 
 $('analyzeBtn').addEventListener('click', async () => {
-  const resumeText = $('resumeText').value.trim();
+  await analyzeCurrentMatch(false);
+});
 
-  const jobDescription =
-    $('jobDescription').value.trim();
+async function analyzeCurrentMatch(automatic) {
+  if (analysisPromise) return analysisPromise;
+
+  const resumeText = $('resumeText').value.trim();
+  const jobDescription = $('jobDescription').value.trim();
 
   if (!resumeText) {
+    if (automatic) return;
     return setStatus(
       'Add your master resume first.',
       'error'
@@ -886,6 +992,7 @@ $('analyzeBtn').addEventListener('click', async () => {
   }
 
   if (!jobDescription) {
+    if (automatic) return;
     return setStatus(
       'Add the job description first.',
       'error'
@@ -894,66 +1001,54 @@ $('analyzeBtn').addEventListener('click', async () => {
 
   let progressTimer;
   let historyWarning = '';
-  try {
-    $('analyzeBtn').disabled = true;
-    const progress = [
-      'Reading job details…',
-      'Checking master resume…',
-      'Analyzing compatibility…',
-      'Preparing results…'
-    ];
-    let progressIndex = 0;
-    $('analyzeBtn').textContent = progress[progressIndex];
-    progressTimer = setInterval(() => {
-      progressIndex = (progressIndex + 1) % progress.length;
-      $('analyzeBtn').textContent = progress[progressIndex];
-    }, 1400);
-
-    const data = await api('/ai/tailor-review', {
-      method: 'POST',
-
-      headers: {
-        'Content-Type': 'application/json'
-      },
-
-      body: JSON.stringify({
-        resumeText,
-        jobDescription
-      })
-    });
-
-    if (data.error) {
-      throw new Error(data.error);
-    }
-
-    lastAnalysis = data;
-
-    renderAnalysis(data);
-
-    $('generateBtn').disabled = false;
+  analysisPromise = (async () => {
     try {
-      await saveAnalysisHistory(data);
+      $('analyzeBtn').disabled = true;
+      renderAnalysisPlaceholders('Analyzing…');
+      setStatus(automatic ? 'Automatically analyzing this job against your saved resume…' : 'Analyzing job and resume…', 'info');
+      const progress = [
+        'Reading job details…',
+        'Checking master resume…',
+        'Analyzing compatibility…',
+        'Preparing results…'
+      ];
+      let progressIndex = 0;
+      $('analyzeBtn').textContent = progress[progressIndex];
+      progressTimer = setInterval(() => {
+        progressIndex = (progressIndex + 1) % progress.length;
+        $('analyzeBtn').textContent = progress[progressIndex];
+      }, 1400);
+
+      const data = await api('/ai/tailor-review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resumeText, jobDescription })
+      });
+
+      if (data.error) throw new Error(data.error);
+      lastAnalysis = data;
+      renderAnalysis(data);
+      $('generateBtn').disabled = false;
+      try {
+        await saveAnalysisHistory(data);
+      } catch (error) {
+        historyWarning = `Analysis completed, but history could not be saved: ${error.message}`;
+      }
+
+      setStatus(historyWarning || 'Analysis complete. Review the suggestions before downloading your resume.',
+        historyWarning ? 'error' : 'success');
     } catch (error) {
-      historyWarning = `Analysis completed, but history could not be saved: ${error.message}`;
+      renderAnalysisPlaceholders('Analysis failed');
+      setStatus(`Analysis failed: ${error.message}`, 'error');
+    } finally {
+      clearInterval(progressTimer);
+      $('analyzeBtn').disabled = false;
+      $('analyzeBtn').textContent = '✦ Analyze & Tailor Resume';
+      analysisPromise = null;
     }
-
-    setStatus(historyWarning || 'Analysis complete. Review the suggestions before downloading your resume.',
-      historyWarning ? 'error' : 'success');
-
-  } catch (error) {
-    setStatus(
-      `Analysis failed: ${error.message}`,
-      'error'
-    );
-
-  } finally {
-    clearInterval(progressTimer);
-    $('analyzeBtn').disabled = false;
-
-    $('analyzeBtn').textContent =
-      '✦ Analyze & Tailor Resume';
-  }
-});
+  })();
+  return analysisPromise;
+}
 
 // ------------------------------
 // DISPLAY AI ANALYSIS
@@ -1079,7 +1174,7 @@ function formatScore(value) {
   return value === null ? 'N/A' : `${value}%`;
 }
 
-function renderAnalysisPlaceholders() {
+function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') {
   const overview = $('matchOverview');
   overview.replaceChildren();
   const header = document.createElement('div');
@@ -1088,7 +1183,7 @@ function renderAnalysisPlaceholders() {
   heading.textContent = 'Match Overview';
   const state = document.createElement('span');
   state.className = 'match-state pending';
-  state.textContent = 'Analysis pending';
+  state.textContent = stateLabel;
   header.append(heading, state);
 
   const scoreCard = document.createElement('div');
@@ -1108,8 +1203,18 @@ function renderAnalysisPlaceholders() {
   scoreCard.append(score, metrics);
   const hint = document.createElement('p');
   hint.className = 'analysis-notice';
-  hint.textContent = 'Scores are AI estimates based on the visible job description and your resume.';
-  overview.append(header, scoreCard, hint);
+  hint.textContent = stateLabel === 'Analyzing…'
+    ? 'Comparing the saved resume with this job description…'
+    : stateLabel === 'Analysis failed'
+      ? 'Automatic analysis failed. Review the error below and retry when the backend is available.'
+      : 'Scores are calculated automatically when a resume and job description are available.';
+  const analyzeButton = document.createElement('button');
+  analyzeButton.type = 'button';
+  analyzeButton.className = 'btn match-analyze-button';
+  analyzeButton.textContent = stateLabel === 'Analysis failed' ? 'Retry analysis' : 'Analyze match & resume';
+  analyzeButton.disabled = stateLabel === 'Analyzing…';
+  analyzeButton.addEventListener('click', () => $('analyzeBtn').click());
+  overview.append(header, scoreCard, hint, analyzeButton);
 
   $('matchedSkillsList').replaceChildren();
   $('missingSkillsList').replaceChildren();
@@ -1201,6 +1306,7 @@ async function saveAnalysisHistory(data) {
     url: cleanText($('jobUrl').value),
     analyzedAt: new Date().toISOString(),
     jobDescription: $('jobDescription').value.trim(),
+    jobMetadata: { ...jobMetadata },
     analysis: data
   };
   const history = [entry, ...(stored.analyzedJobs || stored.analysisHistory || [])].slice(0, 20);
@@ -1253,6 +1359,10 @@ async function loadHistory() {
       $('locationInput').value = entry.location || '';
       $('jobUrl').value = entry.url || '';
       $('jobDescription').value = entry.jobDescription || '';
+      jobMetadata = entry.jobMetadata || {
+        location: entry.location || '',
+        experience: extractExperienceTags(entry.jobDescription || '')[0] || ''
+      };
       jobWasCaptured = false;
       updateJobSummary();
       lastAnalysis = entry.analysis;
@@ -1296,6 +1406,10 @@ async function loadSavedJobs() {
       $('locationInput').value = job.location || '';
       $('jobUrl').value = job.originalUrl || job.applicationUrl || '';
       $('jobDescription').value = job.description || '';
+      jobMetadata = {
+        location: job.location || '',
+        experience: extractExperienceTags(job.description || '')[0] || ''
+      };
       invalidateAnalysis();
       jobWasCaptured = false;
       updateJobSummary();

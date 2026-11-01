@@ -44,8 +44,8 @@ public class AiController {
    - keywordMatchScore: supported explicit job keywords divided by explicit required keywords.
    - experienceMatchScore: compare only stated experience requirements with dated/role evidence;
      return null if the job gives no experience requirement or the resume lacks enough evidence.
-   - matchScore: weighted average of available component scores (skills 40%, experience 30%,
-     keywords 30%), renormalized over non-null components. Return null if no component can be
+   - matchScore: weighted average of available component scores (skills 40%%, experience 30%%,
+     keywords 30%%), renormalized over non-null components. Return null if no component can be
      evaluated. Set matchLevel from matchScore: Strong 80-100, Good 65-79, Partial 40-64,
      Low 0-39; use "Not scored" when matchScore is null.
    - Return empty arrays when there are no items. Never invent missing skills; list only
