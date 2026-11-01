@@ -122,14 +122,17 @@ async function responseError(response) {
   if (body) {
     try {
       const error = JSON.parse(body);
-      const message = error.message || error.detail;
+      const message = error.message || error.detail || error.title || error.error?.message;
       if (message) return message;
-      if (error.error && error.error !== 'Internal Server Error') return error.error;
+      if (typeof error.error === 'string' && error.error !== 'Internal Server Error') return error.error;
     } catch {
       if (!body.trim().startsWith('{') && !/(?:\bat\s+[\w.$]+\(|Exception|Error:)/i.test(body)) {
         return body.slice(0, 240);
       }
     }
+  }
+  if (response.status >= 500) {
+    return `The backend failed while analyzing this job (HTTP ${response.status}). Deploy the latest backend and check its server logs for the AI provider error.`;
   }
   return `Request failed (${response.status}). Please try again.`;
 }

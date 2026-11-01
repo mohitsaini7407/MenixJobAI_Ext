@@ -58,6 +58,28 @@
         </details>
       </section>
 
+      <section id="analysisSection" class="section analysis-section">
+        <div id="matchOverview" class="match-overview"></div>
+        <details id="skillsAnalysis" class="skills-analysis" open>
+          <summary><span>Skills Analysis</span><span class="skills-toggle">⌃</span></summary>
+          <div class="skills-columns">
+            <section>
+              <h4 id="matchedSkillsHeading">Matched Skills / Keywords</h4>
+              <ul id="matchedSkillsList"></ul>
+            </section>
+            <section>
+              <h4 id="missingSkillsHeading">Gaps to Verify</h4>
+              <ul id="missingSkillsList"></ul>
+            </section>
+          </div>
+        </details>
+        <div id="analysis" class="analysis hidden"></div>
+        <div id="fileResult" class="file-result hidden">
+          <div id="fileResultText"></div>
+          <button id="openJobBtn" class="btn secondary full hidden" type="button">Open Job Application</button>
+        </div>
+      </section>
+
       <section class="section resume-section">
         <div class="card-heading">
           <span class="step-number">2</span>
@@ -81,28 +103,6 @@
       </section>
 
       <button id="analyzeBtn" class="btn analyze-btn">✦ &nbsp;Analyze &amp; Tailor Resume</button>
-
-      <section id="analysisSection" class="section analysis-section">
-        <div id="matchOverview" class="match-overview"></div>
-        <details id="skillsAnalysis" class="skills-analysis" open>
-          <summary><span>Skills Analysis</span><span class="skills-toggle">⌃</span></summary>
-          <div class="skills-columns">
-            <section>
-              <h4 id="matchedSkillsHeading">Matched Skills / Keywords</h4>
-              <ul id="matchedSkillsList"></ul>
-            </section>
-            <section>
-              <h4 id="missingSkillsHeading">Gaps to Verify</h4>
-              <ul id="missingSkillsList"></ul>
-            </section>
-          </div>
-        </details>
-        <div id="analysis" class="analysis hidden"></div>
-        <div id="fileResult" class="file-result hidden">
-          <div id="fileResultText"></div>
-          <button id="openJobBtn" class="btn secondary full hidden" type="button">Open Job Application</button>
-        </div>
-      </section>
     </div>
 
     <section id="profileView" class="view hidden">
