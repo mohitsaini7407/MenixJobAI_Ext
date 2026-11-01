@@ -3,6 +3,8 @@ package com.menix.api;
 import org.apache.poi.xwpf.usermodel.*;
 import org.apache.poi.wp.usermodel.HeaderFooterType;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
@@ -16,6 +18,7 @@ import java.util.*;
 @RequestMapping("/api/ai")
 public class TailoredResumeController {
     private static final String DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    private static final Logger logger = LoggerFactory.getLogger(TailoredResumeController.class);
     public record TailoredDocxRequest(String resumeText, String jobDescription, String fullName) {}
     private record ResumeLine(String text, boolean entry) {}
     private record ResumeSection(String heading, List<ResumeLine> lines) {}
@@ -38,7 +41,8 @@ public class TailoredResumeController {
         } catch (ResponseStatusException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Could not format the resume: " + ex.getMessage());
+            logger.error("Could not format tailored resume as DOCX", ex);
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Could not format the resume.", ex);
         }
     }
 
