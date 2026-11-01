@@ -3,75 +3,161 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Menix AI</title>
+  <title>MenixJobAI</title>
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
 <body>
   <main class="app">
     <header class="topbar">
-      <div class="brand-mark">M</div>
-      <div class="brand"><strong>Menix AI</strong><span>JOB ASSISTANT</span></div>
-      <button id="settingsToggle" class="icon-btn" title="Settings">⚙</button>
+      <div class="brand-mark"><img src="icons/icon48.png" alt="" /></div>
+      <div class="brand"><strong>MenixJobAI</strong></div>
+      <button id="profileShortcut" class="icon-btn profile-shortcut" title="Profile resume" aria-label="Profile resume">▤</button>
+      <button id="settingsToggle" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
     </header>
 
+    <nav class="tabs" aria-label="Main navigation">
+      <button class="tab active" id="applyTab" data-view="applyView">Apply</button>
+      <button class="tab" id="historyTab" data-view="historyView">History</button>
+      <button class="tab" id="savedTab" data-view="savedView">Saved</button>
+    </nav>
+
     <section id="settings" class="settings hidden">
-      <label>Backend API URL<input id="apiBase" value="http://localhost:8080/api" /></label>
+      <div class="section-heading"><h2>Settings</h2><span class="step">MENIXJOBAI</span></div>
+      <label for="apiBase">Backend API URL<input id="apiBase" value="https://menixjobai-api.onrender.com/api" /></label>
       <p>Keep your Gemini key on the backend. Never put API keys in this extension.</p>
-      <button id="saveSettings" class="btn secondary">Save settings</button>
-    </section>
-
-    <section class="job-card">
-      <div class="eyebrow">CURRENT JOB</div>
-      <h1 id="jobTitle">No job captured yet</h1>
-      <p id="jobMeta" class="muted">Open a Naukri job and choose Capture visible job, or paste its details below.</p>
       <div class="job-actions">
-        <button id="captureBtn" class="btn primary">Capture visible job</button>
-        <button id="clearJob" class="btn secondary">Clear</button>
+        <button id="saveSettings" class="btn secondary">Save settings</button>
+        <button id="clearResumeBtn" class="btn secondary">Clear saved resume</button>
       </div>
-      <p class="hint">Capture runs only after you click. It reads visible page text from the active tab; it does not log in, click Apply, or submit applications.</p>
+      <p class="hint">Resume text is stored in this browser only · Version 1.0.0</p>
     </section>
 
-    <section class="section">
-      <div class="section-heading"><h2>Job description</h2><span class="step">01</span></div>
-      <label class="field-label" for="jobDescription">Paste or review the job description</label>
-      <textarea id="jobDescription" rows="9" placeholder="Paste the full job description here..."></textarea>
-      <div class="field-grid">
-        <label>Job title<input id="jobTitleInput" placeholder="Full Stack Developer" /></label>
-        <label>Company<input id="companyInput" placeholder="Company name" /></label>
-        <label>Location<input id="locationInput" placeholder="Jaipur / Remote" /></label>
-      </div>
-      <label class="field-label" for="jobUrl">Job URL</label>
-      <input id="jobUrl" placeholder="https://www.naukri.com/..." />
-      <button id="saveJobBtn" class="btn secondary full">Save job to MenixJobAI</button>
+    <div id="applyView" class="view">
+      <section class="job-card">
+        <div class="card-heading">
+          <span class="step-number">1</span>
+          <h2>Job Details</h2>
+          <span id="jobDetected" class="status-badge">Not detected</span>
+        </div>
+        <div class="job-title-row">
+          <div id="companyMark" class="company-mark" aria-hidden="true">J</div>
+          <div class="job-title-content">
+            <h1 id="jobTitle">Open a job listing</h1>
+            <p id="jobMeta" class="muted">Job details will appear here</p>
+          </div>
+        </div>
+        <div id="jobTags" class="job-tags"></div>
+        <button id="editJobBtn" class="text-button job-edit" type="button">Edit details</button>
+        <details id="jobDetails" class="resume-details job-details">
+          <label for="jobTitleInput">Job title<input id="jobTitleInput" /></label>
+          <label for="companyInput">Company<input id="companyInput" /></label>
+          <label for="locationInput">Location<input id="locationInput" /></label>
+          <label for="jobUrl">Job URL<input id="jobUrl" type="url" /></label>
+          <label for="jobDescription">Job description<textarea id="jobDescription" rows="7" placeholder="Paste the visible job description if automatic detection did not work."></textarea></label>
+          <button id="saveJobDetailsBtn" class="btn secondary full" type="button">Save job details</button>
+        </details>
+      </section>
+
+      <section class="section resume-section">
+        <div class="card-heading">
+          <span class="step-number">2</span>
+          <h2>Master Resume</h2>
+          <span id="masterResumeBadge" class="status-badge resume-badge">Not saved</span>
+        </div>
+        <div class="resume-row">
+          <div class="resume-icon" aria-hidden="true">▤</div>
+          <div class="resume-info"><strong id="resumeName">No resume uploaded</strong><span id="resumeStatus">Choose your master resume</span></div>
+          <input id="resumeFile" class="file-input" type="file" accept=".pdf,.docx" />
+        </div>
+        <div class="resume-actions">
+          <button id="viewResumeBtn" class="btn secondary" type="button">◉ &nbsp;View</button>
+          <label class="btn secondary replace-resume" for="resumeFile">↻ &nbsp;Replace</label>
+        </div>
+        <details id="resumeDetails" class="resume-details">
+          <label class="sr-only" for="resumeText">Resume text</label>
+          <textarea id="resumeText" rows="8" placeholder="Resume text will appear here after upload."></textarea>
+          <button id="saveResumeBtn" class="btn secondary full" type="button">Save changes</button>
+        </details>
+      </section>
+
+      <button id="analyzeBtn" class="btn analyze-btn">✦ &nbsp;Analyze &amp; Tailor Resume</button>
+
+      <section id="analysisSection" class="section analysis-section">
+        <div id="matchOverview" class="match-overview"></div>
+        <details id="skillsAnalysis" class="skills-analysis" open>
+          <summary><span>Skills Analysis</span><span class="skills-toggle">⌃</span></summary>
+          <div class="skills-columns">
+            <section>
+              <h4 id="matchedSkillsHeading">Matched Skills / Keywords</h4>
+              <ul id="matchedSkillsList"></ul>
+            </section>
+            <section>
+              <h4 id="missingSkillsHeading">Gaps to Verify</h4>
+              <ul id="missingSkillsList"></ul>
+            </section>
+          </div>
+        </details>
+        <div id="analysis" class="analysis hidden"></div>
+        <div id="fileResult" class="file-result hidden">
+          <div id="fileResultText"></div>
+          <button id="openJobBtn" class="btn secondary full hidden" type="button">Open Job Application</button>
+        </div>
+      </section>
+    </div>
+
+    <section id="profileView" class="view hidden">
+      <div class="page-heading"><div class="eyebrow">PROFILE RESUME</div><h1>Naukri profile</h1></div>
+      <section class="section profile-card">
+        <h2>Resume to upload</h2>
+        <p id="profileResumeName" class="profile-file-name">No profile resume selected</p>
+        <p id="profileResumeStatus" class="muted">Choose a PDF or DOCX. Your master resume stays separate.</p>
+        <div class="job-actions">
+          <button id="chooseProfileResumeBtn" class="btn secondary" type="button">Select / Replace</button>
+          <input id="profileResumeFile" class="file-input" type="file" accept=".pdf,.docx" />
+          <button id="useMasterResumeBtn" class="btn secondary" type="button">Use master</button>
+        </div>
+        <button id="downloadProfileResumeBtn" class="btn text-button full hidden" type="button">Download selected file for upload</button>
+        <label for="generatedResumeSelect">Previously generated resume</label>
+        <div class="job-actions generated-picker">
+          <select id="generatedResumeSelect"><option value="">Choose generated resume</option></select>
+          <button id="useGeneratedResumeBtn" class="btn secondary" type="button">Use</button>
+        </div>
+        <details id="profilePreview" class="resume-details profile-preview hidden">
+          <summary>Preview selected resume</summary>
+          <p id="profilePreviewMeta" class="muted"></p>
+          <p id="profilePreviewText" class="preview-text"></p>
+          <button id="cancelProfileResumeBtn" class="btn text-button" type="button">Cancel selection</button>
+        </details>
+      </section>
+      <section class="section profile-card">
+        <h2>Upload to Naukri</h2>
+        <p class="muted">MenixJobAI will not replace your profile resume automatically. Upload the selected file on Naukri and save the profile yourself.</p>
+        <button id="openNaukriProfileBtn" class="btn primary full" type="button">Open Naukri Profile</button>
+        <ol class="upload-steps">
+          <li>On Naukri, open your profile and find the Resume section.</li>
+          <li>Choose the selected file from your computer and save the change.</li>
+          <li>Return here and confirm only after the upload is complete.</li>
+        </ol>
+        <label class="confirm-row"><input id="profileUploadConfirmed" type="checkbox" /> I uploaded this resume and saved my Naukri profile.</label>
+        <button id="confirmProfileUploadBtn" class="btn accent full" type="button" disabled>Confirm profile resume updated</button>
+        <p id="profileConfirmationStatus" class="muted" role="status">Not confirmed</p>
+      </section>
     </section>
 
-    <section class="section">
-      <div class="section-heading"><h2>Master resume</h2><span class="step">02</span></div>
-      <p class="muted small">Upload a PDF/DOCX or paste your resume text. The original file is not overwritten.</p>
-      <input id="resumeFile" type="file" accept=".pdf,.docx" />
-      <label class="field-label" for="resumeText">Resume text</label>
-      <textarea id="resumeText" rows="8" placeholder="Paste your master resume text here, or upload a PDF/DOCX above..."></textarea>
-      <button id="saveResumeBtn" class="btn secondary full">Save master resume on this browser</button>
-      <p id="resumeStatus" class="hint">Resume text is stored locally in this browser profile until you clear it.</p>
+    <section id="historyView" class="view hidden">
+      <div class="page-heading"><div class="eyebrow">YOUR RECENT REVIEWS</div><h1>History</h1></div>
+      <div id="historyList" class="list-view"></div>
     </section>
 
-    <section class="section analysis-section">
-      <div class="section-heading"><h2>AI resume analysis</h2><span class="step">03</span></div>
-      <button id="analyzeBtn" class="btn primary full">✦ Analyze job & resume</button>
-      <div id="analysis" class="analysis hidden"></div>
-      <button id="generateBtn" class="btn accent full" disabled>Generate tailored DOCX</button>
-      <p class="hint">AI suggestions must be reviewed. The system must not invent skills, employers, dates, qualifications, or achievements.</p>
+    <section id="savedView" class="view hidden">
+      <div class="page-heading"><div class="eyebrow">BOOKMARKED OPPORTUNITIES</div><h1>Saved jobs</h1></div>
+      <div id="savedList" class="list-view"></div>
     </section>
 
-    <section class="section">
-      <div class="section-heading"><h2>Application</h2><span class="step">04</span></div>
-      <div id="fileResult" class="file-result hidden"></div>
-      <button id="continueBtn" class="btn secondary full" disabled>Continue to job application ↗</button>
-      <p class="hint">Menix prepares the resume. You review it, upload it on the job site, and submit the application yourself.</p>
-    </section>
-
-    <div id="status" class="status" role="status">Ready. Connect your local MenixJobAI backend to begin.</div>
-    <footer>MenixJobAI · Your data stays under your control</footer>
+    <div id="status" class="status" role="status">Ready</div>
+    <div id="actionBar" class="action-bar hidden">
+      <button id="generateBtn" class="btn generate-btn" disabled>↓ &nbsp;Download Tailored Resume (DOCX)</button>
+    </div>
   </main>
   <script src="sidepanel.js"></script>
 </body>
