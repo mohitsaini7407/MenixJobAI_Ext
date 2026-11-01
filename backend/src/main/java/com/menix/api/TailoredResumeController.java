@@ -186,7 +186,9 @@ public class TailoredResumeController {
 
     private void addPageNumberFooter(XWPFDocument doc) {
         XWPFFooter footer = doc.createFooter(HeaderFooterType.DEFAULT);
-        XWPFParagraph p = footer.getParagraphs().get(0); p.setAlignment(ParagraphAlignment.CENTER);
+        List<XWPFParagraph> paragraphs = footer.getParagraphs();
+        XWPFParagraph p = paragraphs.isEmpty() ? footer.createParagraph() : paragraphs.get(0);
+        p.setAlignment(ParagraphAlignment.CENTER);
         XWPFRun r = p.createRun(); r.setFontFamily("Aptos"); r.setFontSize(8); r.setColor("64748B"); r.setText("Page ");
         r.getCTR().addNewFldChar().setFldCharType(STFldCharType.BEGIN);
         r = p.createRun(); r.getCTR().addNewInstrText().setStringValue(" PAGE ");
