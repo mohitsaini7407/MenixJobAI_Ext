@@ -248,6 +248,11 @@ function cleanCompanyName(company) {
 
 function invalidateAnalysis() {
   lastAnalysis = null;
+  lastAutomaticAnalysisInput = '';
+  if (automaticAnalysisTimer) {
+    window.clearTimeout(automaticAnalysisTimer);
+    automaticAnalysisTimer = null;
+  }
   $('analysis').classList.add('hidden');
   $('analysis').replaceChildren();
   renderAnalysisPlaceholders();
@@ -431,11 +436,6 @@ $('viewResumeBtn').addEventListener('click', () => {
   if (details.open) details.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 });
 
-$('editJobBtn').addEventListener('click', () => {
-  $('jobDetails').open = !$('jobDetails').open;
-  if ($('jobDetails').open) $('jobDetails').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-});
-
 $('saveJobDetailsBtn').addEventListener('click', () => {
   const hasDescription = Boolean($('jobDescription').value.trim());
   if (!hasDescription) {
@@ -453,6 +453,11 @@ $('saveJobDetailsBtn').addEventListener('click', () => {
   invalidateAnalysis();
   $('jobDetails').open = false;
   setStatus('Job details saved locally for this review.', 'success');
+  scheduleAutomaticAnalysis();
+});
+
+$('jobDescription').addEventListener('input', () => {
+  invalidateAnalysis();
   scheduleAutomaticAnalysis();
 });
 
@@ -492,6 +497,7 @@ $('resumeText').addEventListener('input', () => {
   resumeIsSaved = false;
   updateResumeCard();
   invalidateAnalysis();
+  scheduleAutomaticAnalysis();
 });
 
 $('saveSettings').addEventListener('click', async () => {
@@ -1208,13 +1214,7 @@ function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') {
     : stateLabel === 'Analysis failed'
       ? 'Automatic analysis failed. Review the error below and retry when the backend is available.'
       : 'Scores are calculated automatically when a resume and job description are available.';
-  const analyzeButton = document.createElement('button');
-  analyzeButton.type = 'button';
-  analyzeButton.className = 'btn match-analyze-button';
-  analyzeButton.textContent = stateLabel === 'Analysis failed' ? 'Retry analysis' : 'Analyze match & resume';
-  analyzeButton.disabled = stateLabel === 'Analyzing…';
-  analyzeButton.addEventListener('click', () => $('analyzeBtn').click());
-  overview.append(header, scoreCard, hint, analyzeButton);
+  overview.append(header, scoreCard, hint);
 
   $('matchedSkillsList').replaceChildren();
   $('missingSkillsList').replaceChildren();

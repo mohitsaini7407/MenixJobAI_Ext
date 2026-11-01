@@ -148,7 +148,6 @@ body,.app,.topbar{background:#0b1017}
 .tab{min-width:0;padding:7px 4px;font-size:10px}
 .tab.active,.tab.active:hover,.generate-btn,.primary,.accent{background:#ff7900;color:#17120c}
 .status-badge.success-badge{background:#123222;color:#22c55e}
-.job-edit{margin-top:8px;padding:0;border:0;background:transparent;color:#ff9a24;font-size:10px}
 .job-details{border-color:#293646}
 .job-details label{margin:8px 0;color:#a7b0be}
 .job-details textarea{min-height:110px}
@@ -188,7 +187,6 @@ body{min-width:320px;background:#0b1017}
 .status-badge{padding:3px 6px;background:#123222;color:#22c55e;font-size:8px}
 .job-tags{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0 0 38px}
 .job-tag{padding:3px 7px;border:1px solid #344252;border-radius:12px;background:#1b2735;color:#d4dbe5;font-size:8px}
-.job-edit{margin:6px 0 0 38px;font-size:9px}
 .job-details{margin:7px 0 0;padding-top:7px}
 .job-details label{margin:7px 0;font-size:9px}
 .job-details input,.job-details textarea{padding:7px;font-size:10px}
@@ -255,8 +253,6 @@ body{min-width:320px;background:#0b1017}
 .match-metric{display:flex;align-items:center;justify-content:space-between;gap:6px;padding-top:4px;border-top:1px solid #293646;color:#c4ccd7;font-size:8px}
 .match-metric strong{color:#f8fafc;font-size:9px}
 .match-overview .analysis-summary{margin:7px 0 0;padding:6px;border:0;background:#0b1017;font-size:8px}
-.match-analyze-button{width:100%;margin-top:7px;padding:7px;border:1px solid #ff7900;border-radius:7px;background:#2c2117;color:#ffbd55;font-size:9px;font-weight:700;cursor:pointer}
-.match-analyze-button:hover{background:#3a2818}
 .skills-analysis{padding:0;overflow:hidden}
 .skills-analysis summary{display:flex;align-items:center;justify-content:space-between;padding:8px;color:#f8fafc;font-size:10px;font-weight:700;cursor:pointer;list-style:none}
 .skills-analysis summary::-webkit-details-marker{display:none}
