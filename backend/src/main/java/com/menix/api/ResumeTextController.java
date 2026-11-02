@@ -1,5 +1,9 @@
 package com.menix.api;
 
+import com.menix.service.AiAnalysisService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
@@ -19,6 +23,13 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/resumes")
 public class ResumeTextController {
+    private static final Logger log = LoggerFactory.getLogger(ResumeTextController.class);
+    private final AiAnalysisService analysisService;
+
+    public ResumeTextController(AiAnalysisService analysisService) {
+        this.analysisService = analysisService;
+    }
+
     @PostMapping("/extract-text")
     public Map<String, Object> extractText(@RequestParam("file") MultipartFile file) {
         if (file == null || file.isEmpty()) {
@@ -50,6 +61,8 @@ public class ResumeTextController {
             result.put("originalName", file.getOriginalFilename());
             result.put("text", text);
             result.put("characters", text.length());
+            try { analysisService.queueResumeProfile(text); }
+            catch (RuntimeException ex) { log.info("Resume profile queue is unavailable; resume text extraction succeeded."); }
             return result;
         } catch (ResponseStatusException ex) {
             throw ex;
