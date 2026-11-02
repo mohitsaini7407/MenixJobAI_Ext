@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.*;
@@ -24,7 +25,9 @@ public class TailoredResumeController {
     private static final Pattern LINK_PATTERN = Pattern.compile(
         "\\[([^\\]]+)]\\((https?://[^\\s)]+|mailto:[^\\s)]+)\\)|(https?://[^\\s<>]+|mailto:[^\\s<>]+)",
         Pattern.CASE_INSENSITIVE);
-    public record TailoredDocxRequest(String resumeText, String jobDescription, String fullName) {}
+    public record TemplateEdit(String before, String after) {}
+    public record TailoredDocxRequest(String resumeText, String jobDescription, String fullName,
+                                      String masterDocxBase64, List<TemplateEdit> templateEdits) {}
     private record ResumeLine(String text, boolean entry) {}
     private record ResumeSection(String heading, List<ResumeLine> lines) {}
     private record ResumeData(String name, String contact, List<ResumeSection> sections) {}
@@ -35,20 +38,83 @@ public class TailoredResumeController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Master resume text is required.");
         }
         try {
-            ResumeData resume = parseResume(request.resumeText(), request.fullName());
-            byte[] docx = buildDocx(resume);
+            byte[] docx;
+            boolean usedMasterTemplate = false;
+            if (request.masterDocxBase64() != null && !request.masterDocxBase64().isBlank()) {
+                byte[] source = Base64.getDecoder().decode(request.masterDocxBase64());
+                docx = editMasterTemplate(source, request.templateEdits() == null ? List.of() : request.templateEdits());
+                usedMasterTemplate = docx != null;
+            } else docx = null;
+            if (docx == null) {
+                ResumeData resume = parseResume(request.resumeText(), request.fullName());
+                docx = buildDocx(resume);
+            }
             String date = LocalDate.now(ZoneId.of("Asia/Kolkata")).toString();
-            String safeName = resume.name().replaceAll("[^A-Za-z0-9_-]", "");
+            String requestedName = request.fullName() == null || request.fullName().isBlank()
+                ? request.resumeText().lines().findFirst().orElse("Candidate") : request.fullName();
+            String safeName = requestedName.replaceAll("[^A-Za-z0-9_-]", "");
             if (safeName.isBlank()) safeName = "Candidate";
             String filename = safeName + "_ATS_Resume_" + date + ".docx";
-            return ResponseEntity.ok().contentType(MediaType.parseMediaType(DOCX_TYPE))
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"").body(docx);
+            ResponseEntity.BodyBuilder response = ResponseEntity.ok().contentType(MediaType.parseMediaType(DOCX_TYPE))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"");
+            if (!usedMasterTemplate) response.header("X-Resume-Format-Note", "For the exact same format, upload your resume as DOCX.")
+                .header(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, "X-Resume-Format-Note");
+            return response.body(docx);
         } catch (ResponseStatusException ex) {
             throw ex;
         } catch (Exception ex) {
             logger.error("Could not format tailored resume as DOCX", ex);
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Could not format the resume.", ex);
         }
+    }
+
+    byte[] editMasterTemplate(byte[] masterBytes, List<TemplateEdit> edits) throws Exception {
+        if (masterBytes == null || masterBytes.length == 0) return null;
+        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(masterBytes));
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            for (TemplateEdit edit : edits) {
+                if (edit == null || edit.before() == null || edit.before().isBlank() || edit.after() == null) continue;
+                XWPFParagraph paragraph = allBodyParagraphs(document).stream()
+                    .filter(p -> p.getText() != null && p.getText().contains(edit.before()))
+                    .findFirst().orElse(null);
+                if (paragraph == null) continue;
+                String updated = paragraph.getText().replace(edit.before(), edit.after());
+                replaceParagraphTextKeepingRuns(paragraph, updated);
+            }
+            document.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    private List<XWPFParagraph> allBodyParagraphs(XWPFDocument document) {
+        List<XWPFParagraph> paragraphs = new ArrayList<>();
+        for (IBodyElement element : document.getBodyElements()) {
+            if (element instanceof XWPFParagraph paragraph) paragraphs.add(paragraph);
+            else if (element instanceof XWPFTable table) addTableParagraphs(table, paragraphs);
+        }
+        return paragraphs;
+    }
+
+    private void addTableParagraphs(XWPFTable table, List<XWPFParagraph> paragraphs) {
+        for (XWPFTableRow row : table.getRows()) for (XWPFTableCell cell : row.getTableCells()) {
+            paragraphs.addAll(cell.getParagraphs());
+            for (XWPFTable nested : cell.getTables()) addTableParagraphs(nested, paragraphs);
+        }
+    }
+
+    private void replaceParagraphTextKeepingRuns(XWPFParagraph paragraph, String updated) {
+        List<XWPFRun> runs = paragraph.getRuns();
+        if (runs.isEmpty()) { paragraph.createRun().setText(updated); return; }
+        int offset = 0;
+        for (int i = 0; i < runs.size(); i++) {
+            XWPFRun run = runs.get(i);
+            int originalLength = run.text() == null ? 0 : run.text().length();
+            int end = i == runs.size() - 1 ? updated.length() : Math.min(updated.length(), offset + originalLength);
+            String piece = updated.substring(Math.min(offset, updated.length()), end);
+            run.setText(piece, 0);
+            offset = end;
+        }
+        // Existing run objects and their properties remain in place; paragraph structure is untouched.
     }
 
     private ResumeData parseResume(String source, String requestedName) {
