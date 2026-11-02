@@ -32,7 +32,7 @@ let resumePipelineRunning = false;
 let pipelineRetryContext = null;
 let pipelineLastState = null;
 let restoreMonitorTimer = null;
-const uploadedResumeHashes = new Set();
+let lastUploadedResumeHash = '';
 const NAUKRI_SELECTORS = {
   resumeInputs: ['#attachCV', 'input[type="file"][name*="resume" i]', '.resume input[type="file"]', '[class*="resume" i] input[type="file"]', '[data-testid*="resume" i] input[type="file"]'],
   successText: ['resume uploaded', 'resume updated', 'successfully uploaded', 'updated successfully', 'resume has been uploaded']
@@ -1997,7 +1997,9 @@ async function uploadToNaukri(profile, file) {
   if (!/(^|\.)naukri\.com$/i.test(new URL(tab.url).hostname)) throw new Error('Naukri profile tab is no longer available.');
   const digest = await crypto.subtle.digest('SHA-256', await file.blob.arrayBuffer());
   const hash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
-  if (uploadedResumeHashes.has(hash)) return { skippedDuplicate: true };
+  const sessionState = chrome.storage.session ? await chrome.storage.session.get(['lastNaukriUploadedResumeHash']) : {};
+  lastUploadedResumeHash = sessionState.lastNaukriUploadedResumeHash || lastUploadedResumeHash;
+  if (lastUploadedResumeHash === hash) return { skippedDuplicate: true };
   const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file.blob); });
   const result = await chrome.scripting.executeScript({ target: { tabId: profile.tabId }, args: [dataUrl, file.filename, NAUKRI_SELECTORS], func: async (base64, filename, selectors) => {
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -2026,7 +2028,8 @@ async function uploadToNaukri(profile, file) {
   }});
   const outcome = result?.[0]?.result;
   if (!outcome?.ok) throw new Error(outcome?.error || 'Naukri upload could not be verified.');
-  uploadedResumeHashes.add(hash);
+  lastUploadedResumeHash = hash;
+  if (chrome.storage.session) await chrome.storage.session.set({ lastNaukriUploadedResumeHash: hash });
   return outcome;
 }
 
