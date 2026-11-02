@@ -28,6 +28,9 @@ let suggestionData = null;
 let suggestionRequestPromise = null;
 let suggestionController = null;
 let tailoredWorkingCopy = '';
+
+// Wake Render as soon as the extension document opens; this is intentionally fire-and-forget.
+void fetch(`${DEFAULT_API}/health`).catch(() => {});
 let resumePipelineRunning = false;
 let pipelineRetryContext = null;
 let pipelineLastState = null;
@@ -1446,6 +1449,7 @@ async function analyzeCurrentMatch(automatic) {
   overviewController = controller;
   analysisPromise = (async () => {
     let cacheKey = '';
+    let wakingTimer = null;
     try {
       cacheKey = await overviewCacheKey(resumeText, jobDescription);
       const cachedByKey = await chrome.storage.local.get([cacheKey]);
@@ -1475,12 +1479,15 @@ async function analyzeCurrentMatch(automatic) {
         jobMeta
       };
       if (!resumeProfileResult?.profile) overviewRequest.resumeText = resumeText;
+      wakingTimer = window.setTimeout(() => setStatus('Waking up the server…', 'info'), 5000);
       const data = await api('/ai/overview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(overviewRequest),
         signal: controller.signal
       });
+      window.clearTimeout(wakingTimer);
+      wakingTimer = null;
       if (controller.signal.aborted) return;
       if (data.error) throw new Error(data.error);
       lastAnalysis = normalizeOverviewResult(data);
@@ -1504,6 +1511,7 @@ async function analyzeCurrentMatch(automatic) {
         setStatus('AI refinement unavailable. Retry when the backend is available.', 'error');
       }
     } finally {
+      if (typeof wakingTimer !== 'undefined' && wakingTimer) window.clearTimeout(wakingTimer);
       if (overviewController === controller) {
         overviewController = null;
         analysisPromise = null;
