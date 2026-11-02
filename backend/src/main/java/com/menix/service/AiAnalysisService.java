@@ -19,7 +19,6 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -37,7 +36,6 @@ public class AiAnalysisService {
     private static final Logger log = LoggerFactory.getLogger(AiAnalysisService.class);
     private static final String PROMPT_VERSION = "overview-v2";
     private static final String SUGGESTION_VERSION = "suggestions-v1";
-    private static final Set<String> SUPPORTED_MODELS = Set.of("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro");
     private final RestClient restClient;
     private final ObjectMapper mapper;
     private final AnalysisCacheRepository cacheRepository;
@@ -62,13 +60,6 @@ public class AiAnalysisService {
     public record SuggestionsRequest(Map<String, Object> resumeProfile, String resumeText,
                                      String jobDescription, Map<String, Object> jobMeta,
                                      String workingResume, String resumeHash) {}
-
-    @PostConstruct
-    void validateConfiguredModel() {
-        if (!SUPPORTED_MODELS.contains(model)) {
-            throw new IllegalStateException("Unsupported GEMINI_MODEL '" + model + "'. Supported models: " + String.join(", ", SUPPORTED_MODELS));
-        }
-    }
 
     public boolean authorizeDiagnostics(String token) {
         if (diagnosticsToken == null || diagnosticsToken.isBlank() || token == null) return false;
@@ -329,7 +320,8 @@ public class AiAnalysisService {
         Map<String, Object> generation = new LinkedHashMap<>();
         if (jsonMime) generation.put("responseMimeType", "application/json");
         if (includeSchema) generation.put("responseSchema", schema);
-        generation.put("temperature", 0.2);
+        // Gemini 3.x deprecates sampling controls; sending temperature can cause a 400.
+        if (!model.startsWith("gemini-3.")) generation.put("temperature", 0.2);
         generation.put("maxOutputTokens", Math.min(Math.max(maxTokens, 1), 8192));
         if (includeThinking && supportsThinkingBudgetZero(model)) {
             generation.put("thinkingConfig", Map.of("thinkingBudget", 0));

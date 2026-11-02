@@ -10,7 +10,7 @@ import java.util.Set;
 @Component
 public class GeminiModelStartupValidator implements ApplicationRunner {
     private static final Set<String> SUPPORTED_MODELS = Set.of(
-        "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro");
+        "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-3.5-flash-lite");
 
     @Value("${menix.gemini.model:gemini-2.5-flash}")
     private String model;

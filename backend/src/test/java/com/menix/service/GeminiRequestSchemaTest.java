@@ -28,6 +28,20 @@ class GeminiRequestSchemaTest {
         assertNoForbiddenKeysOrUnionTypes(request.path("generationConfig").path("responseSchema"));
     }
 
+    @Test
+    void gemini35FlashLiteOmitsDeprecatedSamplingAndThinkingBudgetOptions() {
+        AiAnalysisService service = new AiAnalysisService(RestClient.create(), new ObjectMapper(),
+            mock(AnalysisCacheRepository.class), mock(ResumeProfileRepository.class));
+        ReflectionTestUtils.setField(service, "model", "gemini-3.5-flash-lite");
+
+        var generation = service.generationConfig(service.overviewSchema(), 700, true, true, true);
+
+        assertEquals("application/json", generation.get("responseMimeType"));
+        assertFalse(generation.containsKey("temperature"));
+        assertFalse(generation.containsKey("thinkingConfig"));
+        assertTrue(generation.containsKey("responseSchema"));
+    }
+
     private void assertNoForbiddenKeysOrUnionTypes(JsonNode node) {
         if (node.isObject()) {
             node.fieldNames().forEachRemaining(name -> assertFalse(Set.of("additionalProperties", "$schema", "$ref", "oneOf", "anyOf", "allOf").contains(name), "Forbidden schema key: " + name));
