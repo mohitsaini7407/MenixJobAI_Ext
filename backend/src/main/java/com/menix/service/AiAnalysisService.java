@@ -19,6 +19,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -36,6 +37,7 @@ public class AiAnalysisService {
     private static final Logger log = LoggerFactory.getLogger(AiAnalysisService.class);
     private static final String PROMPT_VERSION = "overview-v2";
     private static final String SUGGESTION_VERSION = "suggestions-v1";
+    private static final Set<String> SUPPORTED_MODELS = Set.of("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro");
     private final RestClient restClient;
     private final ObjectMapper mapper;
     private final AnalysisCacheRepository cacheRepository;
@@ -43,8 +45,9 @@ public class AiAnalysisService {
     private final Set<String> profilesInFlight = ConcurrentHashMap.newKeySet();
 
     @Value("${menix.gemini.api-key:}") private String apiKey;
-    @Value("${menix.gemini.model:gemini-2.5-flash}") private String model;
+    @Value("${menix.gemini.model:gemini-2.5-flash}") private String model = "gemini-2.5-flash";
     @Value("${menix.gemini.overview-thinking-budget:0}") private int overviewThinkingBudget;
+    @Value("${menix.gemini.diagnostics-token:}") private String diagnosticsToken;
 
     public AiAnalysisService(RestClient restClient, ObjectMapper mapper,
                              AnalysisCacheRepository cacheRepository,
@@ -60,6 +63,18 @@ public class AiAnalysisService {
     public record SuggestionsRequest(Map<String, Object> resumeProfile, String resumeText,
                                      String jobDescription, Map<String, Object> jobMeta,
                                      String workingResume, String resumeHash) {}
+
+    @PostConstruct
+    void validateConfiguredModel() {
+        if (!SUPPORTED_MODELS.contains(model)) {
+            throw new IllegalStateException("Unsupported GEMINI_MODEL '" + model + "'. Supported models: " + String.join(", ", SUPPORTED_MODELS));
+        }
+    }
+
+    public boolean authorizeDiagnostics(String token) {
+        if (diagnosticsToken == null || diagnosticsToken.isBlank() || token == null) return false;
+        return MessageDigest.isEqual(diagnosticsToken.getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8));
+    }
 
     public Map<String, Object> overview(OverviewRequest request) {
         validate(request == null ? null : request.jobDescription(),
@@ -88,11 +103,13 @@ public class AiAnalysisService {
             : "RESUME TEXT:\n" + resumeText;
         String prompt = overviewPrompt(candidateEvidence, jobDescription, jobMeta);
         Map<String, Object> raw = callGemini(prompt, overviewSchema(), 700, true);
+        boolean degraded = Boolean.TRUE.equals(raw.remove("_menixDegraded"));
         Map<String, Object> result = normalizeOverview(raw);
         Integer score = AnalysisScoring.total(asMap(result.get("scores")));
         result.put("matchScore", score);
         result.put("matchLevel", AnalysisScoring.level(score));
         result.put("model", model);
+        result.put("degraded", degraded);
         result.put("cached", false);
         result.put("latencyMs", (System.nanoTime() - started) / 1_000_000);
         writeCache(key, "overview", result);
@@ -137,6 +154,7 @@ public class AiAnalysisService {
             RESUME:\n%s\nJOB DESCRIPTION:\n%s
             """.formatted(candidate, jobDescription);
         Map<String, Object> raw = callGemini(prompt, suggestionsSchema(), 900, false);
+        boolean degraded = Boolean.TRUE.equals(raw.remove("_menixDegraded"));
         List<Map<String, Object>> normalized = new ArrayList<>();
         Object items = raw.get("suggestions");
         if (items instanceof List<?> list) {
@@ -156,6 +174,7 @@ public class AiAnalysisService {
         result.put("suggestions", normalized);
         result.put("cautions", stringList(raw.get("cautions")));
         result.put("model", model);
+        result.put("degraded", degraded);
         result.put("cached", false);
         writeCache(key, "suggestions", result);
         return result;
@@ -187,7 +206,7 @@ public class AiAnalysisService {
         try {
             String text = mapper.writeValueAsString(review);
             Map<String, Object> envelope = Map.of("candidates", List.of(Map.of("content", Map.of("parts", List.of(Map.of("text", text))))));
-            return Map.of("model", model, "review", envelope,
+            return Map.of("model", model, "review", envelope, "degraded", Boolean.TRUE.equals(overview.get("degraded")) || Boolean.TRUE.equals(suggestions.get("degraded")),
                 "notice", "AI suggestions only. Verify every statement and approve edits before using them.");
         } catch (Exception ex) {
             throw new IllegalStateException("Could not serialize the compatibility analysis response.", ex);
@@ -205,6 +224,7 @@ public class AiAnalysisService {
             if (profileRepository.existsById(hash)) return;
             String prompt = "Extract only facts explicitly present in this resume. Return skills (technical skills only), yearsExperience (number or null), degree, location, projects (strings), and roles (strings including dates when visible). Resume:\\n" + resumeText;
             Map<String, Object> extracted = callGemini(prompt, profileSchema(), 500, false);
+            extracted.remove("_menixDegraded");
             profileRepository.save(new ResumeProfile(hash, json(extracted)));
         } catch (Exception ex) {
             log.info("Resume profile extraction was unavailable; raw text remains the fallback.");
@@ -257,38 +277,45 @@ public class AiAnalysisService {
         if (apiKey == null || apiKey.isBlank()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Gemini API key is not configured on the backend. Set GEMINI_API_KEY and restart.");
         }
-        Map<String, Object> generation = new LinkedHashMap<>();
-        generation.put("responseMimeType", "application/json");
-        generation.put("responseSchema", schema);
-        generation.put("temperature", 0.2);
-        generation.put("maxOutputTokens", maxTokens);
-        if (overview) generation.put("thinkingConfig", Map.of("thinkingBudget", Math.max(0, overviewThinkingBudget)));
-        Map<String, Object> payload = Map.of("contents", List.of(Map.of("parts", List.of(Map.of("text", prompt)))), "generationConfig", generation);
-        String url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + apiKey;
-        for (int attempt = 0; attempt < 2; attempt++) {
+        Map<String, Object> generation = generationConfig(schema, maxTokens, true, true, overview);
+        Map<String, Object> payload = buildGeminiRequest(prompt, generation);
+        boolean degraded = false;
+        boolean transientRetryUsed = false;
+        while (true) {
             try {
-                Map<?, ?> envelope = restClient.post().uri(url).contentType(MediaType.APPLICATION_JSON).body(payload).retrieve().body(Map.class);
+                Map<?, ?> envelope = restClient.post().uri(geminiUrl()).contentType(MediaType.APPLICATION_JSON).body(payload).retrieve().body(Map.class);
                 JsonNode node = mapper.valueToTree(envelope).path("candidates").path(0).path("content").path("parts").path(0).path("text");
                 if (!node.isTextual()) throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "The AI provider returned an empty analysis. Please retry.");
-                return mapper.readValue(node.asText(), new TypeReference<>() {});
+                Map<String, Object> result = mapper.readValue(node.asText(), new TypeReference<>() {});
+                if (degraded) result.put("_menixDegraded", true);
+                return result;
             } catch (RestClientResponseException ex) {
-                if (attempt == 0 && (ex.getStatusCode().value() == 429 || ex.getStatusCode().value() == 503)) {
+                int status = ex.getStatusCode().value();
+                String responseBody = redactSecrets(ex.getResponseBodyAsString());
+                logGeminiFailure(status, responseBody, generation);
+                if (status == 400 && !degraded && (generation.containsKey("responseSchema") || generation.containsKey("thinkingConfig"))) {
+                    if (generation.containsKey("responseSchema")) log.warn("Retrying Gemini request after dropping responseSchema (model={})", model);
+                    if (generation.containsKey("thinkingConfig")) log.warn("Retrying Gemini request after dropping thinkingConfig (model={})", model);
+                    generation = generationConfig(schema, maxTokens, true, false, false);
+                    payload = buildGeminiRequest(prompt, generation);
+                    degraded = true;
+                    continue;
+                }
+                if (!transientRetryUsed && (status == 429 || status == 503)) {
+                    transientRetryUsed = true;
                     try { Thread.sleep(250); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
                     continue;
                 }
-                String redacted = ex.getResponseBodyAsString().replace(apiKey, "[redacted]")
-                    .replaceAll("(?i)(key=)[^&\\s\\\"]+", "$1[redacted]").replaceAll("[\\r\\n\\t]+", " ").trim();
-                if (redacted.length() > 500) redacted = redacted.substring(0, 500);
-                log.warn("Gemini analysis failed with status {}: {}", ex.getStatusCode().value(), redacted);
-                String message = switch (ex.getStatusCode().value()) {
+                String message = switch (status) {
                     case 400 -> "The AI provider rejected the analysis request. Check the configured Gemini model and request settings.";
                     case 401, 403 -> "The AI provider rejected the configured credentials. Check the Gemini API key on the backend.";
                     case 429 -> "The AI provider is temporarily rate-limited. Please wait and try again.";
                     default -> "The AI provider could not complete the analysis. Please try again later.";
                 };
-                throw new ResponseStatusException(ex.getStatusCode().value() == 429 ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.BAD_GATEWAY, message);
+                throw new ResponseStatusException(status == 429 || status == 503 ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.BAD_GATEWAY, message);
             } catch (RestClientException ex) {
-                log.warn("Gemini analysis request could not reach the provider", ex);
+                log.warn("Gemini analysis request could not reach the provider (model={}, error={}): {}",
+                    model, ex.getClass().getSimpleName(), redactSecrets(Objects.toString(ex.getMessage(), "")));
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "The AI provider could not be reached. Please try again later.");
             } catch (Exception ex) {
                 if (ex instanceof ResponseStatusException responseStatusException) throw responseStatusException;
@@ -296,10 +323,83 @@ public class AiAnalysisService {
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "The AI provider returned an invalid analysis. Please retry.");
             }
         }
-        throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "The AI provider is temporarily unavailable. Please try again later.");
     }
 
-    private Map<String, Object> overviewSchema() {
+    Map<String, Object> generationConfig(Map<String, Object> schema, int maxTokens,
+                                                  boolean jsonMime, boolean includeSchema, boolean includeThinking) {
+        Map<String, Object> generation = new LinkedHashMap<>();
+        if (jsonMime) generation.put("responseMimeType", "application/json");
+        if (includeSchema) generation.put("responseSchema", schema);
+        generation.put("temperature", 0.2);
+        generation.put("maxOutputTokens", Math.min(Math.max(maxTokens, 1), 8192));
+        if (includeThinking && supportsThinkingBudgetZero(model)) {
+            generation.put("thinkingConfig", Map.of("thinkingBudget", Math.max(0, overviewThinkingBudget)));
+        }
+        return generation;
+    }
+
+    private boolean supportsThinkingBudgetZero(String modelName) {
+        return "gemini-2.5-flash".equals(modelName) || "gemini-2.5-flash-lite".equals(modelName);
+    }
+
+    Map<String, Object> buildGeminiRequest(String prompt, Map<String, Object> generationConfig) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("contents", List.of(Map.of("parts", List.of(Map.of("text", prompt)))));
+        if (generationConfig != null && !generationConfig.isEmpty()) body.put("generationConfig", generationConfig);
+        return body;
+    }
+
+    private String geminiUrl() {
+        return "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + apiKey;
+    }
+
+    private String redactSecrets(String text) {
+        if (text == null) return "";
+        String safe = apiKey == null || apiKey.isBlank() ? text : text.replace(apiKey, "[redacted]");
+        return safe.replaceAll("(?i)(key=)[^&\\s\\\"]+", "$1[redacted]")
+            .replaceAll("(?i)(password[=: ]+)[^,\\s\\\"]+", "$1[redacted]");
+    }
+
+    private void logGeminiFailure(int status, String body, Map<String, Object> generation) {
+        Object thinking = generation.getOrDefault("thinkingConfig", "not sent");
+        log.warn("Gemini request failed status={} model={} generationConfigOptions={} thinkingConfig={} providerError={}",
+            status, model, generation.keySet(), thinking, body);
+    }
+
+    public Map<String, Object> runDiagnostics() {
+        Map<String, Object> checks = new LinkedHashMap<>();
+        Map<String, Object> tinySchema = Map.of("type", "OBJECT", "properties", Map.of("ok", Map.of("type", "BOOLEAN")), "required", List.of("ok"));
+        checks.put("plain", diagnosticCall("plain", Map.of()));
+        checks.put("jsonMime", diagnosticCall("jsonMime", Map.of("responseMimeType", "application/json")));
+        if (supportsThinkingBudgetZero(model)) {
+            checks.put("thinkingBudgetZero", diagnosticCall("thinkingBudgetZero", Map.of("thinkingConfig", Map.of("thinkingBudget", 0))));
+        } else {
+            checks.put("thinkingBudgetZero", Map.of("status", "FAIL", "message", "Not sent: thinkingBudget=0 is unsupported for configured model " + model));
+        }
+        checks.put("schema", diagnosticCall("schema", Map.of("responseMimeType", "application/json", "responseSchema", tinySchema)));
+        return Map.of("model", model, "checks", checks);
+    }
+
+    private Map<String, String> diagnosticCall(String testName, Map<String, Object> generation) {
+        if (apiKey == null || apiKey.isBlank()) return Map.of("status", "FAIL", "message", "GEMINI_API_KEY is not configured.");
+        Map<String, Object> payload = buildGeminiRequest("Return the word OK.", generation);
+        try {
+            restClient.post().uri(geminiUrl()).contentType(MediaType.APPLICATION_JSON).body(payload).retrieve().body(Map.class);
+            return Map.of("status", "OK", "message", "Provider accepted this request configuration.");
+        } catch (RestClientResponseException ex) {
+            String body = redactSecrets(ex.getResponseBodyAsString());
+            log.warn("Gemini diagnostic failed test={} status={} model={} generationConfigOptions={} providerError={}",
+                testName, ex.getStatusCode().value(), model, generation.keySet(), body);
+            String providerMessage;
+            try { providerMessage = mapper.readTree(body).path("error").path("message").asText(body); }
+            catch (Exception ignored) { providerMessage = body; }
+            return Map.of("status", "FAIL", "message", providerMessage);
+        } catch (RestClientException ex) {
+            return Map.of("status", "FAIL", "message", "Provider request failed: " + ex.getClass().getSimpleName());
+        }
+    }
+
+    Map<String, Object> overviewSchema() {
         return objectSchema(Map.ofEntries(
             Map.entry("scores", objectSchema(Map.of("skills", nullableInteger(), "experience", nullableInteger(), "keywords", nullableInteger(), "education", nullableInteger()))),
             Map.entry("confidence", enumSchema("low", "medium", "high")), Map.entry("verdict", stringSchema()),
