@@ -25,6 +25,10 @@
     <section id="settings" class="settings hidden">
       <div class="section-heading"><h2>Settings</h2><span class="step">MENIXJOBAI</span></div>
       <label for="apiBase">Backend API URL<input id="apiBase" value="https://menixjobai-api.onrender.com/api" /></label>
+      <label for="fullNameInput">Your name<input id="fullNameInput" autocomplete="name" placeholder="Used on generated resumes" /></label>
+      <label class="pipeline-setting"><input id="autoUploadSetting" type="checkbox" checked /> Auto-upload to Naukri profile after generating</label>
+      <label class="pipeline-setting"><input id="restoreMasterSetting" type="checkbox" /> Restore my master resume on Naukri after applying</label>
+      <p class="hint">Auto-restore watches for Naukri’s application confirmation while this panel is open.</p>
       <p>Keep your Gemini key on the backend. Never put API keys in this extension.</p>
       <div class="job-actions">
         <button id="saveSettings" class="btn secondary">Save settings</button>
@@ -94,6 +98,8 @@
         <div id="fileResult" class="file-result hidden">
           <div id="fileResultText"></div>
           <button id="openJobBtn" class="btn secondary full hidden" type="button">Open Job Application</button>
+          <button id="restoreMasterBtn" class="btn secondary full hidden" type="button">Restore master resume</button>
+          <button id="retryPipelineBtn" class="btn secondary full hidden" type="button">Retry from this step</button>
         </div>
       </section>
 
@@ -173,8 +179,15 @@
     <div id="status" class="status" role="status">Ready</div>
     <div id="actionBar" class="action-bar hidden">
       <button id="generateBtn" class="btn generate-btn" disabled>✦ &nbsp;Analyze &amp; Tailor Resume</button>
+      <ol id="pipelineStepper" class="pipeline-stepper hidden" aria-live="polite" aria-label="Resume generation progress">
+        <li data-pipeline-step="1">Generate tailored resume</li><li data-pipeline-step="2">Save to Downloads</li>
+        <li data-pipeline-step="3">Open Naukri profile</li><li data-pipeline-step="4">Upload resume</li><li data-pipeline-step="5">Return to job</li>
+      </ol>
     </div>
   </main>
+  <dialog id="uploadConfirmDialog" class="upload-confirm-dialog">
+    <form method="dialog"><h2>Replace your Naukri resume?</h2><p>This will replace the resume on your Naukri profile with the tailored version. Recruiters will see it until you restore your master resume.</p><label class="pipeline-setting"><input id="dontAskUploadAgain" type="checkbox" /> Don’t ask again</label><div class="job-actions"><button id="cancelUploadConfirm" class="btn secondary" value="cancel">Cancel</button><button id="acceptUploadConfirm" class="btn primary" value="confirm">Continue</button></div></form>
+  </dialog>
   <script src="sidepanel.js"></script>
 </body>
 </html>

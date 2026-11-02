@@ -17,6 +17,8 @@ function showNaukriDock(tabId, url) {
   let parsed;
   try { parsed = new URL(url || ''); } catch { return; }
   if (!parsed.hostname.endsWith('naukri.com')) return;
+  // Keep the profile upload page unobstructed while the pipeline interacts with its file input.
+  if (/^\/mnjuser\/(profile|login)(\/|$)/i.test(parsed.pathname)) return;
 
   const token = crypto.randomUUID();
   const panelUrl = new URL(chrome.runtime.getURL('sidepanel.html'));

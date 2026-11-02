@@ -28,6 +28,15 @@ let suggestionData = null;
 let suggestionRequestPromise = null;
 let suggestionController = null;
 let tailoredWorkingCopy = '';
+let resumePipelineRunning = false;
+let pipelineRetryContext = null;
+let pipelineLastState = null;
+let restoreMonitorTimer = null;
+const uploadedResumeHashes = new Set();
+const NAUKRI_SELECTORS = {
+  resumeInputs: ['#attachCV', 'input[type="file"][name*="resume" i]', '.resume input[type="file"]', '[class*="resume" i] input[type="file"]', '[data-testid*="resume" i] input[type="file"]'],
+  successText: ['resume uploaded', 'resume updated', 'successfully uploaded', 'updated successfully', 'resume has been uploaded']
+};
 const resumeProfileLookups = new Map();
 
 function renderRecruiterContact(state = 'checking') {
@@ -508,6 +517,21 @@ function updateActionBar() {
 function updatePrimaryAction() {
   const button = $('generateBtn');
   if (!button) return;
+  if (resumePipelineRunning) {
+    button.disabled = true;
+    button.textContent = `Working… (${pipelineLastState?.step || 1}/5)`;
+    return;
+  }
+  if (pipelineLastState?.state === 'failed') {
+    button.disabled = false;
+    button.textContent = `Retry step ${pipelineLastState.step}`;
+    return;
+  }
+  if (pipelineLastState?.state === 'done' && pipelineLastState.step === 5) {
+    button.disabled = false;
+    button.textContent = 'Done. Download again';
+    return;
+  }
   if (analysisPromise && !lastAnalysis) {
     button.disabled = true;
     button.textContent = 'Refining with AI…';
@@ -576,11 +600,15 @@ async function loadSettings() {
     'generatedResumes',
     'profileResume',
     'profileResumeUpdate'
+    ,'fullName','autoUploadToNaukri','restoreMasterAfterApply'
   ]);
 
   apiBase = saved.apiBase || DEFAULT_API;
 
   $('apiBase').value = apiBase;
+    $('fullNameInput').value = saved.fullName || '';
+  $('autoUploadSetting').checked = saved.autoUploadToNaukri !== false;
+  $('restoreMasterSetting').checked = saved.restoreMasterAfterApply === true;
   void fetch(`${apiBase}/health`).catch(() => {});
 
   const masterText = saved.masterResumeText || saved.resumeText || '';
@@ -690,6 +718,18 @@ $('jobDescription').addEventListener('input', () => {
 
 $('jobUrl').addEventListener('input', updateJobApplicationButton);
 $('openJobBtn').addEventListener('click', openJobApplication);
+$('retryPipelineBtn').addEventListener('click', () => {
+  if (!pipelineRetryContext || resumePipelineRunning) return;
+  runResumePipeline(pipelineRetryContext.job, pipelineRetryContext.startStep, pipelineRetryContext.file).catch(error => setStatus(error.message, 'error'));
+});
+$('restoreMasterBtn').addEventListener('click', async () => {
+  if (resumePipelineRunning) return;
+  const master = await readResumeFile('master');
+  if (!master?.file) return setStatus('Master resume file is not available. Upload it again to restore.', 'error');
+  await runResumePipeline(currentJobPayload(), 3, { id: 'master', filename: master.name || resumeFileName || 'MasterResume.docx', blob: master.file, restore: true });
+});
+$('autoUploadSetting').addEventListener('change', () => chrome.storage.local.set({ autoUploadToNaukri: $('autoUploadSetting').checked }));
+$('restoreMasterSetting').addEventListener('change', () => chrome.storage.local.set({ restoreMasterAfterApply: $('restoreMasterSetting').checked }));
 
 $('clearResumeBtn').addEventListener('click', async () => {
   if (!confirm('Clear the saved resume text from this browser?')) return;
@@ -747,7 +787,10 @@ $('saveSettings').addEventListener('click', async () => {
     apiBase = value;
 
     await chrome.storage.local.set({
-      apiBase
+      apiBase,
+      fullName: $('fullNameInput').value.trim(),
+      autoUploadToNaukri: $('autoUploadSetting').checked,
+      restoreMasterAfterApply: $('restoreMasterSetting').checked
     });
 
     setStatus('Backend URL saved successfully.', 'success');
@@ -1858,127 +1901,272 @@ async function loadSavedJobs() {
 }
 
 // ------------------------------
-// GENERATE TAILORED DOCX
-// ------------------------------
+// One-job resume pipeline. Uploading only populates Naukri's resume file input;
+// this extension never submits an application or presses an upload/save button.
+function setPipelineStep(step, state) {
+  const row = document.querySelector(`[data-pipeline-step="${step}"]`);
+  if (row) { row.dataset.state = state; row.setAttribute('aria-current', state === 'running' ? 'step' : 'false'); }
+  pipelineLastState = { step, state };
+  $('generateBtn').textContent = state === 'running' ? `Working… (${step}/5)` : state === 'done' && step === 5 ? 'Done. Download again' : `Working… (${step}/5)`;
+}
 
-$('generateBtn').addEventListener('click', async () => {
-  if (!lastAnalysis) {
-    await analyzeCurrentMatch(false);
-    return;
-  }
+function resetPipelineStepper() {
+  $('pipelineStepper').classList.remove('hidden');
+  document.querySelectorAll('[data-pipeline-step]').forEach(row => { delete row.dataset.state; row.removeAttribute('aria-current'); });
+}
 
-  if (generatedBlobUrl && generatedFilename) {
-    try {
-      await chrome.downloads.download({
-        url: generatedBlobUrl,
-        filename: `MenixJobAI/${generatedFilename}`,
-        saveAs: true
-      });
-      setStatus(`Downloading ${generatedFilename}.`, 'success');
-    } catch (error) {
-      setStatus(`Could not download the tailored resume: ${error.message}`, 'error');
-    }
-    return;
-  }
+function delay(ms) { return new Promise(resolve => window.setTimeout(resolve, ms)); }
 
-  const resumeText = $('resumeText').value.trim();
-  const jobDescription = $('jobDescription').value.trim();
+function localPipelineFilename(fullName, masterText) {
+  const source = fullName?.trim() || masterText.split(/\r?\n/).find(line => line.trim()) || 'Candidate';
+  const firstPart = safeFilenamePart(source.split(/\s+/)[0]).replace(/_/g, '') || 'Candidate';
+  const today = new Date();
+  const date = [String(today.getDate()).padStart(2, '0'), String(today.getMonth() + 1).padStart(2, '0'), today.getFullYear()].join('-');
+  return `${firstPart}_${date}.docx`;
+}
 
-  if (!resumeText) return setStatus('Add your master resume before generating a tailored resume.', 'error');
-  if (!jobDescription) return setStatus('Add the job description before generating a tailored resume.', 'error');
-  if (!lastAnalysis) {
-    return setStatus(
-      'Analyze the job and resume first.',
-      'error'
-    );
-  }
-
+async function downloadResumeBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
   try {
-    $('generateBtn').disabled = true;
+    return await chrome.downloads.download({ url, filename: `MenixJobAI/${filename}`, saveAs: false, conflictAction: 'uniquify' });
+  } finally { window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+}
 
-    $('generateBtn').textContent = 'Generating DOCX...';
-
-    const response = await fetch(
-      `${apiBase}/ai/tailor-docx`,
-      {
-        method: 'POST',
-
-        headers: {
-          'Content-Type': 'application/json'
-        },
-
-        body: JSON.stringify({
-          resumeText: tailoredWorkingCopy || resumeText,
-          jobDescription,
-          fullName: 'Mohit Saini'
-        })
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(await responseError(response));
-    }
-
-    const blob = await response.blob();
-
-    const job = currentJobPayload();
-    const filename = [
-      'MohitSaini',
-      safeFilenamePart(job.company),
-      safeFilenamePart(job.title),
-      'Tailored.docx'
-    ].join('_');
-    const generatedId = `generated-${Date.now()}`;
-    generatedBlobUrl = URL.createObjectURL(blob);
-    generatedFilename = filename;
-    await storeResumeFile(generatedId, blob, filename);
-    const downloadId = await chrome.downloads.download({
-      url: generatedBlobUrl,
-      filename: `MenixJobAI/${filename}`,
-      saveAs: true
+async function generateResumeStep(job) {
+  const masterText = $('resumeText').value.trim();
+  const saved = await chrome.storage.local.get(['fullName']);
+  const fullName = saved.fullName || $('fullNameInput').value.trim() || masterText.split(/\r?\n/).find(line => line.trim()) || '';
+  const master = await readResumeFile('master');
+  const requestBody = { resumeText: tailoredWorkingCopy || masterText, jobDescription: $('jobDescription').value.trim(), fullName };
+  if (/\.docx$/i.test(master?.name || resumeFileName) && master?.file) {
+    const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(reader.error); reader.readAsDataURL(master.file); });
+    requestBody.masterDocxBase64 = dataUrl;
+    const originalLines = masterText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const tailoredLines = (tailoredWorkingCopy || masterText).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    requestBody.templateEdits = originalLines.flatMap((before, index) => {
+      const after = tailoredLines[index];
+      return after && after !== before ? [{ before, after }] : [];
     });
-    const generatedAt = new Date().toISOString();
-    const generatedEntry = {
-      id: generatedId,
-      filename,
-      title: job.title,
-      company: job.company,
-      url: job.url,
-      generatedAt,
-      downloadId
-    };
-    generatedResumes = [generatedEntry, ...generatedResumes.filter(entry => entry.id !== generatedId)].slice(0, 10);
-    await chrome.storage.local.set({ generatedResumes });
-    populateGeneratedResumePicker();
+  }
+  const response = await fetch(`${apiBase}/ai/tailor-docx`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
+  if (!response.ok) throw new Error(await responseError(response));
+  const blob = await response.blob();
+  return { blob, filename: localPipelineFilename(fullName, masterText), formatNote: response.headers.get('X-Resume-Format-Note') || '' };
+}
 
-    $('fileResult').classList.remove('hidden');
-    $('fileResultText').textContent =
-      `Downloaded ${filename}. Review it before attaching it to this job.`;
-    $('openJobBtn').classList.toggle('hidden', !/^https?:\/\//i.test(job.url));
-    const storedHistory = await chrome.storage.local.get(['analysisHistory', 'analyzedJobs']);
-    const history = storedHistory.analyzedJobs || storedHistory.analysisHistory || [];
-    const historyIndex = history.findIndex(entry => entry.url === job.url && entry.jobDescription === jobDescription);
-    if (historyIndex >= 0) {
-      history[historyIndex] = { ...history[historyIndex], generatedResumeFilename: filename, generatedAt };
-      await chrome.storage.local.set({ analysisHistory: history, analyzedJobs: history });
+async function saveResumeStep(file, job) {
+  const generatedId = file.id || `generated-${Date.now()}`;
+  const downloadId = file.downloadId || await downloadResumeBlob(file.blob, file.filename);
+  const [downloadItem] = await chrome.downloads.search({ id: downloadId }).catch(() => []);
+  if (downloadItem?.filename) file.filename = downloadItem.filename.split(/[\\/]/).pop();
+  await storeResumeFile(generatedId, file.blob, file.filename);
+  generatedBlobUrl = URL.createObjectURL(file.blob);
+  generatedFilename = file.filename;
+  file.id = generatedId;
+  file.downloadId = downloadId;
+  const generatedAt = new Date().toISOString();
+  generatedResumes = [{ id: generatedId, filename: file.filename, title: job.title, company: job.company, url: job.url, generatedAt, downloadId }, ...generatedResumes.filter(entry => entry.id !== generatedId)].slice(0, 10);
+  await chrome.storage.local.set({ generatedResumes });
+  populateGeneratedResumePicker();
+  return { generatedAt, downloadId };
+}
+
+function isNaukriJob(url) {
+  try { const parsed = new URL(url); return /(^|\.)naukri\.com$/i.test(parsed.hostname) && !/\/mnjuser\/(profile|login)/i.test(parsed.pathname); } catch { return false; }
+}
+
+async function getOrOpenNaukriProfile() {
+  const matches = await chrome.tabs.query({ url: ['https://www.naukri.com/mnjuser/profile*', 'https://naukri.com/mnjuser/profile*'] });
+  const existing = matches.find(tab => tab.id);
+  if (existing) return { tabId: existing.id, opened: false };
+  const tab = await chrome.tabs.create({ url: 'https://www.naukri.com/mnjuser/profile', active: false });
+  if (!tab.id) throw new Error('Could not open the Naukri profile tab.');
+  try { await new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => { cleanup(); reject(new Error('Naukri profile did not finish loading in time.')); }, 25_000);
+    const listener = (tabId, info) => { if (tabId === tab.id && info.status === 'complete') { cleanup(); resolve(); } };
+    const cleanup = () => { clearTimeout(timer); chrome.tabs.onUpdated.removeListener(listener); };
+    chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.get(tab.id).then(current => { if (current.status === 'complete') { cleanup(); resolve(); } }).catch(error => { cleanup(); reject(error); });
+  }); } catch (error) { await chrome.tabs.remove(tab.id).catch(() => {}); throw error; }
+  return { tabId: tab.id, opened: true };
+}
+
+async function uploadToNaukri(profile, file) {
+  const tab = await chrome.tabs.get(profile.tabId);
+  if (!tab.url || /naukri\.com\/(login|mnjuser\/login)/i.test(tab.url)) throw new Error('Log in to Naukri first');
+  if (!/(^|\.)naukri\.com$/i.test(new URL(tab.url).hostname)) throw new Error('Naukri profile tab is no longer available.');
+  const digest = await crypto.subtle.digest('SHA-256', await file.blob.arrayBuffer());
+  const hash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+  if (uploadedResumeHashes.has(hash)) return { skippedDuplicate: true };
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file.blob); });
+  const result = await chrome.scripting.executeScript({ target: { tabId: profile.tabId }, args: [dataUrl, file.filename, NAUKRI_SELECTORS], func: async (base64, filename, selectors) => {
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const visible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+    let input = null;
+    for (const selector of selectors.resumeInputs) { try { input = [...document.querySelectorAll(selector)].find(visible) || null; } catch {} if (input) break; }
+    if (!input) {
+      const resumeArea = [...document.querySelectorAll('section,article,[class*="resume" i],[id*="resume" i]')].find(el => visible(el) && /resume/i.test(el.innerText || ''));
+      input = resumeArea ? [...resumeArea.querySelectorAll('input[type="file"]')].find(visible) || resumeArea.querySelector('input[type="file"]') : null;
     }
+    if (!input) return { ok: false, error: 'Resume upload input was not found. Open the Resume section on Naukri and try again.' };
+    const resumeArea = [...document.querySelectorAll('section,article,[class*="resume" i],[id*="resume" i]')].find(el => /resume/i.test(el.innerText || ''));
+    const oldResumeName = (resumeArea?.innerText || '').split('\n').map(line => line.trim()).find(line => /\.docx$|\.pdf$/i.test(line)) || '';
+    const binary = atob(base64); const bytes = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const file = new File([bytes], filename, { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    const transfer = new DataTransfer(); transfer.items.add(file); input.files = transfer.files;
+    input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
+    const baselineText = (document.body?.innerText || '').toLowerCase();
+    const started = Date.now();
+    while (Date.now() - started < 15000) {
+      const text = (document.body?.innerText || '').toLowerCase();
+      if (text !== baselineText && selectors.successText.some(phrase => text.includes(phrase))) return { ok: true, previousResumeName: oldResumeName };
+      await sleep(300);
+    }
+    return { ok: false, error: 'Naukri did not confirm the resume update within 15 seconds. Check the profile and retry.' };
+  }});
+  const outcome = result?.[0]?.result;
+  if (!outcome?.ok) throw new Error(outcome?.error || 'Naukri upload could not be verified.');
+  uploadedResumeHashes.add(hash);
+  return outcome;
+}
 
-    setStatus(
-      `Tailored resume downloaded. Review ${filename} before applying.`,
-      'success'
-    );
+async function confirmNaukriReplacement() {
+  const saved = await chrome.storage.local.get(['naukriUploadConfirmedOnce']);
+  if (saved.naukriUploadConfirmedOnce) return true;
+  const dialog = $('uploadConfirmDialog');
+  $('dontAskUploadAgain').checked = false;
+  dialog.showModal();
+  const confirmed = await new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true }));
+  if (confirmed && $('dontAskUploadAgain').checked) await chrome.storage.local.set({ naukriUploadConfirmedOnce: true });
+  return confirmed;
+}
 
+async function updatePipelineHistory(job, file, uploaded, failedStep = null) {
+  const stored = await chrome.storage.local.get(['resumePipelineHistory']);
+  const history = Array.isArray(stored.resumePipelineHistory) ? stored.resumePipelineHistory : [];
+  history.unshift({ jobUrl: job.url, filename: file?.filename || '', previousResumeName: file?.previousResumeName || '', uploaded: Boolean(uploaded), timestamp: new Date().toISOString(), failedStep });
+  await chrome.storage.local.set({ resumePipelineHistory: history.slice(0, 50) });
+}
+
+function watchForApplicationConfirmation(job) {
+  if (restoreMonitorTimer) window.clearInterval(restoreMonitorTimer);
+  restoreMonitorTimer = window.setInterval(async () => {
+    if (resumePipelineRunning) return;
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+    const tab = tabs[0];
+    if (!tab?.id || !tab.url || !isNaukriJob(tab.url)) return;
+    const signals = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      return ['application submitted successfully', 'successfully applied', 'application sent successfully', 'thank you for applying', 'your application has been submitted'].some(signal => text.includes(signal));
+    }}).catch(() => []);
+    if (!signals[0]?.result) return;
+    window.clearInterval(restoreMonitorTimer); restoreMonitorTimer = null;
+    const master = await readResumeFile('master');
+    if (!master?.file) return setStatus('Application confirmed. Master resume file is unavailable, so automatic restore could not run.', 'error');
+    setStatus('Naukri confirmed the application. Restoring your master resume…', 'success');
+    await runResumePipeline(job, 3, { id: 'master', filename: master.name || resumeFileName || 'MasterResume.docx', blob: master.file, restore: true });
+  }, 5000);
+}
+
+async function runResumePipeline(job, startStep = 1, existingFile = null) {
+  if (resumePipelineRunning) return setStatus('A resume update is already running.', 'error');
+  resumePipelineRunning = true;
+  let file = existingFile;
+  let profile = null;
+  let originalTabId = null;
+  let uploaded = Boolean(existingFile?.uploaded);
+  let currentStep = startStep;
+  let failure = null;
+  $('generateBtn').disabled = true;
+  $('fileResult').classList.add('hidden');
+  $('retryPipelineBtn').classList.add('hidden');
+  resetPipelineStepper();
+  try {
+    const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    originalTabId = active[0]?.id || null;
+    const autoUpload = !existingFile?.restore && $('autoUploadSetting').checked;
+    const uploadEligible = autoUpload && isNaukriJob(job.url);
+    if (startStep <= 1) {
+      currentStep = 1; setPipelineStep(1, 'running');
+      file = await generateResumeStep(job); setPipelineStep(1, 'done'); await delay(3000);
+    }
+    if (startStep <= 2) {
+      currentStep = 2; setPipelineStep(2, 'running');
+      const saved = await saveResumeStep(file, job); file.generatedAt = saved.generatedAt; setPipelineStep(2, 'done');
+      if ($('autoUploadSetting').checked && isNaukriJob(job.url)) await delay(3000);
+    }
+    if (existingFile?.restore) {
+      if (!await confirmNaukriReplacement()) throw new Error('Restore cancelled.');
+      if (startStep <= 3) { currentStep = 3; setPipelineStep(3, 'running'); profile = await getOrOpenNaukriProfile(); setPipelineStep(3, 'done'); await delay(3000); }
+      else profile = await getOrOpenNaukriProfile();
+      if (startStep <= 4) { currentStep = 4; setPipelineStep(4, 'running'); const result = await uploadToNaukri(profile, file); file.previousResumeName = result.previousResumeName || file.previousResumeName; uploaded = true; setPipelineStep(4, 'done'); await delay(3000); }
+      if (startStep <= 5) { currentStep = 5; setPipelineStep(5, 'running'); await finishReturnStep(profile, originalTabId); profile = null; setPipelineStep(5, 'done'); }
+    } else if (uploadEligible) {
+      if (!await confirmNaukriReplacement()) throw new Error('Upload cancelled. The tailored resume is saved in Downloads/MenixJobAI.');
+      if (startStep <= 3) { currentStep = 3; setPipelineStep(3, 'running'); profile = await getOrOpenNaukriProfile(); setPipelineStep(3, 'done'); await delay(3000); }
+      else profile = await getOrOpenNaukriProfile();
+      if (startStep <= 4) { currentStep = 4; setPipelineStep(4, 'running'); const result = await uploadToNaukri(profile, file); file.previousResumeName = result.previousResumeName || file.previousResumeName; uploaded = true; setPipelineStep(4, 'done'); await delay(3000); }
+      if (startStep <= 5) { currentStep = 5; setPipelineStep(5, 'running'); await finishReturnStep(profile, originalTabId); profile = null; setPipelineStep(5, 'done'); }
+    } else {
+      [3,4,5].forEach(step => setPipelineStep(step, 'pending'));
+      $('fileResultText').textContent = $('autoUploadSetting').checked ? 'Saved to Downloads/MenixJobAI. Auto-upload is available on a Naukri job page.' : 'Saved to Downloads/MenixJobAI. Auto-upload is off.';
+    }
+    await updatePipelineHistory(job, file, uploaded);
+    $('fileResult').classList.remove('hidden');
+    $('openJobBtn').classList.toggle('hidden', !/^https?:\/\//i.test(job.url));
+    $('restoreMasterBtn').classList.toggle('hidden', !uploaded || !await readResumeFile('master'));
+    $('retryPipelineBtn').classList.add('hidden');
+    const formatNote = file?.formatNote ? ` ${file.formatNote}` : '';
+    $('fileResultText').textContent = uploaded ? `✓ ${file.filename} · Saved to Downloads/MenixJobAI · Uploaded to Naukri profile. Resume updated. Review it, then click Apply.${formatNote}` : `${$('fileResultText').textContent || `✓ ${file?.filename} · Saved to Downloads/MenixJobAI.`}${formatNote}`;
+    setStatus(uploaded ? 'Resume updated. Review it, then click Apply.' : 'Tailored resume saved. Review it before applying.', 'success');
+    if (uploaded && $('restoreMasterSetting').checked) watchForApplicationConfirmation(job);
   } catch (error) {
-    setStatus(
-      `DOCX generation failed: ${error.message}`,
-      'error'
-    );
-
+    failure = error;
+    if (file && currentStep >= 5) { file.uploaded = true; uploaded = true; }
+    const cancelled = /cancelled/i.test(error.message);
+    if (!cancelled && currentStep >= 1 && currentStep <= 5) setPipelineStep(currentStep, 'failed');
+    await updatePipelineHistory(job, file, uploaded, cancelled ? null : currentStep).catch(() => {});
+    $('fileResult').classList.remove('hidden');
+    $('fileResultText').textContent = cancelled ? `Upload cancelled. ${file ? `${file.filename} is saved to Downloads/MenixJobAI. ` : ''}Your Naukri profile was not changed.` : `${currentStep === 3 ? 'Open Naukri profile' : currentStep === 4 ? 'Upload resume' : currentStep === 5 ? 'Return to job' : currentStep === 2 ? 'Save resume' : 'Generate resume'} failed: ${error.message}. ${file ? `Your file is saved in Downloads/MenixJobAI (${file.filename}). ` : ''}${error.message.includes('Log in to Naukri first') ? 'Log in to Naukri first, then retry.' : 'You can upload it manually from Downloads/MenixJobAI.'}`;
+    $('retryPipelineBtn').classList.toggle('hidden', cancelled || !file || currentStep < 3 || currentStep > 5);
+    pipelineRetryContext = cancelled ? null : { job, startStep: currentStep, file };
+    setStatus(cancelled ? 'Upload cancelled. Your Naukri profile was not changed.' : error.message, cancelled ? 'success' : 'error');
   } finally {
+    if (profile?.opened && profile.tabId) await chrome.tabs.remove(profile.tabId).catch(() => {});
+    if (originalTabId) await chrome.tabs.update(originalTabId, { active: true }).catch(() => {});
+    resumePipelineRunning = false;
     $('generateBtn').disabled = false;
-
+    if (failure && !/cancelled/i.test(failure.message)) $('generateBtn').textContent = `Retry step ${currentStep}`;
+    else if (pipelineLastState?.step === 5) $('generateBtn').textContent = 'Done. Download again';
     updatePrimaryAction();
   }
+}
+
+async function finishReturnStep(profile, originalTabId) {
+  if (profile?.opened) await chrome.tabs.remove(profile.tabId);
+  if (originalTabId) {
+    await chrome.tabs.update(originalTabId, { active: true });
+    await chrome.scripting.executeScript({ target: { tabId: originalTabId }, func: () => {
+      const old = document.getElementById('__menix_resume_updated_notice'); old?.remove();
+      const note = document.createElement('div'); note.id = '__menix_resume_updated_notice'; note.textContent = 'Resume updated. Review it, then click Apply.';
+      note.style.cssText = 'position:fixed;right:400px;top:16px;z-index:2147483646;padding:12px 16px;border-radius:10px;background:#123b27;color:#c5f7d5;font:600 14px system-ui;box-shadow:0 4px 18px #0005';
+      document.documentElement.append(note); setTimeout(() => note.remove(), 10000);
+    }}).catch(() => {});
+  }
+}
+
+$('generateBtn').addEventListener('click', async () => {
+  if (!lastAnalysis) { await analyzeCurrentMatch(false); return; }
+  if (resumePipelineRunning) return;
+  const job = currentJobPayload();
+  if (generatedBlobUrl && generatedFilename) {
+    try { await downloadResumeBlob(await (await fetch(generatedBlobUrl)).blob(), generatedFilename); setStatus(`Downloading ${generatedFilename}.`, 'success'); }
+    catch (error) { setStatus(`Could not download the tailored resume: ${error.message}`, 'error'); }
+    return;
+  }
+  if (!$('resumeText').value.trim()) return setStatus('Add your master resume before generating a tailored resume.', 'error');
+  if (!$('jobDescription').value.trim()) return setStatus('Add the job description before generating a tailored resume.', 'error');
+  await runResumePipeline(job);
 });
 
 function scheduleActiveJobCapture(tabId, delay = 250) {

@@ -388,4 +388,21 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0}
 .suggestion-skeleton{height:92px;border-radius:9px;background:linear-gradient(90deg,#111923 20%,#263140 48%,#111923 76%);background-size:200% 100%;animation:suggestionShimmer 1.4s ease-in-out infinite}
 @keyframes suggestionShimmer{to{background-position:-200% 0}}
 .suggestions-empty,.suggestions-error{margin:4px;color:#d4dbe5;font-size:11px;line-height:1.45}
+.pipeline-setting{display:flex!important;align-items:center;gap:9px;min-height:40px;font-size:12px!important;color:#f8fafc!important}
+.pipeline-setting input{width:16px;height:16px;flex:0 0 16px;margin:0;accent-color:#ff7900}
+.pipeline-stepper{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;margin:8px 0 0;padding:0;list-style:none;color:#a7b0be;font-size:11px;line-height:1.35}
+.pipeline-stepper li{display:flex;align-items:center;gap:6px;min-height:20px}
+.pipeline-stepper li::before{content:'○';color:#8793a3;font-size:12px}
+.pipeline-stepper li[data-state="running"]{color:#ffd09a;font-weight:650}
+.pipeline-stepper li[data-state="running"]::before{content:'◌';color:#ff9a24}
+.pipeline-stepper li[data-state="done"]{color:#9fe6b5}
+.pipeline-stepper li[data-state="done"]::before{content:'✓';color:#22c55e}
+.pipeline-stepper li[data-state="failed"]{color:#ffaaa3}
+.pipeline-stepper li[data-state="failed"]::before{content:'!';color:#ff6659;font-weight:800}
+.file-result{font-size:12px;line-height:1.5}
+.upload-confirm-dialog{width:min(440px,calc(100vw - 32px));border:1px solid #293646;border-radius:16px;background:#111923;color:#f8fafc;padding:20px;box-shadow:0 20px 70px #0009}
+.upload-confirm-dialog::backdrop{background:#0009}
+.upload-confirm-dialog h2{font-size:17px;margin:0 0 10px}
+.upload-confirm-dialog p{font-size:13px;line-height:1.5;color:#d4dbe5}
+.upload-confirm-dialog .job-actions{justify-content:flex-end}
 @media(max-width:350px){.overview-layout{gap:8px}.score-ring-wrap,.score-ring-svg{width:82px;height:82px}.score-ring-wrap{flex-basis:82px}.skills-columns{grid-template-columns:1fr}.skills-columns section+section{border-left:0;border-top:1px solid #344252;padding-top:8px}}
