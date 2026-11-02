@@ -11,8 +11,9 @@
     <header class="topbar">
       <div class="brand-mark"><img src="icons/icon48.png" alt="" /></div>
       <div class="brand"><strong>MenixJobAI</strong></div>
-      <button id="profileShortcut" class="icon-btn profile-shortcut" title="Profile resume" aria-label="Profile resume">▤</button>
+      <button id="profileShortcut" class="icon-btn profile-shortcut" title="Profile resume" aria-label="Profile resume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.75h8l4 4v12.5H6z"/><path d="M14 3.75v4h4M9 12h6M9 15h4"/><circle cx="16.5" cy="17" r="2.5"/><path d="M13 20c.6-1.1 1.7-1.7 3.5-1.7s2.9.6 3.5 1.7"/></svg></button>
       <button id="settingsToggle" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+      <button id="closeEmbeddedPanel" class="icon-btn embedded-close hidden" type="button" title="Close panel" aria-label="Close MenixJobAI">×</button>
     </header>
 
     <nav class="tabs" aria-label="Main navigation">
@@ -61,20 +62,35 @@
 
       <section id="analysisSection" class="section analysis-section">
         <div id="matchOverview" class="match-overview"></div>
+        <section id="fitChecksCard" class="fit-checks-card hidden" aria-labelledby="fitChecksHeading">
+          <h3 id="fitChecksHeading">Fit checks</h3>
+          <div id="fitChecksList" class="fit-checks-list"></div>
+        </section>
         <details id="skillsAnalysis" class="skills-analysis" open>
-          <summary><span>Skills Analysis</span><span class="skills-toggle">⌃</span></summary>
+          <summary><span>Skills</span><span class="skills-toggle">⌃</span></summary>
           <div class="skills-columns">
-            <section>
-              <h4 id="matchedSkillsHeading">Matched Skills / Keywords</h4>
+            <section class="skill-group">
+              <h4 id="matchedSkillsHeading">Matched technical skills</h4>
               <ul id="matchedSkillsList"></ul>
+              <details id="softSkillsDetails" class="soft-skills-details hidden">
+                <summary id="softSkillSummary">+0 soft skills</summary>
+                <ul id="softSkillsList"></ul>
+              </details>
             </section>
-            <section>
-              <h4 id="missingSkillsHeading">Gaps to Verify</h4>
+            <section class="skill-group">
+              <h4>Equivalent qualifications</h4>
+              <ul id="equivalentSkillsList"></ul>
+              <h4 id="missingSkillsHeading">Missing technical skills</h4>
               <ul id="missingSkillsList"></ul>
+              <h4>Missing keywords</h4>
+              <ul id="missingKeywordsList"></ul>
             </section>
           </div>
         </details>
-        <div id="analysis" class="analysis hidden"></div>
+        <details id="aiSuggestionsDetails" class="ai-suggestions">
+          <summary><span>AI Suggestions</span><span id="suggestionsSummaryHint" class="suggestions-summary-hint">Open to load</span></summary>
+          <div id="analysis" class="analysis"></div>
+        </details>
         <div id="fileResult" class="file-result hidden">
           <div id="fileResultText"></div>
           <button id="openJobBtn" class="btn secondary full hidden" type="button">Open Job Application</button>
@@ -156,7 +172,6 @@
 
     <div id="status" class="status" role="status">Ready</div>
     <div id="actionBar" class="action-bar hidden">
-      <button id="profileActionShortcut" class="profile-action-shortcut" type="button" title="Profile resume" aria-label="Open profile resume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.75h8l4 4v12.5H6z"/><path d="M14 3.75v4h4M9 12h6M9 15h6"/><circle cx="17.5" cy="17.5" r="4.25"/><path d="M16 17.5h3M17.5 16v3"/></svg></button>
       <button id="generateBtn" class="btn generate-btn" disabled>✦ &nbsp;Analyze &amp; Tailor Resume</button>
     </div>
   </main>

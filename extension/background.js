@@ -18,25 +18,33 @@ function showNaukriDock(tabId, url) {
   try { parsed = new URL(url || ''); } catch { return; }
   if (!parsed.hostname.endsWith('naukri.com')) return;
 
-  const isJobListing = /\/job-listings?-/i.test(parsed.pathname);
+  const token = crypto.randomUUID();
+  const panelUrl = new URL(chrome.runtime.getURL('sidepanel.html'));
+  panelUrl.searchParams.set('embedded', '1');
+  panelUrl.searchParams.set('closeToken', token);
   chrome.scripting.executeScript({
     target: { tabId },
-    args: [isJobListing, chrome.runtime.getURL('sidepanel.html?embedded=1')],
-    func: (shouldShow, panelUrl) => {
+    args: [true, panelUrl.href, token],
+    func: (shouldShow, extensionPanelUrl, closeToken) => {
       if (shouldShow && document.getElementById('__menixjobai_dock')) return;
-      document.getElementById('__menixjobai_dock')?.remove();
+      const oldDock = document.getElementById('__menixjobai_dock');
+      oldDock?.__menixCleanup?.();
+      oldDock?.remove();
       if (!shouldShow || !document.documentElement) return;
       const dock = document.createElement('div');
       dock.id = '__menixjobai_dock';
-      dock.style.cssText = 'position:fixed;inset:0 0 0 auto;width:min(390px,100vw);height:100vh;z-index:2147483647;background:#0b1017;box-shadow:-8px 0 28px #0006;';
-      const close = document.createElement('button');
-      close.type = 'button'; close.textContent = '×'; close.setAttribute('aria-label', 'Close MenixJobAI');
-      close.style.cssText = 'position:absolute;z-index:1;top:5px;right:5px;width:25px;height:25px;border:0;border-radius:50%;background:#293646;color:#fff;font:18px/1 sans-serif;cursor:pointer;';
-      close.addEventListener('click', () => dock.remove());
+      dock.style.cssText = 'position:fixed;inset:0 0 0 auto;width:min(390px,100vw);height:100vh;z-index:2147483647;background:#0b1017;box-shadow:-8px 0 28px #0006;overflow:hidden;';
       const frame = document.createElement('iframe');
-      frame.title = 'MenixJobAI'; frame.src = panelUrl;
+      frame.title = 'MenixJobAI'; frame.src = extensionPanelUrl;
       frame.style.cssText = 'width:100%;height:100%;border:0;';
-      dock.append(frame, close);
+      const onClose = event => {
+        if (event.source !== frame.contentWindow || event.data?.type !== 'MENIX_CLOSE_PANEL' || event.data?.token !== closeToken) return;
+        dock.__menixCleanup?.();
+        dock.remove();
+      };
+      dock.__menixCleanup = () => window.removeEventListener('message', onClose);
+      window.addEventListener('message', onClose);
+      dock.append(frame);
       document.documentElement.append(dock);
     }
   }).catch(error => console.debug('MenixJobAI could not show the Naukri panel:', error));
@@ -53,3 +61,13 @@ chrome.webNavigation.onHistoryStateUpdated.addListener(details => {
   if (details.frameId !== 0) return;
   showNaukriDock(details.tabId, details.url);
 });
+
+function showDockOnActiveNaukriTab() {
+  chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(tabs => {
+    const tab = tabs[0];
+    if (tab?.id && tab.url) showNaukriDock(tab.id, tab.url);
+  }).catch(() => {});
+}
+
+chrome.runtime.onInstalled.addListener(showDockOnActiveNaukriTab);
+chrome.runtime.onStartup?.addListener(showDockOnActiveNaukriTab);

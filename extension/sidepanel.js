@@ -21,6 +21,14 @@ let automaticAnalysisTimer = null;
 let lastAutomaticAnalysisInput = '';
 let analysisPromise = null;
 let recruiterContact = null;
+let overviewController = null;
+let quickOverview = null;
+let aiRefinementFailed = false;
+let suggestionData = null;
+let suggestionRequestPromise = null;
+let suggestionController = null;
+let tailoredWorkingCopy = '';
+const resumeProfileLookups = new Map();
 
 function renderRecruiterContact(state = 'checking') {
   const content = $('recruiterContactContent');
@@ -66,6 +74,7 @@ function renderRecruiterContact(state = 'checking') {
 
 const RESUME_DB_NAME = 'menixjobai-resumes';
 const RESUME_STORE_NAME = 'files';
+const TECH_SKILL_GROUPS = `javascript|js;typescript|ts;python;java;c++;c#|c sharp;go language|golang;rust;php;ruby;kotlin;swift;scala;objective-c;dart;elixir;clojure;haskell;sql;html;css;sass;less;react|react.js|reactjs;angular;vue|vue.js;next.js|nextjs;nuxt; svelte;node.js|nodejs|node;express|express.js;nestjs;django;flask;fastapi;spring boot|spring;asp.net|.net;laravel;rails;graphql;rest api;grpc;websocket;redux;zustand;tailwind css|tailwind;bootstrap;webpack;vite;babel;jest;vitest;cypress;playwright;selenium;git;github;gitlab;docker;kubernetes|k8s;helm;terraform;ansible;jenkins;github actions;circleci;linux;bash;powershell;aws;azure;google cloud|gcp;cloud computing;serverless;lambda;ec2;s3;cloudfront;postgresql|postgres;mysql;mariadb;sqlite;mongodb|mongo;redis;elasticsearch;opensearch;cassandra;dynamodb;oracle database;sql server;neo4j;firebase;supabase;prisma;hibernate;jpa;apache kafka|kafka;rabbitmq;spark;apache spark;hadoop;airflow;dbt;etl;data warehousing;machine learning|ml;deep learning;natural language processing|nlp;computer vision;tensorflow;pytorch;scikit-learn|sklearn;pandas;numpy;opencv;generative ai;llm|large language model;prompt engineering;data analysis;data science;power bi;tableau;excel;looker;figma;agile;scrum;microservices;distributed systems;system design;api design;oauth;jwt;cybersecurity;penetration testing;unit testing;integration testing;test automation;accessibility;seo;wordpress;shopify;android;ios;react native;flutter;unity;unreal engine;blockchain;solidity;web3;networking;tcp/ip;dns;load balancing;nginx;apache;prometheus;grafana;datadog;open telemetry|opentelemetry;feature flags;content management system|cms;customer relationship management|crm;product analytics;financial modeling;investment analysis;portfolio management;business intelligence|bi;data visualization;requirements analysis;technical writing;project management;program management;product management;quality assurance|qa;software testing;computer science;object-oriented programming|oop;functional programming;design patterns;data structures;algorithms;data modeling;database design;data engineering;business development;advisory services;venture capital;private equity;financial services`.split(';').map(group => group.trim().split('|').map(alias => alias.trim())).filter(group => group[0]);
 
 // ------------------------------
 // STATUS
@@ -82,6 +91,126 @@ function setStatus(message, type = 'info') {
 
 function cleanText(value) {
   return (value || '').replace(/\s+/g, ' ').trim();
+}
+
+function matchScoreFromComponents(scores) {
+  const weights = { skills: 0.45, keywords: 0.25, experience: 0.20, education: 0.10 };
+  let total = 0;
+  let weight = 0;
+  Object.entries(weights).forEach(([key, value]) => {
+    const score = scores?.[key];
+    if (score === null || score === undefined || !Number.isFinite(Number(score))) return;
+    total += Math.max(0, Math.min(100, Number(score))) * value;
+    weight += value;
+  });
+  return weight ? Math.round(total / weight) : null;
+}
+
+function escapeRegex(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function containsTerm(text, term) {
+  const escaped = escapeRegex(term);
+  return new RegExp(`(^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, 'i').test(text);
+}
+
+function localQuickScore(resumeText, jobDescription) {
+  const resume = ` ${cleanText(resumeText).toLowerCase()} `;
+  const job = ` ${cleanText(jobDescription).toLowerCase()} `;
+  const requiredSkills = TECH_SKILL_GROUPS.filter(group => group.some(alias => containsTerm(job, alias)));
+  const matchedGroups = requiredSkills.filter(group => group.some(alias => containsTerm(resume, alias)));
+  const matchedTechnical = matchedGroups.map(group => group[0]);
+  const missingTechnical = requiredSkills.filter(group => !matchedGroups.includes(group)).map(group => group[0]);
+  const keywords = [...new Set((cleanText(jobDescription).toLowerCase().match(/[a-z][a-z0-9+#.]{3,}/g) || []))]
+    .filter(word => !new Set(['experience', 'required', 'preferred', 'candidate', 'candidates', 'years', 'year', 'ability', 'strong', 'excellent', 'including', 'working', 'knowledge', 'skills', 'responsibilities', 'qualification', 'qualifications']).has(word))
+    .filter(word => !TECH_SKILL_GROUPS.some(group => group.some(alias => containsTerm(` ${word} `, alias))))
+    .slice(0, 24);
+  const matchedKeywords = keywords.filter(word => containsTerm(resume, word));
+  const missingKeywords = keywords.filter(word => !containsTerm(resume, word)).slice(0, 8);
+  const softTerms = ['communication', 'leadership', 'teamwork', 'problem solving', 'collaboration', 'adaptability', 'mentoring', 'critical thinking', 'time management'];
+  const matchedSoft = softTerms.filter(term => containsTerm(job, term) && containsTerm(resume, term));
+  const requiredYears = jobDescription.match(/\b(?:minimum|min\.?|at least)?\s*(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\b/i)
+    || jobDescription.match(/\b(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?experience\b/i);
+  const candidateYears = resumeText.match(/\b(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?experience\b/i);
+  const degreeRequired = /\b(?:bachelor|b\.?tech|b\.?e\.?|b\.?s\.?|master|m\.?tech|m\.?s\.?|ph\.?d|degree)\b/i.test(jobDescription);
+  const degreeCandidate = cleanText(resumeText).match(/\b(?:B\.?Tech(?:nology)?|B\.?E\.?|B\.?Sc\.?|M\.?Tech(?:nology)?|M\.?E\.?|M\.?Sc\.?|M\.?B\.?A\.?|Ph\.?D|Bachelor(?:'s)?|Master(?:'s)?)\b[^\n,;]*/i);
+  let experienceScore = null;
+  if (requiredYears && candidateYears) {
+    const minYears = Number(requiredYears[1]);
+    experienceScore = minYears > 0 ? Math.min(100, Math.round(Number(candidateYears[1]) / minYears * 100)) : 100;
+  }
+  const educationScore = !degreeRequired ? null : degreeCandidate ? (containsTerm(job, 'related') || containsTerm(job, 'equivalent') ? 80 : 70) : 0;
+  const scores = {
+    skills: requiredSkills.length ? Math.round(matchedGroups.length / requiredSkills.length * 100) : null,
+    experience: experienceScore,
+    keywords: keywords.length ? Math.round(matchedKeywords.length / keywords.length * 100) : null,
+    education: educationScore
+  };
+  const score = matchScoreFromComponents(scores);
+  return {
+    scores,
+    matchScore: score,
+    matchLevel: score === null ? 'Not scored' : score >= 80 ? 'Strong Match' : score >= 65 ? 'Good Match' : score >= 40 ? 'Partial Match' : 'Low Match',
+    confidence: 'low',
+    verdict: 'Quick estimate based on matching resume and job-description terms.',
+    reasons: [],
+    matchedSkills: { technical: matchedTechnical, soft: matchedSoft },
+    equivalentSkills: [],
+    missingSkills: missingTechnical,
+    missingKeywords,
+    fitChecks: [],
+    experience: {
+      requiredMin: requiredYears ? Number(requiredYears[1]) : null,
+      requiredMax: requiredYears?.[2] ? Number(requiredYears[2]) : requiredYears ? Number(requiredYears[1]) : null,
+      candidateYears: candidateYears ? Number(candidateYears[1]) : null,
+      note: requiredYears ? 'Estimated from visible years-of-experience text.' : 'The job description does not state an experience requirement.'
+    },
+    model: 'local-quick-estimate',
+    cached: false,
+    latencyMs: 0
+  };
+}
+
+async function overviewCacheKey(resumeText, jobDescription) {
+  const digestText = sha256Hex;
+  const normalizedResume = cleanText(resumeText);
+  const normalizedJob = cleanText(jobDescription
+    .replace(/^\s*(?:about (?:the )?company|walk[- ]in (?:details|interview)|follow us|connect with us|privacy policy|terms of use)\b.*$/gim, ' ')
+    .replace(/^\s*(?:home|jobs|login|sign up|download app)\s*(?:\|.*)?$/gim, ' ')
+    .slice(0, 6000)).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const resumeHash = await digestText(normalizedResume);
+  return `matchOverview:${await digestText(`${resumeHash}\n${normalizedJob}\ngemini-2.5-flash\noverview-v2`)}`;
+}
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function lookupResumeProfile(resumeText, attempt = 0) {
+  const normalized = cleanText(resumeText);
+  if (!normalized) return null;
+  const resumeHash = await sha256Hex(normalized);
+  const localKey = `resumeProfile:${resumeHash}`;
+  const saved = await chrome.storage.local.get([localKey]);
+  if (saved[localKey]?.profile) return { profile: saved[localKey].profile, resumeHash };
+  if (resumeProfileLookups.has(resumeHash)) return resumeProfileLookups.get(resumeHash);
+  const lookup = (async () => {
+    try {
+      const result = await api('/ai/profile', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resumeText: normalized })
+      });
+      if (result.profile) {
+        await chrome.storage.local.set({ [localKey]: { profile: result.profile, resumeHash, savedAt: Date.now() } });
+        return { profile: result.profile, resumeHash };
+      }
+      if (attempt < 6) window.setTimeout(() => { void lookupResumeProfile(resumeText, attempt + 1); }, 1800);
+    } catch { /* Raw resume text remains the fallback while the profile is unavailable. */ }
+    return null;
+  })();
+  resumeProfileLookups.set(resumeHash, lookup);
+  try { return await lookup; }
+  finally { resumeProfileLookups.delete(resumeHash); }
 }
 
 function openResumeDatabase() {
@@ -179,7 +308,7 @@ async function responseError(response) {
     }
   }
   if (response.status >= 500) {
-    return `The analysis backend returned HTTP ${response.status}. The AI route is failing server-side. Check the Render service logs at this request time for /api/ai/tailor-review, verify GEMINI_API_KEY and GEMINI_MODEL, then redeploy the backend after fixing the logged cause.`;
+    return `The analysis backend returned HTTP ${response.status}. Check the Render logs for /api/ai/overview, verify GEMINI_API_KEY and GEMINI_MODEL, then retry.`;
   }
   return `Request failed (${response.status}). Please try again.`;
 }
@@ -309,6 +438,16 @@ function cleanCompanyName(company) {
 }
 
 function invalidateAnalysis() {
+  overviewController?.abort();
+  overviewController = null;
+  analysisPromise = null;
+  quickOverview = null;
+  aiRefinementFailed = false;
+  suggestionData = null;
+  suggestionController?.abort();
+  suggestionController = null;
+  suggestionRequestPromise = null;
+  tailoredWorkingCopy = '';
   if (generatedBlobUrl) URL.revokeObjectURL(generatedBlobUrl);
   generatedBlobUrl = null;
   generatedFilename = '';
@@ -318,8 +457,9 @@ function invalidateAnalysis() {
     window.clearTimeout(automaticAnalysisTimer);
     automaticAnalysisTimer = null;
   }
-  $('analysis').classList.add('hidden');
   $('analysis').replaceChildren();
+  $('aiSuggestionsDetails').open = false;
+  $('suggestionsSummaryHint').textContent = 'Open to load';
   renderAnalysisPlaceholders();
   $('generateBtn').disabled = true;
   updatePrimaryAction();
@@ -368,9 +508,15 @@ function updateActionBar() {
 function updatePrimaryAction() {
   const button = $('generateBtn');
   if (!button) return;
-  if (analysisPromise) {
+  if (analysisPromise && !lastAnalysis) {
     button.disabled = true;
-    button.textContent = 'Analyzing Resume…';
+    button.textContent = 'Refining with AI…';
+  } else if (analysisPromise && lastAnalysis) {
+    button.disabled = false;
+    button.textContent = '↓  Download Tailored Resume (DOCX)';
+  } else if (aiRefinementFailed && !lastAnalysis) {
+    button.disabled = false;
+    button.textContent = 'Retry AI refinement';
   } else if (!lastAnalysis) {
     const ready = Boolean($('resumeText')?.value.trim() && $('jobDescription')?.value.trim());
     button.disabled = !ready;
@@ -435,10 +581,12 @@ async function loadSettings() {
   apiBase = saved.apiBase || DEFAULT_API;
 
   $('apiBase').value = apiBase;
+  void fetch(`${apiBase}/health`).catch(() => {});
 
   const masterText = saved.masterResumeText || saved.resumeText || '';
   if (masterText) {
     $('resumeText').value = masterText;
+    void lookupResumeProfile(masterText);
     if (!saved.masterResumeText) {
       await chrome.storage.local.set({
         masterResumeText: masterText,
@@ -510,10 +658,20 @@ $('profileShortcut').addEventListener('click', () => {
   switchView('profileView');
 });
 
-$('profileActionShortcut').addEventListener('click', () => {
-  $('settings').classList.add('hidden');
-  switchView('profileView');
+$('aiSuggestionsDetails').addEventListener('toggle', () => {
+  if ($('aiSuggestionsDetails').open && !suggestionData) void loadAiSuggestions();
 });
+
+const embeddedPanelParams = new URLSearchParams(window.location.search);
+if (embeddedPanelParams.get('embedded') === '1') {
+  $('closeEmbeddedPanel').classList.remove('hidden');
+  $('closeEmbeddedPanel').addEventListener('click', () => {
+    window.parent.postMessage({
+      type: 'MENIX_CLOSE_PANEL',
+      token: embeddedPanelParams.get('closeToken')
+    }, '*');
+  });
+}
 
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => switchView(tab.dataset.view));
@@ -873,6 +1031,7 @@ $('resumeFile').addEventListener('change', async (event) => {
       masterResumeFileName: file.name,
       masterResumeSize: file.size
     });
+    void lookupResumeProfile(data.text || '');
 
     resumeIsSaved = true;
     resumeFileSize = file.size;
@@ -1089,6 +1248,7 @@ $('saveResumeBtn').addEventListener('click', async () => {
       masterResumeFileName: uploadedMaster?.name || 'Pasted master resume',
       masterResumeSize: uploadedMaster?.size || 0
     });
+    void lookupResumeProfile(text);
 
     resumeIsSaved = true;
     resumeTextEdited = false;
@@ -1117,6 +1277,102 @@ $('saveResumeBtn').addEventListener('click', async () => {
 // ANALYZE JOB AND RESUME
 // ------------------------------
 
+async function loadAiSuggestions() {
+  if (suggestionRequestPromise) return suggestionRequestPromise;
+  const resumeText = $('resumeText').value.trim();
+  const jobDescription = $('jobDescription').value.trim();
+  if (!resumeText || !jobDescription) return;
+  const controller = new AbortController();
+  suggestionController = controller;
+  $('suggestionsSummaryHint').textContent = 'Loading…';
+  const container = $('analysis'); container.replaceChildren();
+  for (let index = 0; index < 3; index++) {
+    const skeleton = document.createElement('div'); skeleton.className = 'suggestion-skeleton'; skeleton.setAttribute('aria-hidden', 'true'); container.append(skeleton);
+  }
+  suggestionRequestPromise = (async () => {
+    try {
+      const resumeProfileResult = await lookupResumeProfile(resumeText);
+      if (controller.signal.aborted) return;
+      const data = await api('/ai/suggestions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resumeText,
+          resumeProfile: resumeProfileResult?.profile || null,
+          resumeHash: resumeProfileResult?.resumeHash || await sha256Hex(cleanText(resumeText)),
+          jobDescription,
+          workingResume: tailoredWorkingCopy || resumeText,
+          jobMeta: { title: cleanText($('jobTitleInput').value), company: cleanText($('companyInput').value), location: cleanText($('locationInput').value) }
+        }),
+        signal: controller.signal
+      });
+      if (controller.signal.aborted) return;
+      suggestionData = data;
+      renderAiSuggestions(data);
+      $('suggestionsSummaryHint').textContent = data.cached ? 'Cached edits' : `${(data.suggestions || []).length} edits`;
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      container.replaceChildren();
+      const message = document.createElement('p'); message.className = 'suggestions-error'; message.textContent = 'AI suggestions could not load.';
+      const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'suggestion-action'; retry.textContent = 'Retry';
+      retry.addEventListener('click', () => { suggestionData = null; void loadAiSuggestions(); });
+      container.append(message, retry);
+      $('suggestionsSummaryHint').textContent = 'Unavailable';
+    } finally {
+      if (suggestionController === controller) {
+        suggestionController = null;
+        suggestionRequestPromise = null;
+      }
+    }
+  })();
+  return suggestionRequestPromise;
+}
+
+function renderAiSuggestions(data) {
+  const container = $('analysis'); container.replaceChildren();
+  const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+  if (!suggestions.length) {
+    const empty = document.createElement('p'); empty.className = 'suggestions-empty'; empty.textContent = 'No resume edits were suggested for this job.'; container.append(empty);
+  }
+  suggestions.forEach((suggestion, index) => {
+    const card = document.createElement('article'); card.className = 'suggestion-card';
+    const title = document.createElement('h4'); title.textContent = `${suggestion.section || 'Resume'} suggestion ${index + 1}`; card.append(title);
+    if (suggestion.before) {
+      const before = document.createElement('div'); before.className = 'suggestion-before';
+      const label = document.createElement('strong'); label.textContent = 'Before';
+      const text = document.createElement('p'); text.textContent = suggestion.before;
+      before.append(label, text); card.append(before);
+    }
+    const after = document.createElement('div'); after.className = 'suggestion-after';
+    const afterLabel = document.createElement('strong'); afterLabel.textContent = 'After';
+    const afterText = document.createElement('p'); afterText.textContent = suggestion.after || '';
+    after.append(afterLabel, afterText); card.append(after);
+    if (suggestion.reason) { const reason = document.createElement('p'); reason.className = 'suggestion-reason'; reason.textContent = `Reason: ${suggestion.reason}`; card.append(reason); }
+    const actions = document.createElement('div'); actions.className = 'suggestion-actions';
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'suggestion-action'; copy.textContent = 'Copy'; copy.setAttribute('aria-label', `Copy suggestion ${index + 1}`);
+    copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(suggestion.after || ''); copy.textContent = 'Copied'; } catch { copy.textContent = 'Copy unavailable'; } });
+    const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'suggestion-action apply'; apply.textContent = 'Apply to resume'; apply.disabled = !suggestion.before;
+    apply.addEventListener('click', () => {
+      const master = $('resumeText').value;
+      tailoredWorkingCopy = tailoredWorkingCopy || master;
+      if (!suggestion.before || !tailoredWorkingCopy.includes(suggestion.before)) {
+        setStatus('The original text was not found in the working copy; no edit was applied.', 'info'); return;
+      }
+      tailoredWorkingCopy = tailoredWorkingCopy.replace(suggestion.before, suggestion.after || '');
+      apply.textContent = 'Applied'; apply.disabled = true;
+      setStatus('Suggestion applied to the tailored working copy. Your master resume is unchanged.', 'success');
+    });
+    actions.append(copy, apply); card.append(actions); container.append(card);
+  });
+  const cautions = Array.isArray(data.cautions) ? data.cautions : [];
+  if (cautions.length) {
+    const details = document.createElement('details'); details.className = 'suggestion-cautions';
+    const summary = document.createElement('summary'); summary.textContent = 'Check before using'; details.append(summary);
+    const list = document.createElement('ul'); cautions.forEach(value => { const li = document.createElement('li'); li.textContent = value; list.append(li); });
+    details.append(list); container.append(details);
+  }
+}
+
 async function analyzeCurrentMatch(automatic) {
   if (analysisPromise) return analysisPromise;
 
@@ -1139,52 +1395,77 @@ async function analyzeCurrentMatch(automatic) {
     );
   }
 
-  let progressTimer;
-  let historyWarning = '';
+  quickOverview = localQuickScore(resumeText, jobDescription);
+  renderAnalysis(quickOverview, 'quick');
+  aiRefinementFailed = false;
+  overviewController?.abort();
+  const controller = new AbortController();
+  overviewController = controller;
   analysisPromise = (async () => {
+    let cacheKey = '';
     try {
-      $('generateBtn').disabled = true;
-      renderAnalysisPlaceholders('Analyzing…');
-      setStatus(automatic ? 'Automatically analyzing this job against your saved resume…' : 'Analyzing job and resume…', 'info');
-      const progress = [
-        'Reading job details…',
-        'Checking master resume…',
-        'Analyzing compatibility…',
-        'Preparing results…'
-      ];
-      let progressIndex = 0;
-      $('generateBtn').textContent = progress[progressIndex];
-      progressTimer = setInterval(() => {
-        progressIndex = (progressIndex + 1) % progress.length;
-        $('generateBtn').textContent = progress[progressIndex];
-      }, 1400);
-
-      const data = await api('/ai/tailor-review', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resumeText, jobDescription })
-      });
-
-      if (data.error) throw new Error(data.error);
-      lastAnalysis = data;
-      renderAnalysis(data);
-      $('generateBtn').disabled = false;
-      updatePrimaryAction();
-      try {
-        await saveAnalysisHistory(data);
-      } catch (error) {
-        historyWarning = `Analysis completed, but history could not be saved: ${error.message}`;
+      cacheKey = await overviewCacheKey(resumeText, jobDescription);
+      const cachedByKey = await chrome.storage.local.get([cacheKey]);
+      const cachedEntry = cachedByKey[cacheKey];
+      const cachedAge = cachedEntry?.savedAt ? Date.now() - cachedEntry.savedAt : Infinity;
+      if (cachedEntry?.overview) {
+        lastAnalysis = cachedEntry.overview;
+        renderAnalysis(lastAnalysis, 'ai');
+        if (cachedAge <= 24 * 60 * 60 * 1000) {
+          setStatus('Refined by AI · cached result', 'success');
+          return;
+        }
       }
 
-      setStatus(historyWarning || 'Analysis complete. Review the suggestions before downloading your resume.',
-        historyWarning ? 'error' : 'success');
+      if (!lastAnalysis) setStatus(automatic ? 'Quick estimate ready. Refining with AI…' : 'Refining the quick estimate with AI…', 'info');
+      const jobMeta = {
+        title: cleanText($('jobTitleInput').value),
+        company: cleanText($('companyInput').value),
+        location: cleanText($('locationInput').value)
+      };
+      const resumeProfileResult = await lookupResumeProfile(resumeText);
+      if (controller.signal.aborted) return;
+      const overviewRequest = {
+        resumeProfile: resumeProfileResult?.profile || null,
+        resumeHash: resumeProfileResult?.resumeHash || await sha256Hex(cleanText(resumeText)),
+        jobDescription,
+        jobMeta
+      };
+      if (!resumeProfileResult?.profile) overviewRequest.resumeText = resumeText;
+      const data = await api('/ai/overview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(overviewRequest),
+        signal: controller.signal
+      });
+      if (controller.signal.aborted) return;
+      if (data.error) throw new Error(data.error);
+      lastAnalysis = normalizeOverviewResult(data);
+      aiRefinementFailed = false;
+      renderAnalysis(lastAnalysis, 'ai');
+      await chrome.storage.local.set({ [cacheKey]: { overview: lastAnalysis, savedAt: Date.now() } });
+      try {
+        await saveAnalysisHistory({ overview: lastAnalysis, review: lastAnalysis, model: lastAnalysis.model, notice: '' });
+      } catch (error) {
+        console.warn('The analysis result could not be added to history:', error.message);
+      }
+      setStatus(lastAnalysis.cached ? 'Refined by AI · backend cache' : 'Refined by AI', 'success');
     } catch (error) {
-      renderAnalysisPlaceholders('Analysis failed');
-      setStatus(`Analysis failed: ${error.message}`, 'error');
+      if (controller.signal.aborted) return;
+      aiRefinementFailed = !lastAnalysis;
+      if (lastAnalysis) {
+        setStatus('AI refinement unavailable. Showing the last refined result.', 'info');
+      } else {
+        lastAnalysis = null;
+        renderAnalysis(quickOverview, 'quick');
+        setStatus('AI refinement unavailable. Retry when the backend is available.', 'error');
+      }
     } finally {
-      clearInterval(progressTimer);
-      analysisPromise = null;
-      updatePrimaryAction();
+      if (overviewController === controller) {
+        overviewController = null;
+        analysisPromise = null;
+        updatePrimaryAction();
+      }
     }
   })();
   updatePrimaryAction();
@@ -1195,127 +1476,132 @@ async function analyzeCurrentMatch(automatic) {
 // DISPLAY AI ANALYSIS
 // ------------------------------
 
-function renderAnalysis(data) {
-  const box = $('analysis');
-  box.classList.remove('hidden');
-  box.replaceChildren();
-  const rawText =
-    data.review?.candidates?.[0]?.content?.parts
-      ?.map(part => part.text || '')
-      .join('\n') ||
-    '';
-  let review = {};
-  const jsonText = rawText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  if (jsonText) {
-    try {
-      review = JSON.parse(jsonText);
-    } catch {
-      review = jsonText.startsWith('{') ? {} : { matchSummary: rawText.trim() };
-    }
+function normalizeOverviewResult(data) {
+  if (data?.overview) data = data.overview;
+  if (data?.scores && typeof data.scores === 'object') {
+    const normalized = { ...data, scores: { ...data.scores } };
+    normalized.matchScore = matchScoreFromComponents(normalized.scores);
+    normalized.matchLevel = normalized.matchScore === null ? 'Not scored' : normalized.matchScore >= 80 ? 'Strong Match' : normalized.matchScore >= 65 ? 'Good Match' : normalized.matchScore >= 40 ? 'Partial Match' : 'Low Match';
+    return normalized;
   }
+  const rawText = data?.review?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('\n') || '';
+  let old = {};
+  try { old = JSON.parse(rawText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); } catch { old = {}; }
+  const scores = {
+    skills: normalizeScore(old.skillsMatchScore), experience: normalizeScore(old.experienceMatchScore),
+    keywords: normalizeScore(old.keywordMatchScore), education: null
+  };
+  return {
+    scores, matchScore: matchScoreFromComponents(scores), matchLevel: old.matchLevel,
+    confidence: 'low', verdict: old.matchSummary || 'Analysis from saved history.', reasons: [],
+    matchedSkills: { technical: normalizeAnalysisItems(old.matchedSkills || old.supportedKeywords), soft: [] },
+    equivalentSkills: [], missingSkills: normalizeAnalysisItems(old.missingSkills),
+    missingKeywords: [], fitChecks: [], experience: { note: 'Older saved analysis did not include experience details.' },
+    model: data?.model || 'saved analysis', cached: false
+  };
+}
+
+function renderAnalysis(data, source = 'ai') {
+  const result = normalizeOverviewResult(data);
+  const score = result.matchScore;
+  const quick = source === 'quick';
+  const overview = $('matchOverview');
+  overview.replaceChildren();
 
   const header = document.createElement('div');
   header.className = 'match-heading';
-  const heading = document.createElement('h3');
-  heading.textContent = 'Match Overview';
-  const ready = document.createElement('span');
-  ready.className = 'match-state';
-  ready.textContent = '✓ AI Review';
-  header.append(heading, ready);
-  const overview = $('matchOverview');
-  overview.replaceChildren();
+  const heading = document.createElement('h3'); heading.textContent = 'Match Overview';
+  const state = document.createElement('span'); state.className = `overview-state ${quick ? 'quick' : 'refined'}`;
+  state.textContent = quick ? 'Quick estimate' : 'Refined by AI';
+  header.append(heading, state);
   overview.append(header);
 
-  const supported = normalizeAnalysisItems(review.matchedSkills || review.supportedKeywords);
-  const gaps = normalizeAnalysisItems(review.missingSkills || review.gapsToVerify);
-  const overallScore = normalizeScore(review.matchScore);
-  const skillsScore = normalizeScore(review.skillsMatchScore);
-  const experienceScore = normalizeScore(review.experienceMatchScore);
-  const keywordScore = normalizeScore(review.keywordMatchScore);
-  const scoreValue = overallScore === null ? '—' : `${overallScore}%`;
-  const scoreCard = document.createElement('div');
-  scoreCard.className = 'match-score-card';
-  const score = document.createElement('div');
-  score.className = 'match-score-ring';
-  const scoreText = document.createElement('strong');
-  scoreText.textContent = scoreValue;
-  const scoreLabel = document.createElement('span');
-  scoreLabel.textContent = scoreValue === '—' ? 'Not scored' : 'AI estimate';
-  score.append(scoreText, scoreLabel);
-  const metrics = document.createElement('div');
-  metrics.className = 'match-metrics';
-  const matchBadge = document.createElement('span');
-  matchBadge.className = 'match-state';
-  matchBadge.textContent = typeof review.matchLevel === 'string' && review.matchLevel.trim()
-    ? `✓ ${review.matchLevel.trim()}`
-    : overallScore === null
-      ? '✓ Analysis complete'
-      : `✓ ${overallScore >= 80 ? 'Strong Match' : overallScore >= 65 ? 'Good Match' : overallScore >= 40 ? 'Partial Match' : 'Low Match'}`;
-  metrics.append(matchBadge);
-  appendMatchMetric(metrics, 'Skills match', formatScore(skillsScore));
-  appendMatchMetric(metrics, 'Experience match', formatScore(experienceScore));
-  appendMatchMetric(metrics, 'Keyword match', formatScore(keywordScore));
-  scoreCard.append(score, metrics);
-  overview.append(scoreCard);
+  const layout = document.createElement('div'); layout.className = 'overview-layout';
+  const ring = document.createElement('div'); ring.className = `score-ring-wrap ${quick ? 'quick-score' : ''}`;
+  ring.setAttribute('role', 'img'); ring.setAttribute('aria-label', score === null ? 'Match score unavailable' : `Match score ${score} percent`);
+  ring.innerHTML = '<svg class="score-ring-svg" viewBox="0 0 92 92" aria-hidden="true"><circle class="score-ring-track" cx="46" cy="46" r="41"/><circle class="score-ring-progress" cx="46" cy="46" r="41"/></svg>';
+  const ringValue = document.createElement('strong'); ringValue.className = 'score-ring-value'; ringValue.textContent = score === null ? 'N/A' : `${score}%`;
+  const circumference = 2 * Math.PI * 41;
+  const ringProgress = ring.querySelector('.score-ring-progress');
+  const startingScore = source === 'ai' ? quickOverview?.matchScore || 0 : 0;
+  if (ringProgress) ringProgress.style.strokeDashoffset = String(circumference * (1 - startingScore / 100));
+  window.requestAnimationFrame(() => { if (ringProgress) ringProgress.style.strokeDashoffset = String(circumference * (1 - (score ?? 0) / 100)); });
+  ring.append(ringValue);
 
-  if (typeof review.matchSummary === 'string' && review.matchSummary.trim()) {
-    const summary = document.createElement('p');
-    summary.className = 'analysis-summary';
-    summary.textContent = review.matchSummary.trim();
-    overview.append(summary);
-    if (summary.textContent.length > 150) {
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'summary-toggle';
-      toggle.textContent = 'Read more';
-      toggle.setAttribute('aria-expanded', 'false');
-      toggle.addEventListener('click', () => {
-        const expanded = summary.classList.toggle('expanded');
-        toggle.textContent = expanded ? 'Show less' : 'Read more';
-        toggle.setAttribute('aria-expanded', String(expanded));
-      });
-      overview.append(toggle);
-    }
-  }
+  const right = document.createElement('div'); right.className = 'overview-details';
+  const level = document.createElement('div'); level.className = `overview-level ${score !== null && score >= 65 ? 'good' : 'caution'}`; level.textContent = result.matchLevel || 'Not scored'; right.append(level);
+  const rows = [
+    ['Skills', result.scores?.skills, 'Explicit technical requirements supported by the resume.'],
+    ['Experience', result.scores?.experience, result.experience?.note || 'The job description does not provide enough experience information.'],
+    ['Keywords', result.scores?.keywords, 'Required job terms found in the resume.'],
+    ['Education', result.scores?.education, 'The job description does not specify an education requirement.']
+  ];
+  const metrics = document.createElement('div'); metrics.className = 'component-scores';
+  rows.forEach(([label, value, reason]) => {
+    const row = document.createElement('div'); row.className = 'component-score'; row.title = value === null || value === undefined ? reason : `${label}: ${value}%`;
+    const top = document.createElement('div'); top.className = 'component-score-label';
+    const name = document.createElement('span'); name.textContent = label;
+    const amount = document.createElement('strong'); amount.textContent = value === null || value === undefined ? 'N/A' : `${value}%`;
+    top.append(name, amount);
+    const track = document.createElement('div'); track.className = 'component-track';
+    const bar = document.createElement('span'); bar.className = 'component-fill'; bar.style.width = value === null || value === undefined ? '0%' : `${value}%`;
+    if (value === null || value === undefined) track.setAttribute('aria-label', reason);
+    else { track.setAttribute('role', 'progressbar'); track.setAttribute('aria-valuemin', '0'); track.setAttribute('aria-valuemax', '100'); track.setAttribute('aria-valuenow', String(value)); track.setAttribute('aria-label', `${label} ${value}%`); }
+    track.append(bar); row.append(top, track); metrics.append(row);
+  });
+  right.append(metrics);
+  layout.append(ring, right); overview.append(layout);
 
-  $('matchedSkillsList').replaceChildren();
-  $('missingSkillsList').replaceChildren();
-  $('matchedSkillsHeading').textContent = `Matched Skills (${supported.length})`;
-  $('missingSkillsHeading').textContent = `Missing Skills (${gaps.length})`;
-  populateSkillItems($('matchedSkillsList'), supported, 'matched');
-  populateSkillItems($('missingSkillsList'), gaps, 'review');
-  if (!supported.length) appendEmptySkillState($('matchedSkillsList'), 'No supported keywords returned');
-  if (!gaps.length) appendEmptySkillState($('missingSkillsList'), 'No gaps to verify returned');
-
-  const suggestions = [];
-  if (typeof review.suggestedSummary === 'string' && review.suggestedSummary.trim()) {
-    suggestions.push(review.suggestedSummary.trim());
+  if (result.verdict) { const verdict = document.createElement('p'); verdict.className = 'overview-verdict'; verdict.textContent = result.verdict; overview.append(verdict); }
+  if (Array.isArray(result.reasons) && result.reasons.length) {
+    const reasons = document.createElement('ul'); reasons.className = 'overview-reasons';
+    result.reasons.slice(0, 3).forEach(item => { const li = document.createElement('li'); li.textContent = item; reasons.append(li); });
+    overview.append(reasons);
   }
-  if (Array.isArray(review.rewrittenBullets)) {
-    suggestions.push(...review.rewrittenBullets.filter(value => typeof value === 'string' && value.trim()).map(value => value.trim()));
-  }
-  const reviewGaps = review.gapsToVerify || review.missingSkills;
-  if (Array.isArray(reviewGaps)) {
-    suggestions.push(...reviewGaps.filter(value => typeof value === 'string' && value.trim()).map(value => `Verify: ${value.trim()}`));
-  }
-  if (Array.isArray(review.cautions)) {
-    suggestions.push(...review.cautions.filter(value => typeof value === 'string' && value.trim()).map(value => `Caution: ${value.trim()}`));
-  }
-  appendReviewList(box, 'AI Suggestions', suggestions);
-
-  if (data.notice) {
-    const notice = document.createElement('p');
-    notice.className = 'analysis-notice';
-    notice.textContent = data.notice;
-    box.append(notice);
-  }
-  if (box.children.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'analysis-notice';
-    empty.textContent = 'No structured suggestions were returned. Please retry the analysis.';
-    box.append(empty);
-  }
+  if (result.confidence) { const confidence = document.createElement('p'); confidence.className = 'confidence-note'; confidence.textContent = `Confidence: ${result.confidence}`; overview.append(confidence); }
+  renderFitChecks(result.fitChecks || []);
+  renderSkillBreakdown(result);
   updateActionBar();
+}
+
+function renderFitChecks(items) {
+  const card = $('fitChecksCard'); const list = $('fitChecksList');
+  list.replaceChildren();
+  if (!items.length) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  items.forEach(item => {
+    const row = document.createElement('div'); row.className = 'fit-check-row';
+    row.setAttribute('role', 'group'); row.setAttribute('aria-label', `${item.type || 'Requirement'} ${item.status || 'warn'}`);
+    const dot = document.createElement('span'); dot.className = `fit-dot ${['ok', 'warn', 'gap'].includes(item.status) ? item.status : 'warn'}`; dot.setAttribute('aria-hidden', 'true');
+    const body = document.createElement('div'); body.className = 'fit-check-copy';
+    const title = document.createElement('strong'); title.textContent = item.type || 'Requirement';
+    const detail = document.createElement('span'); detail.textContent = [item.note, item.required && `Required: ${item.required}`, item.candidate && `Resume: ${item.candidate}`].filter(Boolean).join(' · ');
+    body.append(title, detail); row.append(dot, body); list.append(row);
+  });
+}
+
+function renderSkillBreakdown(result) {
+  const matched = result.matchedSkills || {};
+  const tech = Array.isArray(matched.technical) ? matched.technical : [];
+  const soft = Array.isArray(matched.soft) ? matched.soft : [];
+  renderChipList($('matchedSkillsList'), tech, 'matched');
+  renderChipList($('softSkillsList'), soft, 'soft');
+  $('softSkillSummary').textContent = `+${soft.length} soft skill${soft.length === 1 ? '' : 's'}`;
+  $('softSkillsDetails').classList.toggle('hidden', !soft.length);
+  renderChipList($('equivalentSkillsList'), (result.equivalentSkills || []).map(item => `${item.required} → ${item.evidence}`), 'equivalent');
+  const missing = result.missingSkills || [];
+  $('missingSkillsHeading').textContent = `Missing technical skills (${missing.length})`;
+  renderChipList($('missingSkillsList'), missing, missing.length ? 'missing' : 'none', 'None found');
+  renderChipList($('missingKeywordsList'), result.missingKeywords || [], 'keyword', 'None found');
+  $('matchedSkillsHeading').textContent = `Matched technical skills (${tech.length})`;
+}
+
+function renderChipList(list, values, tone, emptyText = 'None found') {
+  list.replaceChildren();
+  if (!values.length) {
+    const item = document.createElement('li'); item.className = `skill-chip ${tone === 'none' ? 'none' : 'empty'}`; item.textContent = emptyText; list.append(item); return;
+  }
+  values.forEach(value => { const item = document.createElement('li'); item.className = `skill-chip ${tone}`; item.textContent = value; list.append(item); });
 }
 
 function normalizeScore(value) {
@@ -1335,41 +1621,16 @@ function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') {
   header.className = 'match-heading';
   const heading = document.createElement('h3');
   heading.textContent = 'Match Overview';
-  const state = document.createElement('span');
-  state.className = 'match-state pending';
+  const state = document.createElement('span'); state.className = 'overview-state quick';
   state.textContent = stateLabel;
   header.append(heading, state);
-
-  const scoreCard = document.createElement('div');
-  scoreCard.className = 'match-score-card';
-  const score = document.createElement('div');
-  score.className = 'match-score-ring pending';
-  const value = document.createElement('strong');
-  value.textContent = '—';
-  const label = document.createElement('span');
-  label.textContent = 'Not scored';
-  score.append(value, label);
-  const metrics = document.createElement('div');
-  metrics.className = 'match-metrics';
-  appendMatchMetric(metrics, 'Skills match', '—');
-  appendMatchMetric(metrics, 'Experience match', '—');
-  appendMatchMetric(metrics, 'Keyword match', '—');
-  scoreCard.append(score, metrics);
-  const hint = document.createElement('p');
-  hint.className = 'analysis-notice';
-  hint.textContent = stateLabel === 'Analyzing…'
-    ? 'Comparing the saved resume with this job description…'
-    : stateLabel === 'Analysis failed'
-      ? 'Automatic analysis failed. Review the error below and retry when the backend is available.'
-      : 'Scores are calculated automatically when a resume and job description are available.';
-  overview.append(header, scoreCard, hint);
-
-  $('matchedSkillsList').replaceChildren();
-  $('missingSkillsList').replaceChildren();
-  $('matchedSkillsHeading').textContent = 'Matched Skills';
-  $('missingSkillsHeading').textContent = 'Missing Skills';
-  appendEmptySkillState($('matchedSkillsList'), 'Matched keywords will appear after analysis');
-  appendEmptySkillState($('missingSkillsList'), 'Gaps to verify will appear after analysis');
+  const hint = document.createElement('p'); hint.className = 'overview-verdict';
+  hint.textContent = 'A quick estimate appears when a job and resume are available.';
+  overview.append(header, hint);
+  $('fitChecksCard').classList.add('hidden');
+  ['matchedSkillsList', 'softSkillsList', 'equivalentSkillsList', 'missingSkillsList', 'missingKeywordsList'].forEach(id => $(id).replaceChildren());
+  $('matchedSkillsHeading').textContent = 'Matched technical skills';
+  $('missingSkillsHeading').textContent = 'Missing technical skills';
 }
 
 function normalizeAnalysisItems(values) {
@@ -1647,7 +1908,7 @@ $('generateBtn').addEventListener('click', async () => {
         },
 
         body: JSON.stringify({
-          resumeText,
+          resumeText: tailoredWorkingCopy || resumeText,
           jobDescription,
           fullName: 'Mohit Saini'
         })
