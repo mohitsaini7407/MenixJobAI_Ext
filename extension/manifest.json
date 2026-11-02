@@ -24,6 +24,9 @@
     "http://localhost:8080/*",
     "http://127.0.0.1:8080/*"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: https:"
+  },
   "background": {
     "service_worker": "background.js"
   },
@@ -38,5 +41,11 @@
   },
   "side_panel": {
     "default_path": "sidepanel.html"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["sidepanel.html"],
+      "matches": ["https://*.naukri.com/*"]
+    }
+  ]
 }

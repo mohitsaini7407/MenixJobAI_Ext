@@ -34,13 +34,9 @@
 
     <div id="applyView" class="view">
       <section class="job-card">
-        <div class="card-heading">
-          <span class="step-number">1</span>
-          <h2>Job Details</h2>
-          <span id="jobDetected" class="status-badge">Not detected</span>
-        </div>
         <div class="job-title-row">
           <div id="companyMark" class="company-mark" aria-hidden="true">J</div>
+          <img id="companyLogo" class="company-logo hidden" alt="" />
           <div class="job-title-content">
             <h1 id="jobTitle">Open a job listing</h1>
             <p id="jobMeta" class="muted">
@@ -50,15 +46,18 @@
           </div>
         </div>
         <div id="jobTags" class="job-tags"></div>
-        <details id="jobDetails" class="resume-details job-details">
-          <label for="jobTitleInput">Job title<input id="jobTitleInput" /></label>
-          <label for="companyInput">Company<input id="companyInput" /></label>
-          <label for="locationInput">Location<input id="locationInput" /></label>
-          <label for="jobUrl">Job URL<input id="jobUrl" type="url" /></label>
-          <label for="jobDescription">Job description<textarea id="jobDescription" rows="7" placeholder="Paste the visible job description if automatic detection did not work."></textarea></label>
-          <button id="saveJobDetailsBtn" class="btn secondary full" type="button">Save job details</button>
-        </details>
       </section>
+      <section class="section recruiter-contact" aria-labelledby="recruiterContactHeading">
+        <div class="card-heading"><h2 id="recruiterContactHeading">Recruiter Contact</h2><span id="recruiterContactState" class="contact-state">Checking…</span></div>
+        <div id="recruiterContactContent" class="contact-content" aria-live="polite">Checking this job listing…</div>
+      </section>
+      <div class="data-store" aria-hidden="true">
+        <input id="jobTitleInput" />
+        <input id="companyInput" />
+        <input id="locationInput" />
+        <input id="jobUrl" type="url" />
+        <textarea id="jobDescription"></textarea>
+      </div>
 
       <section id="analysisSection" class="section analysis-section">
         <div id="matchOverview" class="match-overview"></div>
@@ -104,7 +103,6 @@
         </details>
       </section>
 
-      <button id="analyzeBtn" class="btn analyze-btn">✦ &nbsp;Analyze &amp; Tailor Resume</button>
     </div>
 
     <section id="profileView" class="view hidden">
@@ -158,7 +156,8 @@
 
     <div id="status" class="status" role="status">Ready</div>
     <div id="actionBar" class="action-bar hidden">
-      <button id="generateBtn" class="btn generate-btn" disabled>↓ &nbsp;Download Tailored Resume (DOCX)</button>
+      <button id="profileActionShortcut" class="profile-action-shortcut" type="button" title="Profile resume" aria-label="Open profile resume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.75h8l4 4v12.5H6z"/><path d="M14 3.75v4h4M9 12h6M9 15h6"/><circle cx="17.5" cy="17.5" r="4.25"/><path d="M16 17.5h3M17.5 16v3"/></svg></button>
+      <button id="generateBtn" class="btn generate-btn" disabled>✦ &nbsp;Analyze &amp; Tailor Resume</button>
     </div>
   </main>
   <script src="sidepanel.js"></script>

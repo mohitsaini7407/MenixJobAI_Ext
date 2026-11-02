@@ -6,11 +6,11 @@ const DEFAULT_API = 'https://menixjobai-api.onrender.com/api';
 let apiBase = DEFAULT_API;
 let lastAnalysis = null;
 let generatedBlobUrl = null;
+let generatedFilename = '';
 let resumeFileName = '';
 let resumeIsSaved = false;
 let resumeFileSize = 0;
 let resumeTextEdited = false;
-let jobWasCaptured = false;
 let profileResume = null;
 let generatedResumes = [];
 let currentJobTabUrl = '';
@@ -20,6 +20,49 @@ let jobMetadata = {};
 let automaticAnalysisTimer = null;
 let lastAutomaticAnalysisInput = '';
 let analysisPromise = null;
+let recruiterContact = null;
+
+function renderRecruiterContact(state = 'checking') {
+  const content = $('recruiterContactContent');
+  const badge = $('recruiterContactState');
+  if (!content || !badge) return;
+  badge.textContent = ({ checking: 'Checking…', error: 'Could not check', none: 'Unavailable' })[state] || 'Available';
+  content.replaceChildren();
+  if (state === 'checking') { content.textContent = 'Checking this job listing…'; return; }
+  if (state === 'error') {
+    content.append(document.createTextNode('Could not inspect this listing. '));
+    const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'contact-link'; retry.textContent = 'Retry';
+    retry.addEventListener('click', () => captureActiveJob()); content.append(retry); return;
+  }
+  const details = recruiterContact || {};
+  if (!(details.name || details.email || details.phone || details.profileUrl || details.websiteUrl)) {
+    content.textContent = 'No recruiter contact details found in this job listing.'; return;
+  }
+  const foundCount = [details.name, details.email, details.phone, details.profileUrl, details.websiteUrl].filter(Boolean).length;
+  badge.textContent = foundCount > 1 ? 'Contact Found' : 'Partially Available';
+  const entries = [
+    ['Recruiter', details.name], ['Email', details.email], ['Phone', details.phone],
+    ['Company', details.company], ['Designation', details.designation]
+  ].filter(([, value]) => value);
+  if (!entries.length && !details.profileUrl && !details.websiteUrl) {
+    content.textContent = 'No recruiter contact details found in this job listing.'; return;
+  }
+  entries.forEach(([label, value]) => {
+    const row = document.createElement('div'); row.className = 'contact-row';
+    const key = document.createElement('strong'); key.textContent = `${label}:`;
+    const text = document.createElement('span'); text.textContent = value;
+    row.append(key, text);
+    if (label === 'Email' || label === 'Phone') {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'contact-link'; button.textContent = `Copy ${label}`;
+      button.addEventListener('click', async () => { try { await navigator.clipboard.writeText(value); button.textContent = 'Copied'; } catch { button.textContent = 'Copy unavailable'; } }); row.append(button);
+    }
+    content.append(row);
+  });
+  for (const [label, value] of [['Open Recruiter Profile', details.profileUrl], ['Open Company Website', details.websiteUrl]]) {
+    if (!value) continue;
+    const link = document.createElement('a'); link.className = 'contact-link'; link.href = value; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = label; content.append(link);
+  }
+}
 
 const RESUME_DB_NAME = 'menixjobai-resumes';
 const RESUME_STORE_NAME = 'files';
@@ -183,20 +226,37 @@ function updateProfileResumeCard() {
   $('confirmProfileUploadBtn').disabled = !profileResume || !$('profileUploadConfirmed').checked;
 }
 
-function updateJobSummary(captured = jobWasCaptured) {
+function updateJobSummary() {
   const title = cleanText($('jobTitleInput').value);
   const company = cleanText($('companyInput').value);
   const location = cleanText($('locationInput').value);
   const hasDescription = Boolean($('jobDescription').value.trim());
   $('jobTitle').textContent = title || 'No job captured yet';
   $('companyMark').textContent = (company || title || 'J').slice(0, 1).toUpperCase();
+  $('companyLogo').onerror = () => {
+    $('companyLogo').classList.add('hidden');
+    $('companyMark').classList.remove('hidden');
+  };
+  let companyLogo = '';
+  try {
+    const parsedLogoUrl = new URL(jobMetadata.companyLogo || '');
+    if (parsedLogoUrl.protocol === 'https:') companyLogo = parsedLogoUrl.href;
+  } catch {
+    companyLogo = '';
+  }
+  if (companyLogo) {
+    if ($('companyLogo').src !== companyLogo) $('companyLogo').src = companyLogo;
+    $('companyLogo').classList.remove('hidden');
+    $('companyMark').classList.add('hidden');
+  } else {
+    $('companyLogo').removeAttribute('src');
+    $('companyLogo').classList.add('hidden');
+    $('companyMark').classList.remove('hidden');
+  }
   $('jobCompanyName').textContent = company || (hasDescription ? 'Job details detected on this page' : 'Open a job listing to detect its details');
   const ratingText = jobMetadata.rating ? `★ ${jobMetadata.rating}` : '';
   $('jobRating').textContent = ratingText;
   $('jobRating').classList.toggle('hidden', !ratingText);
-  const badge = $('jobDetected');
-  badge.textContent = captured ? '✓ Detected' : hasDescription ? 'Saved details' : 'Not detected';
-  badge.classList.toggle('success-badge', captured || hasDescription);
   const tags = $('jobTags');
   tags.replaceChildren();
   const tagValues = [
@@ -217,12 +277,14 @@ function updateJobSummary(captured = jobWasCaptured) {
 
 function createResumeFileIcon(type) {
   if (type === 'DOC') {
-    return `<svg viewBox="0 0 32 36" width="25" height="28" role="img" aria-label="Word document">
-      <path d="M10 2.5h13l6 6V33H10z" fill="#fff" stroke="#185abd" stroke-width="1.5" stroke-linejoin="round"/>
-      <path d="M23 2.5v6h6" fill="#dbeafe" stroke="#185abd" stroke-width="1.3" stroke-linejoin="round"/>
-      <path d="M16 14h9M16 17h9M16 20h9" stroke="#8ab4f8" stroke-width="1.4" stroke-linecap="round"/>
-      <rect x="2" y="12" width="19" height="17" rx="2" fill="#185abd"/>
-      <path d="m5.5 16 1.8 9 2.1-5.8 2.1 5.8 1.8-9" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    return `<svg viewBox="0 0 496 512" width="27" height="28" role="img" aria-label="Microsoft Word document" xmlns="http://www.w3.org/2000/svg">
+      <path fill="#41A5EE" d="M275.3 0H464c17.7 0 32 14.3 32 32v448c0 17.7-14.3 32-32 32H192V0z"/>
+      <path fill="#2B7CD3" d="M192 0h272c17.7 0 32 14.3 32 32v104H192z"/>
+      <path fill="#185ABD" d="M192 136h304v136H192z"/>
+      <path fill="#103F91" d="M192 272h304v104H192z"/>
+      <path fill="#0C2E6B" d="M192 376h304v104c0 17.7-14.3 32-32 32H192z"/>
+      <rect x="0" y="112" width="304" height="288" rx="28" fill="#185ABD"/>
+      <path fill="#fff" d="m59 196 31 0 24 126 32-126h34l32 126 25-126h31l-42 177h-34l-30-119-30 119H98z"/>
     </svg>`;
   }
 
@@ -247,6 +309,9 @@ function cleanCompanyName(company) {
 }
 
 function invalidateAnalysis() {
+  if (generatedBlobUrl) URL.revokeObjectURL(generatedBlobUrl);
+  generatedBlobUrl = null;
+  generatedFilename = '';
   lastAnalysis = null;
   lastAutomaticAnalysisInput = '';
   if (automaticAnalysisTimer) {
@@ -257,6 +322,7 @@ function invalidateAnalysis() {
   $('analysis').replaceChildren();
   renderAnalysisPlaceholders();
   $('generateBtn').disabled = true;
+  updatePrimaryAction();
   $('fileResult').classList.add('hidden');
   updateActionBar();
 }
@@ -295,7 +361,24 @@ function switchView(viewId) {
 function updateActionBar() {
   const isApplyView = !$('applyView').classList.contains('hidden')
     && $('settings').classList.contains('hidden');
-  $('actionBar').classList.toggle('hidden', !isApplyView || (!lastAnalysis && $('fileResult').classList.contains('hidden')));
+  $('actionBar').classList.toggle('hidden', !isApplyView);
+  updatePrimaryAction();
+}
+
+function updatePrimaryAction() {
+  const button = $('generateBtn');
+  if (!button) return;
+  if (analysisPromise) {
+    button.disabled = true;
+    button.textContent = 'Analyzing Resume…';
+  } else if (!lastAnalysis) {
+    const ready = Boolean($('resumeText')?.value.trim() && $('jobDescription')?.value.trim());
+    button.disabled = !ready;
+    button.textContent = ready ? '✦  Analyze & Tailor Resume' : 'Add Resume and Open a Job';
+  } else {
+    button.disabled = false;
+    button.textContent = generatedBlobUrl ? '↓  Download Tailored Resume Again' : '↓  Download Tailored Resume (DOCX)';
+  }
 }
 
 function updateJobApplicationButton() {
@@ -398,6 +481,7 @@ async function loadSettings() {
   updateResumeCard();
   updateJobSummary();
   await captureActiveJob();
+  updateActionBar();
 }
 
 function populateGeneratedResumePicker() {
@@ -426,6 +510,11 @@ $('profileShortcut').addEventListener('click', () => {
   switchView('profileView');
 });
 
+$('profileActionShortcut').addEventListener('click', () => {
+  $('settings').classList.add('hidden');
+  switchView('profileView');
+});
+
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => switchView(tab.dataset.view));
 });
@@ -434,26 +523,6 @@ $('viewResumeBtn').addEventListener('click', () => {
   const details = $('resumeDetails');
   details.open = !details.open;
   if (details.open) details.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-});
-
-$('saveJobDetailsBtn').addEventListener('click', () => {
-  const hasDescription = Boolean($('jobDescription').value.trim());
-  if (!hasDescription) {
-    return setStatus('Enter or paste the visible job description before saving.', 'error');
-  }
-  jobWasCaptured = false;
-  jobMetadata = {
-    ...jobMetadata,
-    experience: extractExperienceTags($('jobDescription').value)[0] || '',
-    location: cleanText($('locationInput').value),
-    salary: ''
-  };
-  updateJobSummary(false);
-  updateJobApplicationButton();
-  invalidateAnalysis();
-  $('jobDetails').open = false;
-  setStatus('Job details saved locally for this review.', 'success');
-  scheduleAutomaticAnalysis();
 });
 
 $('jobDescription').addEventListener('input', () => {
@@ -547,6 +616,9 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     }
     const pageChanged = currentJobTabUrl !== tab.url;
     currentJobTabUrl = tab.url;
+    const isNaukriListing = url.hostname.endsWith('naukri.com') && /\/job-listings?-/i.test(url.pathname);
+    if (isNaukriListing) { recruiterContact = null; renderRecruiterContact('checking'); }
+    else { recruiterContact = null; renderRecruiterContact('none'); }
     if (pageChanged) {
       $('jobTitleInput').value = '';
       $('companyInput').value = '';
@@ -554,8 +626,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       $('jobUrl').value = tab.url;
       $('jobDescription').value = '';
       jobMetadata = {};
-      jobWasCaptured = false;
-      updateJobSummary(false);
+      updateJobSummary();
       updateJobApplicationButton();
       invalidateAnalysis();
     }
@@ -567,7 +638,63 @@ async function captureActiveJob(tabId = null, attempt = 0) {
 
       func: () => {
         const bodyText = document.body?.innerText || '';
-        const companyText = document.querySelector('[data-testid*="company" i], [class*="companyName" i], [class*="company-name" i], [class*="comp-name" i], [class*="jd-header-comp-name" i]')?.textContent?.trim() || '';
+        const visible = element => Boolean(element?.getClientRects().length);
+        const contactText = (() => {
+          const selectors = ['[data-testid*="job-description" i]', '[id*="jobDescription" i]', '[id*="jobDesc" i]', '[class*="job-description" i]', '[class*="jobDescription" i]', '[class*="dang-inner-html" i]', '[class*="job-desc" i]', '[data-job-description]', 'main'];
+          const candidates = selectors.flatMap(selector => Array.from(document.querySelectorAll(selector)))
+            .filter(visible).map(element => element.innerText?.trim() || '')
+            .filter(text => text.length >= 80 && text.length <= 24000).sort((a, b) => a.length - b.length);
+          return candidates[0] || '';
+        })();
+        const recruiterNodes = Array.from(document.querySelectorAll('[class*="recruiter" i], [class*="contact" i], [data-testid*="recruiter" i], [data-testid*="contact" i]')).filter(visible);
+        const recruiterText = recruiterNodes.map(element => element.innerText || '').filter(Boolean).join('\n').slice(0, 6000);
+        const relevantContactText = `${contactText}\n${recruiterText}`;
+        const contactEmails = [...new Set((relevantContactText.match(/[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+/gi) || []).map(value => value.toLowerCase()).filter(value => value.length <= 254 && !/\.(?:png|jpe?g|gif|webp|svg)$/i.test(value)))];
+        const mailto = Array.from(document.querySelectorAll('a[href^="mailto:"]')).filter(anchor => visible(anchor) && (anchor.closest('main') || recruiterNodes.some(node => node.contains(anchor)))).map(anchor => anchor.getAttribute('href').slice(7).split(/[?;]/)[0].trim().toLowerCase()).filter(value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
+        const contactEmail = [...contactEmails, ...mailto][0] || '';
+        const contactPhone = (relevantContactText.match(/(?:\+?\d{1,3}[\s().-]*)?(?:\(?\d{2,5}\)?[\s.-]*)?\d{3,5}[\s.-]*\d{3,5}/g) || []).map(value => value.trim()).find(value => { const digits = value.replace(/\D/g, ''); return digits.length >= 10 && digits.length <= 13; }) || '';
+        const contactLines = relevantContactText.split(/\n+/).map(line => line.trim()).filter(Boolean);
+        const labeledValue = (pattern) => {
+          const line = contactLines.find(value => pattern.test(value));
+          return line?.replace(/^[^:]{1,40}[:\-]\s*/, '').trim().slice(0, 100) || '';
+        };
+        const recruiterName = labeledValue(/(?:recruiter|posted by|contact person|hr contact|hiring manager)\s*[:\-]/i);
+        const recruiterDesignation = labeledValue(/(?:designation|role|title)\s*[:\-]/i);
+        const safeLink = anchor => { try { const parsed = new URL(anchor.href); return parsed.protocol === 'https:' && parsed.hostname.endsWith('naukri.com') ? parsed.href : ''; } catch { return ''; } };
+        const recruiterProfile = Array.from(document.querySelectorAll('a[href]')).filter(anchor => visible(anchor) && recruiterNodes.some(node => node.contains(anchor)) && /recruiter|profile|candidate/i.test(`${anchor.innerText} ${anchor.href}`)).map(safeLink).find(Boolean) || '';
+        const companyWebsite = Array.from(document.querySelectorAll('a[href]')).filter(anchor => visible(anchor) && (anchor.closest('[class*="company" i], [data-testid*="company" i]')) && /website|company site|visit site/i.test(`${anchor.innerText} ${anchor.getAttribute('aria-label') || ''}`)).map(anchor => { try { const parsed = new URL(anchor.href); return parsed.protocol === 'https:' ? parsed.href : ''; } catch { return ''; } }).find(Boolean) || '';
+        const companyElement = document.querySelector('[data-testid*="company" i], [class*="companyName" i], [class*="company-name" i], [class*="comp-name" i], [class*="jd-header-comp-name" i]');
+        const companyText = companyElement?.textContent?.trim() || '';
+        const companyLogo = (() => {
+          if (!companyElement || !companyText) return '';
+          const companyName = companyText
+            .replace(/\s*[★·|]?\s*[0-5](?:\.\d)?\s*[\d,.]+\s*[KMB]?\s*Reviews?.*$/i, '')
+            .trim()
+            .toLowerCase();
+          const companyContainer = companyElement.closest('[class*="company" i], [data-testid*="company" i]')
+            || companyElement.parentElement;
+          const candidates = Array.from(document.querySelectorAll(
+            'img[alt], img[title], [class*="companyLogo" i] img, [class*="company-logo" i] img, [data-testid*="company-logo" i] img'
+          )).filter(image => image.getClientRects().length);
+          const image = candidates
+            .map(candidate => {
+              const label = `${candidate.alt || ''} ${candidate.title || ''} ${candidate.getAttribute('aria-label') || ''}`.toLowerCase();
+              const imageContext = `${candidate.className || ''} ${candidate.parentElement?.className || ''}`.toLowerCase();
+              const nearCompany = Boolean(companyContainer?.contains(candidate));
+              const nameMatches = companyName.length > 3 && label.includes(companyName);
+              const logoIsExplicit = /logo/i.test(imageContext) || /logo/i.test(label);
+              return { candidate, score: (nameMatches ? 4 : 0) + (nearCompany ? 2 : 0) + (logoIsExplicit ? 1 : 0) };
+            })
+            .filter(item => item.score >= 3)
+            .sort((a, b) => b.score - a.score)[0]?.candidate;
+          const imageUrl = image?.currentSrc || image?.src || '';
+          try {
+            const parsed = new URL(imageUrl, location.href);
+            return parsed.protocol === 'https:' ? parsed.href : '';
+          } catch {
+            return '';
+          }
+        })();
         const ratingMatch = companyText.match(/([0-5](?:\.\d)?)\s*(?:★\s*)?[\d,.]+\s*[KMB]?\s+Reviews?\b/i)
           || bodyText.match(/\b([0-5](?:\.\d)?)\s*(?:★\s*)?[\d,.]+\s*[KMB]?\s+Reviews?\b/i);
         return {
@@ -575,6 +702,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
         url: location.href,
         heading: document.querySelector('h1')?.textContent?.trim() || '',
         company: companyText,
+        companyLogo,
         location: document.querySelector('[data-testid*="location" i], [class*="location" i], [class*="locWdth" i]')?.textContent?.trim() || '',
         experience: (() => {
           const text = document.body?.innerText || '';
@@ -594,6 +722,15 @@ async function captureActiveJob(tabId = null, attempt = 0) {
         rating: (() => {
           return ratingMatch?.[1] || '';
         })(),
+        recruiterContact: {
+          name: recruiterName,
+          email: contactEmail,
+          phone: contactPhone,
+          company: companyText.replace(/\s*[★·|]?\s*[0-5](?:\.\d)?\s*[\d,.]+\s*[KMB]?\s+Reviews?.*$/i, '').trim(),
+          designation: recruiterDesignation,
+          profileUrl: recruiterProfile,
+          websiteUrl: companyWebsite
+        },
         text: (() => {
           const selectors = [
             '[data-testid*="job-description" i]',
@@ -659,12 +796,13 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       experience: cleanText(result.experience),
       salary: cleanText(result.salary),
       location: cleanText(result.location),
-      rating: cleanText(result.rating)
+      rating: cleanText(result.rating),
+      companyLogo: cleanText(result.companyLogo)
     };
-    jobWasCaptured = true;
-    updateJobSummary(true);
+    recruiterContact = result.recruiterContact || {};
+    renderRecruiterContact('found');
+    updateJobSummary();
     updateJobApplicationButton();
-    $('jobDetails').open = false;
     invalidateAnalysis();
     setStatus(`Job detected from ${url.hostname}. Ready to analyze.`, 'success');
     scheduleAutomaticAnalysis();
@@ -674,7 +812,6 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       window.setTimeout(() => captureActiveJob(tabId, attempt + 1), 650 * (attempt + 1));
       return;
     }
-    jobWasCaptured = false;
     const activeUrl = currentJobTabUrl || '';
     const isNaukriJob = /naukri\.com\/job-listings?-/i.test(activeUrl);
     if (isNaukriJob || !activeUrl) {
@@ -684,11 +821,12 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       $('locationInput').value = '';
       $('jobDescription').value = '';
       jobMetadata = {};
-      updateJobSummary(false);
+      updateJobSummary();
       updateJobApplicationButton();
       invalidateAnalysis();
     }
-    $('jobDetails').open = true;
+    recruiterContact = null;
+    renderRecruiterContact(isNaukriJob ? 'error' : 'none');
     const accessDenied = /cannot access contents|manifest must request permission/i.test(error.message || '');
     setStatus(
       accessDenied
@@ -979,10 +1117,6 @@ $('saveResumeBtn').addEventListener('click', async () => {
 // ANALYZE JOB AND RESUME
 // ------------------------------
 
-$('analyzeBtn').addEventListener('click', async () => {
-  await analyzeCurrentMatch(false);
-});
-
 async function analyzeCurrentMatch(automatic) {
   if (analysisPromise) return analysisPromise;
 
@@ -1009,7 +1143,7 @@ async function analyzeCurrentMatch(automatic) {
   let historyWarning = '';
   analysisPromise = (async () => {
     try {
-      $('analyzeBtn').disabled = true;
+      $('generateBtn').disabled = true;
       renderAnalysisPlaceholders('Analyzing…');
       setStatus(automatic ? 'Automatically analyzing this job against your saved resume…' : 'Analyzing job and resume…', 'info');
       const progress = [
@@ -1019,10 +1153,10 @@ async function analyzeCurrentMatch(automatic) {
         'Preparing results…'
       ];
       let progressIndex = 0;
-      $('analyzeBtn').textContent = progress[progressIndex];
+      $('generateBtn').textContent = progress[progressIndex];
       progressTimer = setInterval(() => {
         progressIndex = (progressIndex + 1) % progress.length;
-        $('analyzeBtn').textContent = progress[progressIndex];
+        $('generateBtn').textContent = progress[progressIndex];
       }, 1400);
 
       const data = await api('/ai/tailor-review', {
@@ -1035,6 +1169,7 @@ async function analyzeCurrentMatch(automatic) {
       lastAnalysis = data;
       renderAnalysis(data);
       $('generateBtn').disabled = false;
+      updatePrimaryAction();
       try {
         await saveAnalysisHistory(data);
       } catch (error) {
@@ -1048,11 +1183,11 @@ async function analyzeCurrentMatch(automatic) {
       setStatus(`Analysis failed: ${error.message}`, 'error');
     } finally {
       clearInterval(progressTimer);
-      $('analyzeBtn').disabled = false;
-      $('analyzeBtn').textContent = '✦ Analyze & Tailor Resume';
       analysisPromise = null;
+      updatePrimaryAction();
     }
   })();
+  updatePrimaryAction();
   return analysisPromise;
 }
 
@@ -1128,6 +1263,19 @@ function renderAnalysis(data) {
     summary.className = 'analysis-summary';
     summary.textContent = review.matchSummary.trim();
     overview.append(summary);
+    if (summary.textContent.length > 150) {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'summary-toggle';
+      toggle.textContent = 'Read more';
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.addEventListener('click', () => {
+        const expanded = summary.classList.toggle('expanded');
+        toggle.textContent = expanded ? 'Show less' : 'Read more';
+        toggle.setAttribute('aria-expanded', String(expanded));
+      });
+      overview.append(toggle);
+    }
   }
 
   $('matchedSkillsList').replaceChildren();
@@ -1286,13 +1434,28 @@ function appendReviewList(parent, title, values, tone = '') {
   const heading = document.createElement('h4');
   heading.textContent = title;
   const list = document.createElement('ul');
-  values.filter(value => typeof value === 'string' && value.trim()).forEach(value => {
+  values.filter(value => typeof value === 'string' && value.trim()).forEach((value, index) => {
     const item = document.createElement('li');
     item.textContent = value.trim();
+    if (index >= 3) item.classList.add('suggestion-extra');
     list.append(item);
   });
   if (!list.children.length) return;
   section.append(heading, list);
+  if (list.children.length > 3) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'suggestion-toggle';
+    toggle.textContent = `Show ${list.children.length - 3} more`;
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.addEventListener('click', () => {
+      const expanded = toggle.getAttribute('aria-expanded') === 'true';
+      toggle.setAttribute('aria-expanded', String(!expanded));
+      section.classList.toggle('suggestions-expanded', !expanded);
+      toggle.textContent = expanded ? `Show ${list.children.length - 3} more` : 'Show less';
+    });
+    section.append(toggle);
+  }
   parent.append(section);
 }
 
@@ -1363,11 +1526,9 @@ async function loadHistory() {
         location: entry.location || '',
         experience: extractExperienceTags(entry.jobDescription || '')[0] || ''
       };
-      jobWasCaptured = false;
       updateJobSummary();
       lastAnalysis = entry.analysis;
       renderAnalysis(entry.analysis);
-      $('generateBtn').disabled = !$('resumeText').value.trim();
       switchView('applyView');
       setStatus('Previous analysis reopened. Review it before downloading.', 'success');
     });
@@ -1411,7 +1572,6 @@ async function loadSavedJobs() {
         experience: extractExperienceTags(job.description || '')[0] || ''
       };
       invalidateAnalysis();
-      jobWasCaptured = false;
       updateJobSummary();
       switchView('applyView');
       setStatus('Saved job opened. Review its details before analysis.', 'success');
@@ -1441,6 +1601,25 @@ async function loadSavedJobs() {
 // ------------------------------
 
 $('generateBtn').addEventListener('click', async () => {
+  if (!lastAnalysis) {
+    await analyzeCurrentMatch(false);
+    return;
+  }
+
+  if (generatedBlobUrl && generatedFilename) {
+    try {
+      await chrome.downloads.download({
+        url: generatedBlobUrl,
+        filename: `MenixJobAI/${generatedFilename}`,
+        saveAs: true
+      });
+      setStatus(`Downloading ${generatedFilename}.`, 'success');
+    } catch (error) {
+      setStatus(`Could not download the tailored resume: ${error.message}`, 'error');
+    }
+    return;
+  }
+
   const resumeText = $('resumeText').value.trim();
   const jobDescription = $('jobDescription').value.trim();
 
@@ -1456,8 +1635,7 @@ $('generateBtn').addEventListener('click', async () => {
   try {
     $('generateBtn').disabled = true;
 
-    $('generateBtn').textContent =
-      'Generating DOCX...';
+    $('generateBtn').textContent = 'Generating DOCX...';
 
     const response = await fetch(
       `${apiBase}/ai/tailor-docx`,
@@ -1491,6 +1669,7 @@ $('generateBtn').addEventListener('click', async () => {
     ].join('_');
     const generatedId = `generated-${Date.now()}`;
     generatedBlobUrl = URL.createObjectURL(blob);
+    generatedFilename = filename;
     await storeResumeFile(generatedId, blob, filename);
     const downloadId = await chrome.downloads.download({
       url: generatedBlobUrl,
@@ -1537,8 +1716,7 @@ $('generateBtn').addEventListener('click', async () => {
   } finally {
     $('generateBtn').disabled = false;
 
-    $('generateBtn').textContent =
-      '↓  Download Tailored Resume (DOCX)';
+    updatePrimaryAction();
   }
 });
 

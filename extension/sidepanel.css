@@ -148,9 +148,6 @@ body,.app,.topbar{background:#0b1017}
 .tab{min-width:0;padding:7px 4px;font-size:10px}
 .tab.active,.tab.active:hover,.generate-btn,.primary,.accent{background:#ff7900;color:#17120c}
 .status-badge.success-badge{background:#123222;color:#22c55e}
-.job-details{border-color:#293646}
-.job-details label{margin:8px 0;color:#a7b0be}
-.job-details textarea{min-height:110px}
 .file-result{background:#10271d;border-color:#24683f;color:#a9f0c1}
 .profile-card h2{margin:0 0 8px;font-size:13px}
 .profile-file-name{margin:8px 0;color:#f8fafc;font-size:12px;font-weight:650;overflow-wrap:anywhere}
@@ -181,16 +178,13 @@ body{min-width:320px;background:#0b1017}
 .card-heading h2{flex:1;margin:0;font-size:11px;font-weight:700}
 .step-number{display:grid;width:17px;height:17px;flex-shrink:0;place-items:center;border-radius:50%;background:#ff7900;color:#17120c;font-size:10px;font-weight:800}
 .job-title-row{gap:8px}
-.company-mark{width:30px;height:30px;border-radius:8px;background:#1b2735;color:#ff9000;font-size:13px}
-.job-card h1{margin:0 0 2px;font-size:11px}
-.job-card .muted{font-size:9px;line-height:1.35}
+.company-mark{width:40px;height:40px;border-radius:10px;background:#1b2735;color:#ff9000;font-size:16px}
+.company-logo{width:40px;height:40px;flex-shrink:0;border-radius:10px;background:#fff;object-fit:contain}
+.job-card h1{margin:0 0 3px;font-size:14px}
+.job-card .muted{font-size:11px;line-height:1.4}
 .status-badge{padding:3px 6px;background:#123222;color:#22c55e;font-size:8px}
-.job-tags{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0 0 38px}
-.job-tag{padding:3px 7px;border:1px solid #344252;border-radius:12px;background:#1b2735;color:#d4dbe5;font-size:8px}
-.job-details{margin:7px 0 0;padding-top:7px}
-.job-details label{margin:7px 0;font-size:9px}
-.job-details input,.job-details textarea{padding:7px;font-size:10px}
-.job-details textarea{min-height:80px}
+.job-tags{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0 48px}
+.job-tag{padding:4px 8px;border:1px solid #344252;border-radius:12px;background:#1b2735;color:#d4dbe5;font-size:10px}
 .resume-section .card-heading{margin-bottom:8px}
 .resume-row{gap:8px}
 .resume-icon{width:29px;height:31px;border:0;border-radius:7px;background:#1b2735;font-size:16px}
@@ -239,6 +233,25 @@ body{min-width:320px;background:#0b1017}
 .settings input{padding:8px;font-size:10px}
 @media(max-width:350px){.app{padding-right:8px;padding-left:8px}.job-card,.resume-section,.analysis-section,.profile-card{padding:9px}.job-tags{margin-left:0}.resume-actions{margin-left:0}.action-bar{margin-right:-8px;margin-left:-8px}}
 
+.recruiter-contact{padding:10px;margin-top:8px}
+.recruiter-contact .card-heading{margin-bottom:6px}
+.recruiter-contact .card-heading h2{font-size:11px}
+.contact-state{color:#a7b0be;font-size:8px}
+.contact-content{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:#c4ccd7;font-size:9px;line-height:1.45}
+.contact-row{display:flex;align-items:baseline;gap:4px;width:100%;overflow-wrap:anywhere}
+.contact-row strong{flex-shrink:0;color:#f8fafc}
+.contact-link{display:inline-flex;width:max-content;padding:4px 7px;border:1px solid #344252;border-radius:7px;background:#1b2735;color:#ff9a24;font:inherit;font-size:8px;text-decoration:none;cursor:pointer}
+.contact-link:hover{border-color:#ff9a24;color:#ffc078}
+
+.app{padding-bottom:72px}
+.action-bar{position:fixed;inset:auto 0 0;z-index:20;display:flex;align-items:center;gap:9px;box-sizing:border-box;width:100%;margin:0;padding:9px 10px max(10px,env(safe-area-inset-bottom));border-top:1px solid #344252;background:linear-gradient(180deg,#0b1017f2,#0b1017);box-shadow:0 -8px 22px #0005}
+.action-bar .generate-btn{flex:1;min-width:0;min-height:42px;margin:0;padding:9px 10px;border:0;border-radius:11px;background:linear-gradient(105deg,#ff7900,#ff9a24);color:#17120c;font-size:11px;font-weight:750;white-space:nowrap}
+.action-bar .generate-btn:disabled{background:#4c321e;color:#b5aba1}
+.profile-action-shortcut{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;padding:0;border:1px solid #63401f;border-radius:12px;background:linear-gradient(145deg,#2b2118,#171b22);color:#ff9a24;cursor:pointer}
+.profile-action-shortcut svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.7}
+.profile-action-shortcut:hover{border-color:#ff9a24;background:#302216}
+@media(max-width:350px){.action-bar{padding-right:8px;padding-left:8px}.action-bar .generate-btn{font-size:10px}}
+
 .match-overview,.skills-analysis{margin:0 0 7px;padding:8px;border:1px solid #293646;border-radius:10px;background:linear-gradient(145deg,#151f2b,#0d151f)}
 .match-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}
 .match-heading h3{margin:0;font-size:10px}
@@ -268,5 +281,32 @@ body{min-width:320px;background:#0b1017}
 .skill-icon{flex-shrink:0;color:#22c55e;font-weight:800}
 .skill-review .skill-icon{color:#ff6659}
 .skill-empty{color:#8e9aaa!important;font-size:7px!important}
-.job-rating{display:inline-block;margin-left:6px;color:#ffbd55;font-size:9px;white-space:nowrap;vertical-align:baseline}
+.job-rating{display:inline-block;margin-left:6px;color:#ffbd55;font-size:11px;white-space:nowrap;vertical-align:baseline}
 .resume-icon svg{display:block}
+
+.match-heading{margin-bottom:9px}
+.match-heading h3,.analysis-result h4{font-size:12px}
+.match-state{font-size:9px}
+.match-score-ring{width:76px;height:76px}
+.match-score-ring strong{font-size:20px}
+.match-score-ring span{font-size:9px}
+.match-metric{font-size:10px}
+.match-metric strong{font-size:10px}
+.match-overview .analysis-summary{display:-webkit-box;margin:8px 0 0;padding:8px;border:0;border-radius:9px;background:#0b1017;font-size:10px;line-height:1.5;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.match-overview .analysis-summary.expanded{display:block;-webkit-line-clamp:unset}
+.summary-toggle,.suggestion-toggle{margin-top:5px;padding:2px 0;border:0;background:transparent;color:#ff9a24;font:inherit;font-size:10px;font-weight:650;cursor:pointer}
+.skills-analysis summary{padding:10px;font-size:12px}
+.skills-columns section{padding:3px 9px 9px}
+.skills-columns h4{font-size:10px}
+.skills-columns li{font-size:10px;line-height:1.4}
+.skill-empty{font-size:9px!important}
+.analysis-result{margin-top:5px;padding:3px 0;border:0!important}
+.analysis-result h4{margin:0 0 6px}
+.analysis-result p,.analysis-result li{font-size:11px;line-height:1.45}
+.analysis-result ul{padding-left:17px}
+.analysis-result li+li{margin-top:4px}
+.analysis-result li:not(.suggestion-extra){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.analysis-result .suggestion-extra{display:none}
+.analysis-result.suggestions-expanded .suggestion-extra{display:-webkit-box}
+.suggestion-toggle{font-size:10px}
+.analysis-notice{font-size:9px;line-height:1.45}
