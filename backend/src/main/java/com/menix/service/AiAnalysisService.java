@@ -46,7 +46,6 @@ public class AiAnalysisService {
 
     @Value("${menix.gemini.api-key:}") private String apiKey;
     @Value("${menix.gemini.model:gemini-2.5-flash}") private String model = "gemini-2.5-flash";
-    @Value("${menix.gemini.overview-thinking-budget:0}") private int overviewThinkingBudget;
     @Value("${menix.gemini.diagnostics-token:}") private String diagnosticsToken;
 
     public AiAnalysisService(RestClient restClient, ObjectMapper mapper,
@@ -333,7 +332,7 @@ public class AiAnalysisService {
         generation.put("temperature", 0.2);
         generation.put("maxOutputTokens", Math.min(Math.max(maxTokens, 1), 8192));
         if (includeThinking && supportsThinkingBudgetZero(model)) {
-            generation.put("thinkingConfig", Map.of("thinkingBudget", Math.max(0, overviewThinkingBudget)));
+            generation.put("thinkingConfig", Map.of("thinkingBudget", 0));
         }
         return generation;
     }
