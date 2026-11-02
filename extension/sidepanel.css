@@ -176,7 +176,6 @@ body{min-width:320px;background:#0b1017}
 .job-card,.resume-section,.analysis-section,.profile-card,.settings{margin-top:8px;padding:10px;border:1px solid #293646;border-radius:12px;background:#111923}
 .card-heading{display:flex;align-items:center;gap:7px;margin-bottom:8px}
 .card-heading h2{flex:1;margin:0;font-size:11px;font-weight:700}
-.step-number{display:grid;width:17px;height:17px;flex-shrink:0;place-items:center;border-radius:50%;background:#ff7900;color:#17120c;font-size:10px;font-weight:800}
 .job-title-row{gap:8px}
 .company-mark{width:40px;height:40px;border-radius:10px;background:#1b2735;color:#ff9000;font-size:16px}
 .company-logo{width:40px;height:40px;flex-shrink:0;border-radius:10px;background:#fff;object-fit:contain}
