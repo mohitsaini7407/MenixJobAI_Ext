@@ -431,8 +431,16 @@ public class AiAnalysisService {
         boolean transientRetryUsed = false;
         while (true) {
             try {
-                Map<?, ?> envelope = restClient.post().uri(geminiUrl()).contentType(MediaType.APPLICATION_JSON).body(payload).retrieve().body(Map.class);
-                JsonNode node = mapper.valueToTree(envelope).path("candidates").path(0).path("content").path("parts").path(0).path("text");
+                byte[] responseBody = restClient.post().uri(geminiUrl()).contentType(MediaType.APPLICATION_JSON)
+                    .body(payload).retrieve().body(byte[].class);
+                if (responseBody == null || responseBody.length == 0) {
+                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "The AI provider returned an empty analysis. Please retry.");
+                }
+                // Some Gemini/API gateway responses use application/octet-stream even when
+                // the payload is JSON. Decode bytes explicitly instead of asking the HTTP
+                // message converters to deserialize that media type directly into a Map.
+                JsonNode envelope = mapper.readTree(responseBody);
+                JsonNode node = envelope.path("candidates").path(0).path("content").path("parts").path(0).path("text");
                 if (!node.isTextual()) throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "The AI provider returned an empty analysis. Please retry.");
                 Map<String, Object> result = mapper.readValue(node.asText(), new TypeReference<>() {});
                 if (degraded) result.put("_menixDegraded", true);
@@ -533,7 +541,7 @@ public class AiAnalysisService {
         if (apiKey == null || apiKey.isBlank()) return Map.of("status", "FAIL", "message", "GEMINI_API_KEY is not configured.");
         Map<String, Object> payload = buildGeminiRequest("Return the word OK.", generation);
         try {
-            restClient.post().uri(geminiUrl()).contentType(MediaType.APPLICATION_JSON).body(payload).retrieve().body(Map.class);
+            restClient.post().uri(geminiUrl()).contentType(MediaType.APPLICATION_JSON).body(payload).retrieve().body(byte[].class);
             return Map.of("status", "OK", "message", "Provider accepted this request configuration.");
         } catch (RestClientResponseException ex) {
             String body = redactSecrets(ex.getResponseBodyAsString());

@@ -1120,7 +1120,8 @@ async function loadSettings() {
   activeResumeWorkflow = resumeWorkflows.find(item => item.jobKey === saved.activeResumeJobKey) || null;
   const savedJobUrl = saved.activeJobSnapshot?.url || activeResumeWorkflow?.jobUrl;
   if (activeResumeWorkflow?.jobUrl && savedJobUrl === activeResumeWorkflow.jobUrl
-    && saved.activeJobAnalysis?.scoringVersion === 'evidence-weighted-v1') {
+    && saved.activeJobAnalysis?.scoringVersion === 'evidence-weighted-v1'
+    && Array.isArray(saved.activeJobAnalysis.requirements) && saved.activeJobAnalysis.requirements.length > 0) {
     lastAnalysis = saved.activeJobAnalysis;
   }
   $('resumeStatus').textContent = masterText
@@ -2713,13 +2714,15 @@ async function analyzeCurrentMatch(automatic) {
       const cachedByKey = await chrome.storage.local.get([cacheKey]);
       const cachedEntry = cachedByKey[cacheKey];
       const cachedAge = cachedEntry?.savedAt ? Date.now() - cachedEntry.savedAt : Infinity;
-      if (cachedEntry?.overview) {
+      if (cachedEntry?.overview && hasUsableOverview(cachedEntry.overview)) {
         lastAnalysis = cachedEntry.overview;
         renderAnalysis(lastAnalysis, 'ai');
         if (cachedAge <= 24 * 60 * 60 * 1000) {
-          setStatus('Refined by AI · cached result', 'success');
+          setStatus('Refined by AI (cached result)', 'success');
           return;
         }
+      } else if (cachedEntry?.overview) {
+        await chrome.storage.local.remove(cacheKey);
       }
 
       if (!lastAnalysis) setStatus(automatic ? 'Quick estimate ready. Refining with AI…' : 'Refining the quick estimate with AI…', 'info');
@@ -2749,7 +2752,9 @@ async function analyzeCurrentMatch(automatic) {
       wakingTimer = null;
       if (controller.signal.aborted) return;
       if (data.error) throw new Error(data.error);
-      lastAnalysis = normalizeOverviewResult(data);
+      const refined = normalizeOverviewResult(data);
+      if (!hasUsableOverview(refined)) throw new Error('The backend returned no analyzable job requirements.');
+      lastAnalysis = refined;
       aiRefinementFailed = false;
       renderAnalysis(lastAnalysis, 'ai');
       await chrome.storage.local.set({
@@ -2783,6 +2788,15 @@ async function analyzeCurrentMatch(automatic) {
 // ------------------------------
 // DISPLAY AI ANALYSIS
 // ------------------------------
+
+function hasUsableOverview(result) {
+  if (!result || typeof result !== 'object') return false;
+  if (result.scoringVersion === 'evidence-weighted-v1') {
+    return Array.isArray(result.requirements) && result.requirements.length > 0;
+  }
+  return normalizeScore(result.matchScore) !== null
+    || Object.values(result.scores || {}).some(value => normalizeScore(value) !== null);
+}
 
 function normalizeOverviewResult(data) {
   if (data?.overview) data = data.overview;
