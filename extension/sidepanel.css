@@ -363,6 +363,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0}
   --analysis-red-bg:#fff0f0;
 }
 #analysisSection.analysis-section{padding:12px;border:1px solid var(--analysis-border);border-radius:12px;background:var(--analysis-bg);color:var(--analysis-text);box-shadow:0 2px 8px rgb(15 23 42 / 5%)}
+#analysisSection.analysis-section{padding:12px 0;border:0;background:transparent;box-shadow:none}
 #analysisSection .match-overview{margin:0 0 10px;padding:13px;border:1px solid var(--analysis-border);border-radius:12px;background:#fff;color:var(--analysis-text);box-shadow:0 2px 8px rgb(15 23 42 / 5%)}
 #analysisSection .match-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin:0 0 12px}
 #analysisSection .match-title-stack h2{margin:0;color:var(--analysis-text);font-size:18px;line-height:1.25}
@@ -461,6 +462,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0}
 #analysisSection .soft-skills-details>summary{max-width:100%;padding:4px 8px;font-size:10px}
 #analysisSection .overview-layout{grid-template-columns:76px minmax(0,1fr);align-items:center;gap:9px}
 #analysisSection .match-overview{border-color:transparent;box-shadow:none}
+#analysisSection .match-overview{width:calc(100% + 36px);margin-left:-18px}
 #analysisSection .breakdown-column{width:100%;min-width:0;min-height:0}
 #analysisSection .overview-score-side{display:grid;min-width:76px;justify-items:center;align-content:center}
 #analysisSection .score-ring-wrap{position:relative;display:grid;width:76px;height:76px;flex:0 0 76px;place-items:center}
@@ -579,6 +581,7 @@ input[type="checkbox"]{accent-color:var(--analysis-blue)}
 .status[data-type="info"]{border-color:#bfd5fa;background:var(--analysis-blue-light);color:var(--analysis-blue-dark)}
 .action-bar{border-color:var(--analysis-border);background:#fff;box-shadow:0 -2px 8px rgb(15 23 42 / 5%)}
 .action-bar .generate-btn{box-shadow:none}
+.action-bar{border-top:0;background:transparent;box-shadow:none}
 .workflow-resume-preview{display:grid;gap:8px;padding:11px;border:1px solid var(--analysis-border);border-radius:11px;background:#f8fbff}
 .workflow-preview-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
 .workflow-preview-heading h3{margin:0;color:var(--analysis-text);font-size:14px}

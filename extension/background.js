@@ -37,13 +37,35 @@ function configurePanelForTab(tabId, url) {
 chrome.action.onClicked.addListener(tab => {
   if (!tab?.id || !tab.url) return;
   if (isNaukriUrl(tab.url) && !/^\/mnjuser\/login(?:\/|$)/i.test(new URL(tab.url).pathname)) {
-    showNaukriDock(tab.id, tab.url);
+    toggleNaukriDock(tab.id, tab.url);
     return;
   }
   if (tab.windowId != null && chrome.sidePanel?.open) {
     chrome.sidePanel.open({ windowId: tab.windowId }).catch(error => console.debug('MenixJobAI side panel could not open:', error));
   }
 });
+
+const manuallyClosedNaukriDocks = new Set();
+
+function toggleNaukriDock(tabId, url) {
+  chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const dock = document.getElementById('__menixjobai_dock');
+      if (!dock) return false;
+      dock.__menixCleanup?.();
+      dock.remove();
+      return true;
+    }
+  }).then(([result]) => {
+    if (result?.result) {
+      manuallyClosedNaukriDocks.add(tabId);
+      return;
+    }
+    manuallyClosedNaukriDocks.delete(tabId);
+    showNaukriDock(tabId, url);
+  }).catch(error => console.debug('MenixJobAI could not toggle the Naukri panel:', error));
+}
 
 // Naukri job pages may auto-show the extension UI as an in-page dock. Reserve
 // room in the page layout so the dock does not cover job content.
@@ -76,19 +98,19 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
       // Keep the dock compact and explicitly reduce the page content width.
       // A right margin alone does not shrink Naukri's 100%-wide app shell.
       const dockWidth = Math.min(360, Math.max(280, Math.floor(window.innerWidth * 0.32)));
-      const originalRootStyles = ['padding-right', 'box-sizing'].map(property => ({
+      const originalRootStyles = ['width', 'max-width', 'overflow-x', 'padding-right', 'box-sizing'].map(property => ({
         property,
         value: root.style.getPropertyValue(property),
         priority: root.style.getPropertyPriority(property)
       }));
-      const originalBodyStyles = body ? ['width', 'max-width', 'margin-left', 'margin-right', 'box-sizing'].map(property => ({
+      const originalBodyStyles = body ? ['width', 'max-width', 'min-width', 'overflow-x', 'margin-left', 'margin-right', 'box-sizing'].map(property => ({
         property,
         value: body.style.getPropertyValue(property),
         priority: body.style.getPropertyPriority(property)
       })) : [];
       const layoutStyle = document.createElement('style');
       layoutStyle.id = '__menixjobai_layout_fix';
-      layoutStyle.textContent = `body > *:not(#__menixjobai_dock){box-sizing:border-box!important;max-width:calc(100vw - ${dockWidth}px)!important}`;
+      layoutStyle.textContent = `html{width:calc(100vw - ${dockWidth}px)!important;max-width:calc(100vw - ${dockWidth}px)!important;overflow-x:hidden!important}body{width:100%!important;max-width:100%!important;min-width:0!important;overflow-x:hidden!important}body > *:not(#__menixjobai_dock){box-sizing:border-box!important;width:100%!important;max-width:100%!important;min-width:0!important}body > *:not(#__menixjobai_dock) *{min-width:0!important}`;
       document.documentElement.append(layoutStyle);
       const restoreStyles = (element, styles) => styles.forEach(({ property, value, priority }) => {
         if (value) element.style.setProperty(property, value, priority);
@@ -103,8 +125,13 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
         // Force a narrower page layout so Naukri's full-width content reflows
         // into the space beside the dock rather than continuing underneath it.
         body.style.setProperty('box-sizing', 'border-box', 'important');
-        body.style.setProperty('width', `calc(100% - ${dockWidth}px)`, 'important');
-        body.style.setProperty('max-width', `calc(100% - ${dockWidth}px)`, 'important');
+        root.style.setProperty('box-sizing', 'border-box', 'important');
+        root.style.setProperty('width', `calc(100vw - ${dockWidth}px)`, 'important');
+        root.style.setProperty('max-width', `calc(100vw - ${dockWidth}px)`, 'important');
+        body.style.setProperty('width', '100%', 'important');
+        body.style.setProperty('max-width', '100%', 'important');
+        body.style.setProperty('min-width', '0', 'important');
+        body.style.setProperty('overflow-x', 'hidden', 'important');
         body.style.setProperty('margin-left', '0', 'important');
         body.style.setProperty('margin-right', '0', 'important');
       } else {
@@ -137,9 +164,10 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const url = changeInfo.url || tab.url;
+  if (changeInfo.url) manuallyClosedNaukriDocks.delete(tabId);
   if (url) configurePanelForTab(tabId, url);
   if ((changeInfo.status === 'complete' || changeInfo.url) && url && /(^|\.)naukri\.com\//i.test(url.replace(/^https?:\/\//i, ''))) {
-    showNaukriDock(tabId, url);
+    if (!manuallyClosedNaukriDocks.has(tabId)) showNaukriDock(tabId, url);
   }
 });
 
@@ -147,13 +175,14 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.get(tabId).then(tab => {
     if (tab?.id && tab.url) {
       configurePanelForTab(tab.id, tab.url);
-      showNaukriDock(tab.id, tab.url);
+      if (!manuallyClosedNaukriDocks.has(tab.id)) showNaukriDock(tab.id, tab.url);
     }
   }).catch(() => {});
 });
 
 chrome.webNavigation.onHistoryStateUpdated.addListener(details => {
   if (details.frameId !== 0) return;
+  manuallyClosedNaukriDocks.delete(details.tabId);
   showNaukriDock(details.tabId, details.url);
 });
 

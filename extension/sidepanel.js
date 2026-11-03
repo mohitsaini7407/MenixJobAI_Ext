@@ -67,18 +67,21 @@ function renderRecruiterContact(state = 'checking') {
   const content = $('recruiterContactContent');
   const badge = $('recruiterContactState');
   if (!content || !badge) return;
+  const card = content.closest('.recruiter-contact');
   badge.textContent = ({ checking: 'Checking…', error: 'Could not check', none: 'Unavailable' })[state] || 'Available';
   content.replaceChildren();
-  if (state === 'checking') { content.textContent = 'Checking this job listing…'; return; }
+  if (state === 'checking' || state === 'none') { card?.classList.add('hidden'); return; }
   if (state === 'error') {
+    card?.classList.remove('hidden');
     content.append(document.createTextNode('Could not inspect this listing. '));
     const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'contact-link'; retry.textContent = 'Retry';
     retry.addEventListener('click', () => captureActiveJob()); content.append(retry); return;
   }
   const details = recruiterContact || {};
   if (!(details.name || details.email || details.phone || details.profileUrl || details.websiteUrl)) {
-    content.textContent = 'No recruiter contact details found in this job listing.'; return;
+    card?.classList.add('hidden'); return;
   }
+  card?.classList.remove('hidden');
   const foundCount = [details.name, details.email, details.phone, details.profileUrl, details.websiteUrl].filter(Boolean).length;
   badge.textContent = foundCount > 1 ? 'Contact Found' : 'Partially Available';
   const entries = [
@@ -721,16 +724,17 @@ function updatePrimaryAction() {
     button.disabled = !ready;
     button.textContent = ready ? 'Analyze Job Match' : 'Add Resume and Open a Job';
   } else {
-    const uploaded = ['TEMPORARY_RESUME_UPLOADED', 'APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED', 'MASTER_RESUME_RESTORED'].includes(activeResumeWorkflow?.status);
-    button.disabled = uploaded;
-    button.textContent = uploaded ? 'Resume updated on Naukri' : 'Tailor Resume';
+    const workflow = activeResumeWorkflow;
+    const applicationStarted = ['APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow?.status);
+    const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
+    const uploaded = workflow?.status === 'TEMPORARY_RESUME_UPLOADED';
+    button.disabled = applicationStarted || restored;
+    button.textContent = applicationStarted ? 'Application in progress'
+      : restored ? 'Resume restored on Naukri'
+        : uploaded && workflow?.applicationStartFailed ? 'Retry Apply'
+          : 'Tailor Resume & Apply';
   }
 }
-function updateJobApplicationButton() {
-  const validJobUrl = /^https?:\/\//i.test(cleanText($('jobUrl').value));
-  $('openJobBtn').classList.toggle('hidden', !validJobUrl);
-}
-
 function safeFilenamePart(value) {
   return cleanText(value)
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
@@ -738,25 +742,6 @@ function safeFilenamePart(value) {
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 60) || 'Job';
-}
-
-async function openJobApplication() {
-  const url = cleanText($('jobUrl').value);
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return setStatus('This job does not have a valid application URL.', 'error');
-  }
-  if (!['https:', 'http:'].includes(parsed.protocol)) {
-    return setStatus('Only HTTP or HTTPS job links can be opened.', 'error');
-  }
-  try {
-    await chrome.tabs.create({ url: parsed.href, active: true });
-    setStatus('Job application opened. Attach the downloaded resume and submit only after reviewing it.', 'success');
-  } catch (error) {
-    setStatus(`Could not open the job application: ${error.message}`, 'error');
-  }
 }
 
 // ------------------------------
@@ -821,7 +806,6 @@ async function loadSettings() {
     $('jobDescription').value = saved.activeJobSnapshot.description || '';
     $('jobUrl').value = saved.activeJobSnapshot.url || activeResumeWorkflow?.jobUrl || '';
     updateJobSummary();
-    updateJobApplicationButton();
     if (lastAnalysis) renderAnalysis(lastAnalysis, 'ai');
   } else {
     await captureActiveJob();
@@ -889,8 +873,6 @@ $('jobDescription').addEventListener('input', () => {
   scheduleAutomaticAnalysis();
 });
 
-$('jobUrl').addEventListener('input', updateJobApplicationButton);
-$('openJobBtn').addEventListener('click', openJobApplication);
 $('downloadActiveResumeBtn').addEventListener('click', downloadActiveWorkflowResume);
 
 $('resumeText').addEventListener('input', () => {
@@ -950,6 +932,10 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     // Profile navigation is part of the upload flow; keep the selected job and
     // resume visible while the user replaces the Naukri profile file.
     if (url.hostname.endsWith('naukri.com') && /^\/mnjuser\/(?:profile|login)(?:\/|$)/i.test(url.pathname)) return;
+    if (activeResumeWorkflow?.status === 'APPLICATION_IN_PROGRESS'
+      && activeResumeWorkflow.jobTabId === tab.id
+      && url.hostname.endsWith('naukri.com')
+      && tab.url !== activeResumeWorkflow.jobUrl) return;
     // Returning from the profile is only for resume upload. Keep the saved job
     // snapshot and its analysis instead of treating it as a newly detected job.
     if (currentJobTabUrl === tab.url && activeResumeWorkflow?.jobUrl === tab.url
@@ -967,7 +953,6 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       $('jobDescription').value = '';
       jobMetadata = {};
       updateJobSummary();
-      updateJobApplicationButton();
       invalidateAnalysis();
     }
 
@@ -1142,7 +1127,6 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     recruiterContact = result.recruiterContact || {};
     renderRecruiterContact('found');
     updateJobSummary();
-    updateJobApplicationButton();
     invalidateAnalysis();
     await activateResumeWorkflow(currentJobPayload(), tab.id);
     setStatus(`Job detected from ${url.hostname}. Ready to analyze.`, 'success');
@@ -1163,7 +1147,6 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       $('jobDescription').value = '';
       jobMetadata = {};
       updateJobSummary();
-      updateJobApplicationButton();
       invalidateAnalysis();
     }
     recruiterContact = null;
@@ -1348,6 +1331,74 @@ async function returnToJobApplication() {
   } catch (error) {
     setStatus(`Could not return to the job application: ${error.message}`, 'error');
   }
+}
+
+async function returnToJobAndClickApply(profileTabId = activeResumeWorkflow?.profileTabId) {
+  const workflow = activeResumeWorkflow;
+  if (!workflow?.jobUrl) throw new Error('No saved job link is available for this workflow.');
+  const expectedJobUrl = new URL(workflow.jobUrl);
+  const isNaukriHost = host => host === 'naukri.com' || host.endsWith('.naukri.com');
+  if (!isNaukriHost(expectedJobUrl.hostname) || !/\/job-listings?-/i.test(expectedJobUrl.pathname)) {
+    throw new Error('The saved link is not a Naukri job listing, so Apply was not clicked.');
+  }
+
+  let jobTab = workflow.jobTabId ? await chrome.tabs.get(workflow.jobTabId).catch(() => null) : null;
+  if (jobTab?.url) {
+    try {
+      const existingUrl = new URL(jobTab.url);
+      if (existingUrl.origin !== expectedJobUrl.origin || existingUrl.pathname !== expectedJobUrl.pathname) jobTab = null;
+    } catch { jobTab = null; }
+  }
+  if (!jobTab?.id) {
+    jobTab = await chrome.tabs.create({ url: workflow.jobUrl, active: true });
+    if (!jobTab?.id) throw new Error('Could not reopen the saved job.');
+    await persistResumeWorkflow({ ...activeResumeWorkflow, jobTabId: jobTab.id });
+    await waitForTabComplete(jobTab.id);
+  } else {
+    await chrome.tabs.update(jobTab.id, { active: true });
+  }
+
+  const currentJobTab = await chrome.tabs.get(jobTab.id);
+  const parsedUrl = new URL(currentJobTab.url || workflow.jobUrl);
+  if (!isNaukriHost(parsedUrl.hostname) || parsedUrl.origin !== expectedJobUrl.origin || parsedUrl.pathname !== expectedJobUrl.pathname) {
+    throw new Error('The saved job tab changed. Apply was not clicked.');
+  }
+  if (profileTabId && profileTabId !== jobTab.id) await chrome.tabs.remove(profileTabId).catch(() => {});
+  if (jobTab.windowId != null) await chrome.windows.update(jobTab.windowId, { focused: true }).catch(() => {});
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId: jobTab.id },
+    func: () => {
+      const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+      const isVisible = element => Boolean(element?.getClientRects().length)
+        && getComputedStyle(element).visibility !== 'hidden'
+        && getComputedStyle(element).display !== 'none';
+      const exactApply = /^(?:apply|apply now|apply for this job|apply on naukri)$/i;
+      const candidates = [...document.querySelectorAll('main button, main a, main [role="button"], button, a, [role="button"]')]
+        .filter(element => !element.closest('#__menixjobai_dock'))
+        .filter(element => isVisible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true')
+        .filter(element => exactApply.test(normalize(element.innerText || element.getAttribute('aria-label'))));
+      const unique = [...new Set(candidates)];
+      if (unique.length !== 1) return { clicked: false, count: unique.length };
+      unique[0].click();
+      return { clicked: true, label: normalize(unique[0].innerText || unique[0].getAttribute('aria-label')) };
+    }
+  });
+
+  if (!result?.clicked) {
+    const message = result?.count > 1
+      ? 'More than one Apply button was found. The job is open; choose the correct Apply button manually.'
+      : 'The job is open, but its Apply button was not found. Click Apply on the job page to continue.';
+    await persistResumeWorkflow({ ...activeResumeWorkflow, status: 'TEMPORARY_RESUME_UPLOADED', applicationStartFailed: true, lastError: message });
+    setStatus(message, 'info');
+    return false;
+  }
+
+  await persistResumeWorkflow({
+    ...activeResumeWorkflow, status: 'APPLICATION_IN_PROGRESS', applicationStartFailed: false,
+    applyClickedAt: new Date().toISOString(), applyButtonLabel: result.label, lastError: ''
+  });
+  setStatus('Naukri Apply opened. Review the application and submit it yourself.', 'success');
+  return true;
 }
 
 async function openNaukriProfileFromButton() {
@@ -1734,15 +1785,19 @@ async function chooseResumeForThisJob() {
         ...activeResumeWorkflow,
         status: 'TEMPORARY_RESUME_UPLOADED', pipelineStep: 4,
         manualUploadNeeded: false, uploadMethod: method,
-        uploadedAt: new Date().toISOString(), lastError: ''
+        uploadedAt: new Date().toISOString(), lastError: '', applicationStartFailed: false
       });
-      setStatus(`Resume updated on Naukri: ${file.name}`, 'success');
+      await returnToJobAndClickApply(profileTabId);
       return;
     }
     const detail = `Expected: ${file.name}; found: ${verification.fileNames.join(', ') || verification.foundText}.`;
     await showManualUploadGuide(profileTabId, config, file.name, detail);
   })().catch(async error => {
-    if (activeResumeWorkflow) await persistResumeWorkflow({ ...activeResumeWorkflow, lastError: error.message });
+    if (activeResumeWorkflow) await persistResumeWorkflow({
+      ...activeResumeWorkflow,
+      applicationStartFailed: activeResumeWorkflow.status === 'TEMPORARY_RESUME_UPLOADED' || activeResumeWorkflow.applicationStartFailed,
+      lastError: error.message
+    });
     setStatus(error.message, 'error');
   }).finally(() => {
     resumeUploadPipelinePromise = null;
@@ -2454,6 +2509,11 @@ async function generateResumeStep(job) {
 
 $('generateBtn').addEventListener('click', async () => {
   if (!lastAnalysis) { await analyzeCurrentMatch(false); return; }
+  if (activeResumeWorkflow?.applicationStartFailed) {
+    try { await returnToJobAndClickApply(activeResumeWorkflow.profileTabId); }
+    catch (error) { setStatus(error.message, 'error'); }
+    return;
+  }
   renderResumeWorkflow();
   $('applyResumePreview').scrollIntoView({ behavior: 'smooth', block: 'start' });
   await chooseResumeForThisJob();
