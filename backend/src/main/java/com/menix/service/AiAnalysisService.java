@@ -36,6 +36,7 @@ public class AiAnalysisService {
     private static final Logger log = LoggerFactory.getLogger(AiAnalysisService.class);
     private static final String PROMPT_VERSION = "overview-v2";
     private static final String SUGGESTION_VERSION = "suggestions-v1";
+    private static final String ANSWER_VERSION = "application-answers-v1";
     private final RestClient restClient;
     private final ObjectMapper mapper;
     private final AnalysisCacheRepository cacheRepository;
@@ -167,6 +168,73 @@ public class AiAnalysisService {
         result.put("degraded", degraded);
         result.put("cached", false);
         writeCache(key, "suggestions", result);
+        return result;
+    }
+
+    public Map<String, Object> applicationAnswers(String resumeText, String jobDescription,
+                                                   List<Map<String, Object>> questions, String suppliedHash) {
+        if (resumeText == null || resumeText.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Resume text is required.");
+        if (questions == null || questions.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No application questions were provided.");
+        List<Map<String, Object>> normalizedQuestions = new ArrayList<>();
+        for (Map<String, Object> question : questions.stream().limit(20).toList()) {
+            if (question == null) continue;
+            String id = clean(Objects.toString(question.get("id"), "question-" + normalizedQuestions.size()));
+            String label = clean(Objects.toString(question.get("question"), ""));
+            if (label.isBlank()) continue;
+            List<String> options = question.get("options") instanceof List<?> values
+                ? values.stream().limit(20).map(value -> clean(Objects.toString(value, ""))).filter(value -> !value.isBlank()).toList()
+                : List.of();
+            normalizedQuestions.add(Map.of("id", id, "question", label.substring(0, Math.min(400, label.length())), "options", options));
+        }
+        if (normalizedQuestions.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No readable application questions were provided.");
+        String resume = clean(resumeText);
+        String jd = trimJobDescription(jobDescription == null ? "" : jobDescription);
+        String resumeHash = validHash(suppliedHash) ? suppliedHash : sha256(resume);
+        String key = cacheKey(resumeHash, jd + "\n" + json(normalizedQuestions), ANSWER_VERSION);
+        Map<String, Object> cached = readCache(key, "application-answers");
+        if (cached != null) { cached.put("cached", true); return cached; }
+
+        String prompt = """
+            Draft concise answers to these job application questions using only facts explicitly present in the resume.
+            Do not invent employment, dates, skills, credentials, work authorization, salary, availability, metrics,
+            personal preferences, or motivations. For a question whose answer is not supported by the resume, return
+            an empty answer and set needsUserInput=true. Never infer a yes/no answer about legal eligibility or personal
+            characteristics. For open-ended job-interest questions, mention only concrete overlap between the resume
+            and the job requirements; do not claim personal motives that are not stated. Return one result per question
+            with its exact id, answer, confidence (low|medium|high), and needsUserInput boolean. When a question has
+            choices, return the exact text of one choice only if resume facts clearly support it; otherwise return blank.
+            RESUME FACTS:\n%s\nJOB DESCRIPTION:\n%s\nQUESTIONS:\n%s
+            """.formatted(resume, jd, json(normalizedQuestions));
+        Map<String, Object> raw = callGemini(prompt, applicationAnswersSchema(), 800, false);
+        boolean degraded = Boolean.TRUE.equals(raw.remove("_menixDegraded"));
+        Map<String, Map<String, Object>> byId = new LinkedHashMap<>();
+        Object returned = raw.get("answers");
+        if (returned instanceof List<?> items) for (Object item : items) {
+            if (!(item instanceof Map<?, ?> map)) continue;
+            String id = clean(Objects.toString(map.get("id"), ""));
+            if (id.isBlank()) continue;
+            String confidence = clean(Objects.toString(map.get("confidence"), "low")).toLowerCase();
+            if (!List.of("low", "medium", "high").contains(confidence)) confidence = "low";
+            Map<String, Object> answer = new LinkedHashMap<>();
+            answer.put("id", id);
+            answer.put("answer", clean(Objects.toString(map.get("answer"), "")));
+            answer.put("confidence", confidence);
+            answer.put("needsUserInput", Boolean.TRUE.equals(map.get("needsUserInput")) || clean(Objects.toString(map.get("answer"), "")).isBlank());
+            byId.put(id, answer);
+        }
+        List<Map<String, Object>> answers = new ArrayList<>();
+        for (Map<String, Object> question : normalizedQuestions) {
+            String id = Objects.toString(question.get("id"));
+            Map<String, Object> answer = byId.get(id);
+            if (answer == null) answer = Map.of("id", id, "answer", "", "confidence", "low", "needsUserInput", true);
+            answers.add(answer);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("answers", answers);
+        result.put("model", model);
+        result.put("degraded", degraded);
+        result.put("cached", false);
+        writeCache(key, "application-answers", result);
         return result;
     }
 
@@ -405,6 +473,12 @@ public class AiAnalysisService {
 
     private Map<String, Object> suggestionsSchema() {
         return objectSchema(Map.of("suggestions", arraySchema(objectSchema(Map.of("id", stringSchema(), "section", enumSchema("summary", "bullet", "skills"), "before", stringSchema(), "after", stringSchema(), "reason", stringSchema()))), "cautions", arraySchema(stringSchema())));
+    }
+    private Map<String, Object> applicationAnswersSchema() {
+        return objectSchema(Map.of("answers", arraySchema(objectSchema(Map.of(
+            "id", stringSchema(), "answer", stringSchema(), "confidence", enumSchema("low", "medium", "high"),
+            "needsUserInput", Map.of("type", "BOOLEAN")
+        )))));
     }
     private Map<String, Object> profileSchema() {
         return objectSchema(Map.of("skills", arraySchema(stringSchema()), "yearsExperience", nullableNumber(), "degree", stringSchema(), "location", stringSchema(), "projects", arraySchema(stringSchema()), "roles", arraySchema(stringSchema())));

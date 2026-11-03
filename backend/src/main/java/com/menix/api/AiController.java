@@ -2,6 +2,7 @@ package com.menix.api;
 
 import com.menix.service.AiAnalysisService;
 import java.util.Map;
+import java.util.List;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -22,6 +23,7 @@ public class AiController {
 
     public record TailorRequest(String resumeText, String jobDescription) {}
     public record ProfileRequest(String resumeText) {}
+    public record ApplicationAnswersRequest(String resumeText, String jobDescription, List<Map<String, Object>> questions, String resumeHash) {}
 
     @PostMapping("/overview")
     public Map<String, Object> overview(@RequestBody AiAnalysisService.OverviewRequest request) {
@@ -31,6 +33,13 @@ public class AiController {
     @PostMapping("/suggestions")
     public Map<String, Object> suggestions(@RequestBody AiAnalysisService.SuggestionsRequest request) {
         return analysisService.suggestions(request);
+    }
+
+    @PostMapping("/application-answers")
+    public Map<String, Object> applicationAnswers(@RequestBody ApplicationAnswersRequest request) {
+        return analysisService.applicationAnswers(request == null ? null : request.resumeText(),
+            request == null ? null : request.jobDescription(), request == null ? null : request.questions(),
+            request == null ? null : request.resumeHash());
     }
 
     @PostMapping("/profile")

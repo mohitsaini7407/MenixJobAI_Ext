@@ -58,6 +58,8 @@ let activeResumeWorkflow = null;
 let activeResumePreviewText = '';
 let resumeUploadPipelinePromise = null;
 let tailorGenerationInProgress = false;
+let applicationAnswerItems = [];
+let applicationQuestionsLoading = false;
 
 // Wake Render as soon as the extension document opens; this is intentionally fire-and-forget.
 void fetch(`${DEFAULT_API}/health`).catch(() => {});
@@ -434,12 +436,14 @@ function renderResumeDocumentPreview(text) {
 function renderResumeWorkflow() {
   const workflow = activeResumeWorkflow;
   const hasJob = Boolean(workflow);
-  const hasResumeSelection = Boolean(workflow?.selectedType === 'tailored' && workflow.temporaryResumeName);
-  const hasTailoredFile = Boolean(workflow?.temporaryResumeId && workflow.status !== 'MASTER_RESUME_RESTORED');
+  const hasResumeSelection = Boolean(workflow?.selectedType === 'tailored' && workflow.temporaryResumeName)
+    || Boolean(workflow?.selectedType === 'master' && resumeFileName);
+  const hasSelectedFile = hasResumeSelection && workflow?.status !== 'MASTER_RESUME_RESTORED';
   const states = {
     JOB_DETECTED: 'Analyzing…',
     JD_ANALYZED: lastAnalysis ? `Match ${lastAnalysis.matchScore ?? 'N/A'}% · Choose a resume.` : 'Waiting for analysis.',
     MASTER_RESUME_SELECTED: 'Master resume selected.',
+    MASTER_RESUME_UPLOADED: 'Master resume uploaded and verified.',
     TAILORED_RESUME_GENERATED: 'Tailored resume ready.',
     WAITING_FOR_PROFILE_UPLOAD: 'Upload the resume on Naukri.',
     TEMPORARY_RESUME_UPLOADED: 'Resume uploaded.',
@@ -451,7 +455,10 @@ function renderResumeWorkflow() {
     APPLICATION_CANCELLED: 'Cancelled. Restore the master resume.'
   };
   $('activeWorkflowStatus').textContent = workflow ? states[workflow.status] || workflow.status : 'Waiting for job analysis.';
+  const canAnswerQuestions = Boolean(workflow && ['APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow.status));
+  $('applicationAnswersSection').classList.toggle('hidden', !canAnswerQuestions);
   $('tailoredResumeSection').classList.toggle('hidden', !hasResumeSelection);
+  $('activeWorkflowHeading').textContent = workflow?.selectedType === 'master' ? 'Master Resume for This Job' : 'Tailored Resume';
   $('applyResumePreview').classList.toggle('hidden', !hasResumeSelection);
   $('activeResumePreview').classList.toggle('hidden', !hasResumeSelection);
   $('applyResumePreviewFilename').textContent = workflow?.selectedType === 'tailored' ? workflow.temporaryResumeName : workflow?.selectedResumeName || resumeFileName;
@@ -461,7 +468,7 @@ function renderResumeWorkflow() {
   $('tailoredResumeIcon').classList.toggle('doc-file-icon', fileType === 'DOC');
   $('tailoredResumeIcon').innerHTML = createResumeFileIcon(fileType);
   const fileSize = workflow?.selectedType === 'tailored' ? workflow.temporaryResumeSize : resumeFileSize;
-  const uploaded = ['TEMPORARY_RESUME_UPLOADED', 'APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow?.status);
+  const uploaded = ['TEMPORARY_RESUME_UPLOADED', 'MASTER_RESUME_UPLOADED', 'APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow?.status);
   const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
   const uploading = workflow?.status === 'UPLOADING_RESUME';
   const fileState = restored ? 'Master resume restored' : uploading ? 'Uploading to Naukri' : uploaded ? 'Uploaded and verified on Naukri' : 'Saved in this browser';
@@ -471,8 +478,8 @@ function renderResumeWorkflow() {
   $('returnToJobBtn').classList.toggle('hidden', !hasJob || !workflow?.jobUrl);
   $('workflowError').textContent = workflow?.lastError || '';
   $('workflowError').classList.add('sr-only');
-  $('viewTailoredResumeBtn').classList.toggle('hidden', !hasTailoredFile);
-  $('downloadActiveResumeBtn').classList.toggle('hidden', !hasTailoredFile);
+  $('viewTailoredResumeBtn').classList.toggle('hidden', !hasSelectedFile);
+  $('downloadActiveResumeBtn').classList.toggle('hidden', !hasSelectedFile);
 }
 
 $('viewTailoredResumeBtn').addEventListener('click', () => {
@@ -491,11 +498,201 @@ function renderManualUploadGuide(workflow) {
   const downloadLocation = workflow.lastDownloadFolder ? `Downloads/${workflow.lastDownloadFolder}` : 'Downloads';
   const steps = [
     'Click “Update resume” on Naukri.',
-    `Choose ${workflow.temporaryResumeName || 'the tailored resume'} from ${downloadLocation}.`,
+    `If the upload did not start automatically, click Download, then choose ${workflow.temporaryResumeName || workflow.selectedResumeName || 'the selected resume'} from ${downloadLocation}.`,
     'Return here after Naukri confirms the upload.'
   ];
   steps.forEach(text => { const item = document.createElement('li'); item.textContent = text; guide.append(item); });
 }
+
+const SENSITIVE_QUESTION_PATTERN = /\b(?:gender|race|ethnicity|disability|veteran|military|sexual orientation|visa|work authorization|sponsor(?:ship)?|authorized to work|eligible to work|work permit|citizenship|nationality|criminal|background check|date of birth|birth date|age)\b/i;
+
+async function activeApplicationTab() {
+  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  let tab = tabs[0];
+  if (!/^https:\/\/(?:[^/]+\.)?naukri\.com\//i.test(tab?.url || '')) {
+    tab = activeResumeWorkflow?.jobTabId
+      ? await chrome.tabs.get(activeResumeWorkflow.jobTabId).catch(() => null) : null;
+  }
+  if (!tab?.id || !/^https:\/\/(?:[^/]+\.)?naukri\.com\//i.test(tab.url || '')) {
+    throw new Error('Open the Naukri application form to find its questions.');
+  }
+  return tab;
+}
+
+async function findApplicationQuestions(tabId) {
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const visible = element => Boolean(element.getClientRects().length)
+        && getComputedStyle(element).visibility !== 'hidden'
+        && getComputedStyle(element).display !== 'none';
+      const controls = [...document.querySelectorAll('input,textarea,select')].filter(element => {
+        if (!visible(element) || element.disabled || element.readOnly || element.closest('#__menixjobai_dock')) return false;
+        if (element instanceof HTMLInputElement && !['text','email','tel','url','number','search','radio'].includes(element.type)) return false;
+        if (element instanceof HTMLInputElement && element.type === 'radio') {
+          const group = [...document.querySelectorAll('input[type="radio"]')].filter(item => item.name === element.name && item.form === element.form);
+          return !group.some(item => item.checked);
+        }
+        if (element instanceof HTMLSelectElement) return !element.value || /^(?:select|choose|please)/i.test(element.selectedOptions[0]?.textContent?.trim() || '');
+        return !String(element.value || '').trim();
+      });
+      const labelFor = element => {
+        const explicit = [...(element.labels || [])].map(label => label.innerText || '').join(' ');
+        const aria = element.getAttribute('aria-label') || '';
+        const labelled = (element.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => document.getElementById(id)?.innerText || '').join(' ');
+        const legend = element.closest('fieldset')?.querySelector('legend')?.innerText || '';
+        const nearby = element.closest('label')?.innerText || '';
+        const fallback = element.getAttribute('placeholder') || element.name || element.id || '';
+        return [explicit, nearby, legend, labelled, aria, fallback].map(value => value.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 300);
+      };
+      const questions = [];
+      const radioGroups = new Map();
+      for (const element of controls) {
+        if (element instanceof HTMLInputElement && element.type === 'radio') {
+          const key = element.name || `radio-${questions.length}`;
+          if (radioGroups.has(key)) continue;
+          const group = [...document.querySelectorAll('input[type="radio"]')].filter(item => item.name === element.name && item.form === element.form && visible(item));
+          const question = element.closest('fieldset')?.querySelector('legend')?.innerText || labelFor(element);
+          const id = `menix-question-${questions.length}`;
+          group.forEach(item => { item.dataset.menixAnswerId = id; });
+          radioGroups.set(key, true);
+          questions.push({ id, question, kind: 'radio', options: group.map(item => ({ value: item.value, label: item.closest('label')?.innerText?.trim() || document.querySelector(`label[for="${CSS.escape(item.id || '')}"]`)?.innerText?.trim() || item.value })) });
+          continue;
+        }
+        const id = `menix-question-${questions.length}`;
+        element.dataset.menixAnswerId = id;
+        questions.push({
+          id, question: labelFor(element),
+          kind: element instanceof HTMLSelectElement ? 'select' : 'text',
+          options: element instanceof HTMLSelectElement ? [...element.options].filter(option => option.value).map(option => ({ value: option.value, label: option.textContent.trim() })) : []
+        });
+      }
+      return questions.filter(item => item.question);
+    }
+  });
+  return Array.isArray(result?.result) ? result.result : [];
+}
+
+function renderApplicationAnswers(items) {
+  const list = $('applicationAnswersList');
+  list.replaceChildren();
+  applicationAnswerItems = items;
+  $('fillApplicationAnswersBtn').classList.toggle('hidden', !items.some(item => item.answer || item.needsUserInput));
+  for (const item of items) {
+    const card = document.createElement('article');
+    card.className = `application-answer-card${item.needsUserInput ? ' needs-user-input' : ''}`;
+    const heading = document.createElement('h3'); heading.textContent = item.question;
+    const note = document.createElement('p'); note.className = 'answer-confidence';
+    note.textContent = item.sensitive ? 'Sensitive question — answer this yourself.'
+      : item.needsUserInput ? 'No supported answer found. Add your own answer to fill it.'
+        : `AI draft · ${item.confidence} confidence · review before filling`;
+    const answer = document.createElement('textarea');
+    answer.value = item.answer || ''; answer.rows = 2; answer.setAttribute('aria-label', `Answer for ${item.question}`);
+    answer.dataset.answerId = item.id;
+    const fill = document.createElement('button'); fill.className = 'btn answer-fill'; fill.type = 'button'; fill.textContent = 'Fill this answer';
+    fill.addEventListener('click', () => fillReviewedApplicationAnswers([item.id]));
+    card.append(heading, note, answer, fill);
+    list.append(card);
+  }
+}
+
+async function suggestApplicationAnswers() {
+  const button = $('suggestApplicationAnswersBtn');
+  button.disabled = true; button.textContent = 'Finding questions…';
+  $('applicationAnswersList').replaceChildren();
+  $('fillApplicationAnswersBtn').classList.add('hidden');
+  try {
+    const tab = await activeApplicationTab();
+    const detected = await findApplicationQuestions(tab.id);
+    if (!detected.length) throw new Error('No unanswered application questions were found.');
+    const questions = detected.map(item => ({
+      ...item,
+      sensitive: SENSITIVE_QUESTION_PATTERN.test(item.question),
+      question: item.question
+    }));
+    const answerable = questions.filter(item => !item.sensitive);
+    let generated = [];
+    if (answerable.length) {
+      const resumeText = $('resumeText').value.trim();
+      if (!resumeText) throw new Error('Upload a Master Resume to draft answers.');
+      const response = await api('/ai/application-answers', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resumeText,
+          jobDescription: $('jobDescription').value.trim(),
+          resumeHash: await sha256Hex(cleanText(resumeText)),
+          questions: answerable.map(({ id, question, options }) => ({ id, question, options: (options || []).map(option => option.label) }))
+        })
+      });
+      generated = response.answers || [];
+    }
+    const generatedById = new Map(generated.map(item => [item.id, item]));
+    renderApplicationAnswers(questions.map(question => ({
+      ...question, ...(generatedById.get(question.id) || {}),
+      answer: generatedById.get(question.id)?.answer || '',
+      needsUserInput: question.sensitive || generatedById.get(question.id)?.needsUserInput !== false,
+      confidence: generatedById.get(question.id)?.confidence || 'low'
+    })));
+    if (questions.length) setStatus(`Found ${questions.length} unanswered question${questions.length === 1 ? '' : 's'}. Review answers before filling.`, 'success');
+  } catch (error) {
+    const note = document.createElement('p'); note.className = 'answer-confidence'; note.textContent = error.message;
+    $('applicationAnswersList').append(note);
+    setStatus(error.message, 'error');
+  } finally {
+    button.disabled = false; button.textContent = 'Suggest Answers from Resume';
+  }
+}
+
+async function fillReviewedApplicationAnswers(onlyIds = null) {
+  try {
+    const tab = await activeApplicationTab();
+    const answers = [...$('applicationAnswersList').querySelectorAll('textarea[data-answer-id]')]
+      .filter(field => !onlyIds || onlyIds.includes(field.dataset.answerId))
+      .map(field => ({ id: field.dataset.answerId, answer: field.value.trim() }))
+      .filter(item => item.answer);
+    if (!answers.length) throw new Error('Add or review an answer before filling.');
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id }, args: [answers],
+      func: values => {
+        let filled = 0; let skipped = 0;
+        const normalize = value => String(value || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        for (const item of values) {
+          const fields = [...document.querySelectorAll('[data-menix-answer-id]')].filter(field => field.dataset.menixAnswerId === item.id);
+          if (!fields.length) { skipped++; continue; }
+          const first = fields[0];
+          if (first instanceof HTMLSelectElement) {
+            if (first.value) { skipped++; continue; }
+            const target = normalize(item.answer);
+            const option = [...first.options].find(entry => normalize(entry.textContent) === target || normalize(entry.value) === target);
+            if (!option) { skipped++; continue; }
+            first.value = option.value;
+            first.dispatchEvent(new Event('input', { bubbles: true })); first.dispatchEvent(new Event('change', { bubbles: true }));
+            filled++; continue;
+          }
+          if (first instanceof HTMLInputElement && first.type === 'radio') {
+            const target = normalize(item.answer);
+            const choice = fields.find(field => normalize(field.closest('label')?.innerText || document.querySelector(`label[for="${CSS.escape(field.id || '')}"]`)?.innerText || field.value) === target);
+            if (!choice || fields.some(field => field.checked)) { skipped++; continue; }
+            choice.checked = true; choice.dispatchEvent(new Event('input', { bubbles: true })); choice.dispatchEvent(new Event('change', { bubbles: true }));
+            filled++; continue;
+          }
+          if (String(first.value || '').trim()) { skipped++; continue; }
+          const prototype = first instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+          setter ? setter.call(first, item.answer) : first.value = item.answer;
+          first.dispatchEvent(new Event('input', { bubbles: true })); first.dispatchEvent(new Event('change', { bubbles: true }));
+          filled++;
+        }
+        return { filled, skipped };
+      }
+    });
+    const outcome = result?.result || { filled: 0, skipped: answers.length };
+    setStatus(`Filled ${outcome.filled} answer${outcome.filled === 1 ? '' : 's'}; ${outcome.skipped} field${outcome.skipped === 1 ? '' : 's'} left for you. Review the form; nothing was submitted.`, outcome.filled ? 'success' : 'info');
+  } catch (error) { setStatus(error.message, 'error'); }
+}
+
+$('suggestApplicationAnswersBtn').addEventListener('click', suggestApplicationAnswers);
+$('fillApplicationAnswersBtn').addEventListener('click', () => fillReviewedApplicationAnswers());
 
 // ------------------------------
 // API REQUEST
@@ -727,12 +924,13 @@ function updatePrimaryAction() {
     const workflow = activeResumeWorkflow;
     const applicationStarted = ['APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow?.status);
     const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
-    const uploaded = workflow?.status === 'TEMPORARY_RESUME_UPLOADED';
+    const uploaded = ['TEMPORARY_RESUME_UPLOADED', 'MASTER_RESUME_UPLOADED'].includes(workflow?.status);
     button.disabled = applicationStarted || restored;
     button.textContent = applicationStarted ? 'Application in progress'
       : restored ? 'Resume restored on Naukri'
-        : uploaded && workflow?.applicationStartFailed ? 'Retry Apply'
-          : 'Tailor Resume & Apply';
+          : uploaded && workflow?.applicationStartFailed ? 'Retry Apply'
+            : workflow?.selectedType === 'master' ? 'Upload Master Resume & Apply'
+              : 'Tailor Resume & Apply';
   }
 }
 function safeFilenamePart(value) {
@@ -1388,7 +1586,7 @@ async function returnToJobAndClickApply(profileTabId = activeResumeWorkflow?.pro
     const message = result?.count > 1
       ? 'More than one Apply button was found. The job is open; choose the correct Apply button manually.'
       : 'The job is open, but its Apply button was not found. Click Apply on the job page to continue.';
-    await persistResumeWorkflow({ ...activeResumeWorkflow, status: 'TEMPORARY_RESUME_UPLOADED', applicationStartFailed: true, lastError: message });
+    await persistResumeWorkflow({ ...activeResumeWorkflow, status: activeResumeWorkflow.selectedType === 'master' ? 'MASTER_RESUME_UPLOADED' : 'TEMPORARY_RESUME_UPLOADED', applicationStartFailed: true, lastError: message });
     setStatus(message, 'info');
     return false;
   }
@@ -1416,6 +1614,23 @@ async function openNaukriProfileFromButton() {
 }
 $('openNaukriProfileBtn').addEventListener('click', openNaukriProfileFromButton);
 $('returnToJobBtn').addEventListener('click', returnToJobApplication);
+
+async function useMasterResumeForThisJob() {
+  try {
+    if (!activeResumeWorkflow) throw new Error('Open a Naukri job listing first.');
+    const master = await readResumeFile('master');
+    if (!master?.file) throw new Error('Upload a Master Resume first.');
+    await persistResumeWorkflow({
+      ...activeResumeWorkflow,
+      selectedType: 'master', selectedResumeName: master.name || resumeFileName,
+      status: 'MASTER_RESUME_SELECTED', lastError: '', manualUploadNeeded: false,
+      downloadedAt: '', downloadedFileName: ''
+    });
+    await loadWorkflowResumePreview();
+    await chooseResumeForThisJob();
+  } catch (error) { setStatus(error.message, 'error'); }
+}
+$('useMasterResumeBtn').addEventListener('click', useMasterResumeForThisJob);
 async function generateTemporaryResumeForActiveJob() {
   if (!activeResumeWorkflow || !lastAnalysis) return setStatus('Wait for job analysis before generating a tailored resume.', 'error');
   tailorGenerationInProgress = true;
@@ -1734,20 +1949,20 @@ async function chooseResumeForThisJob() {
     if (!activeResumeWorkflow) throw new Error('Open a job listing first.');
     if (!lastAnalysis && activeResumeWorkflow.selectedType !== 'tailored') throw new Error('Wait for job analysis before choosing this resume.');
     let workflow = activeResumeWorkflow;
-    const stored = workflow.selectedType === 'tailored' && workflow.temporaryResumeId
-      ? await readResumeFile(workflow.temporaryResumeId).catch(() => null) : null;
-    const expectedNamePattern = /^.+_\d{2}-\d{2}-\d{4}\.docx$/i;
-    if (!stored?.file || !expectedNamePattern.test(workflow.temporaryResumeName || '')) {
-      await generateTemporaryResumeForActiveJob();
-      workflow = activeResumeWorkflow;
-      if (workflow?.selectedType !== 'tailored' || !workflow.temporaryResumeId) throw new Error(workflow?.lastError || 'Could not generate the tailored resume.');
+    if (workflow.selectedType === 'master') {
+      const master = await readResumeFile('master').catch(() => null);
+      if (!master?.file) throw new Error('The Master Resume file is unavailable. Replace it in Apply first.');
+    } else {
+      const stored = workflow.selectedType === 'tailored' && workflow.temporaryResumeId
+        ? await readResumeFile(workflow.temporaryResumeId).catch(() => null) : null;
+      const expectedNamePattern = /^.+_\d{2}-\d{2}-\d{4}\.docx$/i;
+      if (!stored?.file || !expectedNamePattern.test(workflow.temporaryResumeName || '')) {
+        await generateTemporaryResumeForActiveJob();
+        workflow = activeResumeWorkflow;
+        if (workflow?.selectedType !== 'tailored' || !workflow.temporaryResumeId) throw new Error(workflow?.lastError || 'Could not generate the tailored resume.');
+      }
     }
     const file = await selectedWorkflowFile(workflow);
-    if (workflow.downloadedFileName !== file.name || !workflow.downloadedAt) {
-      await downloadActiveWorkflowResume();
-      workflow = activeResumeWorkflow;
-      if (!workflow?.downloadedAt) throw new Error(workflow?.lastError || 'Resume download did not start.');
-    }
     await persistResumeWorkflow({ ...activeResumeWorkflow, pipelineStep: 1, lastError: '' });
     await delay(RESUME_UPLOAD_DELAY_MS);
     const site = await detectNaukriSite(activeResumeWorkflow);
@@ -1783,7 +1998,7 @@ async function chooseResumeForThisJob() {
     if (verified) {
       await persistResumeWorkflow({
         ...activeResumeWorkflow,
-        status: 'TEMPORARY_RESUME_UPLOADED', pipelineStep: 4,
+        status: activeResumeWorkflow.selectedType === 'master' ? 'MASTER_RESUME_UPLOADED' : 'TEMPORARY_RESUME_UPLOADED', pipelineStep: 4,
         manualUploadNeeded: false, uploadMethod: method,
         uploadedAt: new Date().toISOString(), lastError: '', applicationStartFailed: false
       });
@@ -1855,7 +2070,7 @@ async function verifyActiveResumeUpload() {
       ...activeResumeWorkflow,
       profileTabId: tab.id,
       naukriSite: site,
-      status: 'TEMPORARY_RESUME_UPLOADED', pipelineStep: 4,
+      status: activeResumeWorkflow.selectedType === 'master' ? 'MASTER_RESUME_UPLOADED' : 'TEMPORARY_RESUME_UPLOADED', pipelineStep: 4,
       manualUploadNeeded: false, uploadMethod: 'manual', uploadedAt: new Date().toISOString(), lastError: ''
     });
     setStatus(`Resume updated on Naukri: ${file.name}`, 'success');
@@ -1889,7 +2104,14 @@ async function runMasterRestorePipeline() {
 }
 
 async function confirmApplicationEnded(status) {
-  if (!activeResumeWorkflow || !confirm(status === 'APPLICATION_SUBMITTED' ? 'Confirm that you submitted this application? This will start the Master Resume restoration steps.' : 'Confirm that you cancelled this application? This will start the Master Resume restoration steps.')) return;
+  if (!activeResumeWorkflow || !confirm(status === 'APPLICATION_SUBMITTED'
+    ? `Confirm that you submitted this application?${activeResumeWorkflow.selectedType === 'master' ? '' : ' This will start the Master Resume restoration steps.'}`
+    : `Confirm that you cancelled this application?${activeResumeWorkflow.selectedType === 'master' ? '' : ' This will start the Master Resume restoration steps.'}`)) return;
+  if (activeResumeWorkflow.selectedType === 'master') {
+    await persistResumeWorkflow({ ...activeResumeWorkflow, status, applicationStatus: status, applicationConfirmedAt: new Date().toISOString(), lastError: '' });
+    setStatus(status === 'APPLICATION_SUBMITTED' ? 'Application marked as submitted.' : 'Application marked as cancelled. Your Master Resume is already on Naukri.', 'success');
+    return;
+  }
   await persistResumeWorkflow({ ...activeResumeWorkflow, status, applicationStatus: status, applicationConfirmedAt: new Date().toISOString(), lastError: '' });
   await persistResumeWorkflow({ ...activeResumeWorkflow, status: 'RESTORATION_PENDING', lastError: '' });
   try { await openNaukriProfile(await detectNaukriSite()); setStatus('Application state saved. Upload the original Master Resume on Naukri, then verify its filename here.', 'info'); }
@@ -1959,7 +2181,7 @@ async function retryActiveWorkflow() {
   const workflow = activeResumeWorkflow;
   await persistResumeWorkflow({ ...workflow, lastError: '' });
   if (['RESTORATION_PENDING', 'RESTORATION_FAILED', 'APPLICATION_CANCELLED', 'APPLICATION_SUBMITTED'].includes(workflow.status)) return runMasterRestorePipeline();
-  if (workflow.manualUploadNeeded || workflow.selectedType === 'tailored' || lastAnalysis) return chooseResumeForThisJob();
+  if (workflow.manualUploadNeeded || workflow.selectedType === 'master' || workflow.selectedType === 'tailored' || lastAnalysis) return chooseResumeForThisJob();
 }
 
 // ------------------------------
@@ -2314,7 +2536,7 @@ function renderAnalysis(data, source = 'ai') {
   renderFitChecks(result.fitChecks || []);
   renderSkillBreakdown(result);
   updateActionBar();
-  if (!quick && activeResumeWorkflow && !['MASTER_RESUME_SELECTED', 'TAILORED_RESUME_GENERATED', 'WAITING_FOR_PROFILE_UPLOAD', 'TEMPORARY_RESUME_UPLOADED', 'APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED', 'RESTORATION_PENDING', 'MASTER_RESUME_RESTORED', 'RESTORATION_FAILED', 'APPLICATION_CANCELLED'].includes(activeResumeWorkflow.status)) {
+  if (!quick && activeResumeWorkflow && !['MASTER_RESUME_SELECTED', 'TAILORED_RESUME_GENERATED', 'WAITING_FOR_PROFILE_UPLOAD', 'TEMPORARY_RESUME_UPLOADED', 'MASTER_RESUME_UPLOADED', 'APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED', 'RESTORATION_PENDING', 'MASTER_RESUME_RESTORED', 'RESTORATION_FAILED', 'APPLICATION_CANCELLED'].includes(activeResumeWorkflow.status)) {
     void persistResumeWorkflow({ ...activeResumeWorkflow, status: 'JD_ANALYZED', matchScore: result.matchScore, analysisAt: new Date().toISOString() });
   } else {
     renderResumeWorkflow();

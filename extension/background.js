@@ -108,6 +108,21 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
         value: body.style.getPropertyValue(property),
         priority: body.style.getPropertyPriority(property)
       })) : [];
+      const availablePageWidth = window.innerWidth - dockWidth;
+      const fixedHeaderStyles = [...document.querySelectorAll('header,[role="banner"]')]
+        .filter(element => {
+          const bounds = element.getBoundingClientRect();
+          const position = getComputedStyle(element).position;
+          return (position === 'fixed' || position === 'sticky') && bounds.top < 160 && bounds.width > availablePageWidth;
+        })
+        .map(element => ({
+          element,
+          styles: ['left', 'right', 'width', 'max-width', 'box-sizing'].map(property => ({
+            property,
+            value: element.style.getPropertyValue(property),
+            priority: element.style.getPropertyPriority(property)
+          }))
+        }));
       const layoutStyle = document.createElement('style');
       layoutStyle.id = '__menixjobai_layout_fix';
       layoutStyle.textContent = `html{width:calc(100vw - ${dockWidth}px)!important;max-width:calc(100vw - ${dockWidth}px)!important;overflow-x:hidden!important}body{width:100%!important;max-width:100%!important;min-width:0!important;overflow-x:hidden!important}body > *:not(#__menixjobai_dock){box-sizing:border-box!important;width:100%!important;max-width:100%!important;min-width:0!important}body > *:not(#__menixjobai_dock) *{min-width:0!important}`;
@@ -119,6 +134,7 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
       const restorePageLayout = () => {
         restoreStyles(root, originalRootStyles);
         if (body) restoreStyles(body, originalBodyStyles);
+        fixedHeaderStyles.forEach(({ element, styles }) => restoreStyles(element, styles));
         layoutStyle.remove();
       };
       if (body) {
@@ -134,6 +150,13 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
         body.style.setProperty('overflow-x', 'hidden', 'important');
         body.style.setProperty('margin-left', '0', 'important');
         body.style.setProperty('margin-right', '0', 'important');
+        fixedHeaderStyles.forEach(({ element }) => {
+          element.style.setProperty('left', '0', 'important');
+          element.style.setProperty('right', `${dockWidth}px`, 'important');
+          element.style.setProperty('width', 'auto', 'important');
+          element.style.setProperty('max-width', `${availablePageWidth}px`, 'important');
+          element.style.setProperty('box-sizing', 'border-box', 'important');
+        });
       } else {
         const existingPadding = getComputedStyle(root).paddingRight || '0px';
         root.style.setProperty('box-sizing', 'border-box', 'important');
@@ -142,7 +165,7 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
       const dock = document.createElement('div');
       dock.id = '__menixjobai_dock';
       dock.dataset.menixVersion = version;
-      dock.style.cssText = `position:fixed;top:0;right:0;bottom:0;width:${dockWidth}px;height:100vh;z-index:2147483647;background:#0b1017;box-shadow:-8px 0 28px #0006;overflow:hidden;`;
+      dock.style.cssText = `position:fixed;top:0;right:0;bottom:0;width:${dockWidth}px;height:100vh;z-index:2147483647;background:#0b1017;border-left:1px solid #dbe4f0;overflow:hidden;`;
       const frame = document.createElement('iframe');
       frame.title = 'MenixJobAI'; frame.src = extensionPanelUrl;
       frame.style.cssText = 'width:100%;height:100%;border:0;';

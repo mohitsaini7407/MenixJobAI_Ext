@@ -120,6 +120,7 @@
           <label class="btn secondary replace-resume" for="resumeFile">↻ &nbsp;Replace</label>
         </div>
         <div class="master-profile-action">
+          <button id="useMasterResumeBtn" class="btn primary full" type="button">Use Master Resume &amp; Apply</button>
           <button id="openNaukriProfileBtn" class="btn secondary full" type="button">Naukri Profile</button>
         </div>
         <details id="resumeDetails" class="resume-details">
@@ -130,9 +131,9 @@
         </details>
       </section>
 
-      <section id="tailoredResumeSection" class="section tailored-resume-section hidden" aria-label="Tailored Resume">
-        <div class="card-heading"><h2>Tailored Resume</h2></div>
-        <section id="applyResumePreview" class="tailored-workflow" aria-label="Tailored resume for this job">
+      <section id="tailoredResumeSection" class="section tailored-resume-section hidden" aria-label="Selected Resume for This Job">
+        <div class="card-heading"><h2 id="activeWorkflowHeading">Tailored Resume</h2></div>
+        <section id="applyResumePreview" class="tailored-workflow" aria-label="Selected resume for this job">
           <p id="activeWorkflowStatus" class="sr-only" role="status"></p>
           <ol id="manualUploadGuide" class="manual-upload-guide hidden"></ol>
           <p id="workflowError" class="workflow-error hidden" role="alert"></p>
@@ -149,6 +150,13 @@
             <div id="applyResumePreviewContent" class="workflow-preview-content hidden" aria-label="Resume document preview"></div>
           </section>
         </section>
+      </section>
+
+      <section id="applicationAnswersSection" class="section application-answers-section hidden" aria-label="Application answers">
+        <div class="card-heading"><h2>Application Questions</h2></div>
+        <button id="suggestApplicationAnswersBtn" class="btn secondary full" type="button">Suggest Answers from Resume</button>
+        <div id="applicationAnswersList" class="application-answers-list"></div>
+        <button id="fillApplicationAnswersBtn" class="btn primary full hidden" type="button">Fill Reviewed Answers</button>
       </section>
 
     </div>
