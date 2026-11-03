@@ -34,8 +34,8 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class AiAnalysisService {
     private static final Logger log = LoggerFactory.getLogger(AiAnalysisService.class);
-    private static final String PROMPT_VERSION = "overview-v2";
-    private static final String SUGGESTION_VERSION = "suggestions-v1";
+    private static final String PROMPT_VERSION = "overview-evidence-v3";
+    private static final String SUGGESTION_VERSION = "suggestions-evidence-v2";
     private static final String ANSWER_VERSION = "application-answers-v1";
     private final RestClient restClient;
     private final ObjectMapper mapper;
@@ -89,14 +89,16 @@ public class AiAnalysisService {
             if (saved != null) profile = readObject(saved.getProfileJson());
         }
         Map<String, Object> jobMeta = request.jobMeta() == null ? Map.of() : request.jobMeta();
-        String candidateEvidence = profile != null && !profile.isEmpty()
-            ? "STRUCTURED RESUME PROFILE:\n" + json(profile)
-            : "RESUME TEXT:\n" + resumeText;
+        String candidateEvidence = !resumeText.isBlank()
+            ? "MASTER RESUME TEXT (source of truth; cite exact excerpts only):\n" + resumeText
+                + (profile == null || profile.isEmpty() ? "" : "\nSTRUCTURED RESUME PROFILE (navigation aid only):\n" + json(profile))
+            : "STRUCTURED RESUME PROFILE (source of truth available):\n" + json(profile);
         String prompt = overviewPrompt(candidateEvidence, jobDescription, jobMeta);
-        Map<String, Object> raw = callGemini(prompt, overviewSchema(), 700, true);
+        Map<String, Object> raw = callGemini(prompt, overviewSchema(), 1800, true);
         boolean degraded = Boolean.TRUE.equals(raw.remove("_menixDegraded"));
-        Map<String, Object> result = normalizeOverview(raw);
-        Integer score = AnalysisScoring.total(asMap(result.get("scores")));
+        String evidenceText = !resumeText.isBlank() ? resumeText : json(profile);
+        Map<String, Object> result = normalizeOverview(raw, evidenceText, !evidenceText.isBlank());
+        Integer score = (Integer) result.get("matchScore");
         result.put("matchScore", score);
         result.put("matchLevel", AnalysisScoring.level(score));
         result.put("model", model);
@@ -130,23 +132,26 @@ public class AiAnalysisService {
         String resumeText = clean(request.resumeText());
         String resumeHash = validHash(request.resumeHash()) ? request.resumeHash() : sha256(resumeText.isBlank() ? json(request.resumeProfile()) : resumeText);
         String jobDescription = trimJobDescription(request.jobDescription());
-        String key = cacheKey(resumeHash, jobDescription, SUGGESTION_VERSION);
-        Map<String, Object> cached = readCache(key, "suggestions");
-        if (cached != null) { cached.put("cached", true); return cached; }
-
         String candidate = request.workingResume() != null && !request.workingResume().isBlank()
             ? request.workingResume() : resumeText;
+        String key = cacheKey(resumeHash, jobDescription, SUGGESTION_VERSION + "-" + sha256(candidate));
+        Map<String, Object> cached = readCache(key, "suggestions");
+        if (cached != null) { cached.put("cached", true); return cached; }
         String prompt = """
-            Suggest only truthful, evidence-supported resume edits for this job. Do not add skills,
-            employers, dates, achievements, metrics, qualifications, or experience not present in
-            the resume. Return JSON with suggestions (array of {id,section,before,after,reason})
-            and cautions (array of strings). Sections must be summary, bullet, or skills. Return at
-            most 6 edits, each concise. Keep each before excerpt exact so it can be found in the resume.
-            RESUME:\n%s\nJOB DESCRIPTION:\n%s
-            """.formatted(candidate, jobDescription);
+            Tailor the working resume for this specific job using only facts supported by the permanent Master Resume.
+            Reorder and rewrite relevant existing evidence; do not add a technology, employer, date, duration,
+            achievement, metric, credential, responsibility or experience that is not explicitly supported.
+            Do not insert job-description terms into the resume unless they are supported by an exact evidence excerpt.
+            Return JSON with suggestions (array of {id,section,before,after,reason,evidence}) and cautions.
+            Sections must be summary, bullet, or skills. Return at most 8 concise edits. `before` must be an exact
+            excerpt from the WORKING RESUME. Each evidence item must be an exact, short excerpt from MASTER RESUME
+            that directly supports the replacement. If no truthful edit is useful, return an empty suggestions array.
+            MASTER RESUME (permanent source of truth):\n%s\nWORKING RESUME:\n%s\nJOB DESCRIPTION:\n%s
+            """.formatted(resumeText, candidate, jobDescription);
         Map<String, Object> raw = callGemini(prompt, suggestionsSchema(), 900, false);
         boolean degraded = Boolean.TRUE.equals(raw.remove("_menixDegraded"));
         List<Map<String, Object>> normalized = new ArrayList<>();
+        int rejectedCount = 0;
         Object items = raw.get("suggestions");
         if (items instanceof List<?> list) {
             for (Object item : list) {
@@ -158,12 +163,25 @@ public class AiAnalysisService {
                 suggestion.put("before", clean(Objects.toString(map.get("before"), "")));
                 suggestion.put("after", clean(Objects.toString(map.get("after"), "")));
                 suggestion.put("reason", clean(Objects.toString(map.get("reason"), "")));
-                if (!suggestion.get("after").toString().isBlank()) normalized.add(suggestion);
+                List<String> evidence = stringList(map.get("evidence"));
+                ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
+                    resumeText, candidate, jobDescription, suggestion.get("before").toString(),
+                    suggestion.get("after").toString(), evidence);
+                if (validation.valid()) {
+                    suggestion.put("evidence", evidence);
+                    suggestion.put("validation", "verified");
+                    normalized.add(suggestion);
+                } else {
+                    rejectedCount++;
+                }
             }
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("suggestions", normalized);
-        result.put("cautions", stringList(raw.get("cautions")));
+        List<String> cautions = new ArrayList<>(stringList(raw.get("cautions")));
+        if (rejectedCount > 0) cautions.add(rejectedCount + " proposed edit(s) were withheld because their source or evidence could not be verified.");
+        result.put("cautions", cautions);
+        result.put("validation", Map.of("status", rejectedCount == 0 ? "passed" : "partial", "acceptedEdits", normalized.size(), "rejectedEdits", rejectedCount));
         result.put("model", model);
         result.put("degraded", degraded);
         result.put("cached", false);
@@ -293,20 +311,24 @@ public class AiAnalysisService {
 
     private String overviewPrompt(String candidateEvidence, String jd, Map<String, Object> jobMeta) {
         return """
-            Compare candidate evidence with the job description conservatively. Never invent any fact.
-            Compute component scores from explicit evidence, but do NOT return or calculate an overall
-            match score. Related degrees (for example Data Science for Computer Science or related)
-            count as equivalent unless the job says only. Put location, work mode, notice period and
-            education in fitChecks, never missingSkills. missingSkills contains only explicit technical
-            requirements absent from the resume. Separate technical and soft skills. Do not put soft
-            skills in missingSkills. Avoid generic soft skills and synonyms that are not explicit in
-            the JD. Parse required experience years and compare with dated resume roles. Give a numeric
-            experience score whenever the JD states a years requirement; use null only when it states
-            no experience requirement. Give null education only when the JD has no education criteria.
-            Use null for skills or keywords only when the JD has no explicit requirements to score.
-            Use null for candidateYears only if the resume has no usable dates or duration evidence.
-            Confidence reflects JD completeness.
-            Return one-sentence verdict of at most 20 words and at most 3 short reasons.
+            Analyze any job family dynamically; do not assume a developer role or use a role-specific fixed skill list.
+            Extract the role family, industry and seniority from this job description. Extract distinct requirements
+            into the requirements array. Categorize each as REQUIRED_SKILL, PREFERRED_SKILL, EXPERIENCE,
+            PROJECT_RESPONSIBILITY, KEYWORD, EDUCATION_CERTIFICATION, or ELIGIBILITY; importance is MUST_HAVE,
+            PREFERRED, OPTIONAL, RESPONSIBILITY, EDUCATION, EXPERIENCE, CERTIFICATION, or ELIGIBILITY.
+            Classify each against the resume as EXACT_MATCH, EQUIVALENT_MATCH, RELATED_EXPERIENCE, MISSING, or UNKNOWN.
+            Every supported match must quote a short exact evidence excerpt from the resume and identify its section.
+            A skill name alone does not prove work experience. Similar technologies are not interchangeable: React does
+            not prove Angular, Spring Boot does not prove Node.js, and Docker does not prove Kubernetes. Only use
+            RELATED_EXPERIENCE when the quoted resume evidence is relevant but does not prove the named requirement.
+            Use UNKNOWN only when the resume/JD is incomplete enough that the match cannot be judged; otherwise use
+            MISSING when no evidence exists. Never make up resume evidence, skills, dates, achievements or metrics.
+            Do not duplicate the same requirement in different categories. Do not put location, work mode, notice
+            period or work authorization in skills; put them in fitChecks. A related degree is equivalent unless the
+            job says the degree is mandatory and exclusive. Parse years and compare dated roles conservatively.
+            Do not calculate or return any score; Java validates evidence and calculates all scores.
+            Return concise reasons (maximum 3), one-sentence verdict (maximum 20 words), and medium/low confidence
+            when the JD is incomplete. Avoid generic skill lists and keyword stuffing.
             
             JOB METADATA: %s
             %s
@@ -315,20 +337,88 @@ public class AiAnalysisService {
             """.formatted(json(jobMeta), candidateEvidence, jd);
     }
 
-    private Map<String, Object> normalizeOverview(Map<String, Object> source) {
+    private Map<String, Object> normalizeOverview(Map<String, Object> source, String resumeEvidence, boolean resumeAvailable) {
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("scores", AnalysisScoring.normalizeScores(asMap(source.get("scores"))));
+        Map<String, Object> jobIdentity = new LinkedHashMap<>();
+        jobIdentity.put("jobFamily", clean(Objects.toString(source.get("jobFamily"), "")));
+        jobIdentity.put("industry", clean(Objects.toString(source.get("industry"), "")));
+        jobIdentity.put("seniority", clean(Objects.toString(source.get("seniority"), "")));
+        out.put("jobIdentity", jobIdentity);
+
+        RequirementEvidenceMatcher.Result evidenceResult = RequirementEvidenceMatcher.evaluate(
+            objectList(source.get("requirements")), resumeEvidence, jobIdentity.get("seniority").toString(), resumeAvailable);
+        out.put("requirements", evidenceResult.requirements());
+        out.put("scoreBreakdown", scoreBreakdown(evidenceResult));
+        out.put("matchScore", evidenceResult.matchScore());
+        out.put("scoringVersion", "evidence-weighted-v1");
+        out.put("scores", legacyScores(evidenceResult.breakdown()));
         out.put("confidence", enumValue(source.get("confidence"), List.of("low", "medium", "high"), "low"));
         out.put("verdict", limitWords(clean(Objects.toString(source.get("verdict"), "")), 20));
         out.put("reasons", stringList(source.get("reasons")).stream().limit(3).toList());
-        Map<String, Object> matched = asMap(source.get("matchedSkills"));
-        out.put("matchedSkills", Map.of("technical", stringList(matched.get("technical")), "soft", stringList(matched.get("soft"))));
-        out.put("equivalentSkills", objectList(source.get("equivalentSkills")));
-        out.put("missingSkills", stringList(source.get("missingSkills")));
-        out.put("missingKeywords", stringList(source.get("missingKeywords")));
+        Map<String, Object> matchedSkillsSource = asMap(source.get("matchedSkills"));
+        List<Map<String, Object>> requirements = evidenceResult.requirements();
+        out.put("matchedSkills", Map.of(
+            "technical", requirementNames(requirements, Set.of("REQUIRED_SKILL", "PREFERRED_SKILL"), Set.of("EXACT_MATCH")),
+            "soft", stringList(matchedSkillsSource.get("soft")).stream().filter(value -> containsResumeEvidence(resumeEvidence, value)).toList()));
+        out.put("equivalentSkills", requirementEvidence(requirements, Set.of("EQUIVALENT_MATCH")));
+        out.put("relatedSkills", requirementEvidence(requirements, Set.of("RELATED_EXPERIENCE")));
+        out.put("missingSkills", requirementNames(requirements, Set.of("REQUIRED_SKILL"), Set.of("MISSING")));
+        out.put("missingKeywords", requirementNames(requirements, Set.of("KEYWORD"), Set.of("MISSING")));
+        out.put("scoreConfidence", scoreConfidence(requirements));
         out.put("fitChecks", objectList(source.get("fitChecks")));
         out.put("experience", source.get("experience") instanceof Map<?, ?> ? source.get("experience") : Map.of());
         return out;
+    }
+
+    private Map<String, Object> scoreBreakdown(RequirementEvidenceMatcher.Result result) {
+        Map<String, Object> output = new LinkedHashMap<>();
+        result.breakdown().forEach((category, score) -> output.put(category, Map.of(
+            "score", score == null ? "" : score,
+            "weight", result.weights().get(category),
+            "available", score != null
+        )));
+        return output;
+    }
+
+    private Map<String, Object> legacyScores(Map<String, Integer> breakdown) {
+        Map<String, Object> scores = new LinkedHashMap<>();
+        scores.put("skills", average(breakdown.get("requiredSkills"), breakdown.get("preferredSkills")));
+        scores.put("experience", breakdown.get("relevantExperience"));
+        scores.put("keywords", breakdown.get("keywords"));
+        scores.put("education", breakdown.get("educationCertifications"));
+        return scores;
+    }
+
+    private Integer average(Integer first, Integer second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        return (int) Math.round((first + second) / 2d);
+    }
+
+    private List<String> requirementNames(List<Map<String, Object>> requirements, Set<String> categories, Set<String> classifications) {
+        return requirements.stream().filter(item -> categories.contains(Objects.toString(item.get("category"))))
+            .filter(item -> classifications.contains(Objects.toString(item.get("classification"))))
+            .map(item -> Objects.toString(item.get("name"), "")).filter(value -> !value.isBlank()).distinct().toList();
+    }
+
+    private List<Map<String, Object>> requirementEvidence(List<Map<String, Object>> requirements, Set<String> classifications) {
+        return requirements.stream().filter(item -> classifications.contains(Objects.toString(item.get("classification"))))
+            .filter(item -> !Objects.toString(item.get("evidence"), "").isBlank())
+            .map(item -> Map.<String, Object>of("required", Objects.toString(item.get("name")), "evidence", Objects.toString(item.get("evidence")), "classification", Objects.toString(item.get("classification"))))
+            .toList();
+    }
+
+    private String scoreConfidence(List<Map<String, Object>> requirements) {
+        if (requirements.isEmpty()) return "low";
+        long judged = requirements.stream().filter(item -> !"UNKNOWN".equals(item.get("classification"))).count();
+        double completeness = (double) judged / requirements.size();
+        return completeness >= 0.85 ? "high" : completeness >= 0.55 ? "medium" : "low";
+    }
+
+    private boolean containsResumeEvidence(String resume, String claim) {
+        String haystack = clean(resume).toLowerCase();
+        String needle = clean(claim).toLowerCase();
+        return !needle.isBlank() && haystack.contains(needle);
     }
 
     private Map<String, Object> callGemini(String prompt, Map<String, Object> schema, int maxTokens, boolean overview) {
@@ -460,19 +550,28 @@ public class AiAnalysisService {
 
     Map<String, Object> overviewSchema() {
         return objectSchema(Map.ofEntries(
-            Map.entry("scores", objectSchema(Map.of("skills", nullableInteger(), "experience", nullableInteger(), "keywords", nullableInteger(), "education", nullableInteger()))),
+            Map.entry("jobFamily", stringSchema()), Map.entry("industry", stringSchema()), Map.entry("seniority", stringSchema()),
             Map.entry("confidence", enumSchema("low", "medium", "high")), Map.entry("verdict", stringSchema()),
             Map.entry("reasons", arraySchema(stringSchema())),
             Map.entry("matchedSkills", objectSchema(Map.of("technical", arraySchema(stringSchema()), "soft", arraySchema(stringSchema())))),
+            Map.entry("requirements", arraySchema(objectSchema(Map.of(
+                "name", stringSchema(),
+                "category", enumSchema("REQUIRED_SKILL", "PREFERRED_SKILL", "EXPERIENCE", "PROJECT_RESPONSIBILITY", "KEYWORD", "EDUCATION_CERTIFICATION", "ELIGIBILITY"),
+                "importance", enumSchema("MUST_HAVE", "PREFERRED", "OPTIONAL", "RESPONSIBILITY", "EDUCATION", "EXPERIENCE", "CERTIFICATION", "ELIGIBILITY"),
+                "classification", enumSchema("EXACT_MATCH", "EQUIVALENT_MATCH", "RELATED_EXPERIENCE", "MISSING", "UNKNOWN"),
+                "evidence", stringSchema(),
+                "evidenceSection", enumSchema("SKILLS", "EXPERIENCE", "INTERNSHIP", "PROJECTS", "EDUCATION", "CERTIFICATIONS", "ACHIEVEMENTS", "OTHER", "UNKNOWN"),
+                "confidence", enumSchema("low", "medium", "high"), "explanation", stringSchema()
+            )))),
             Map.entry("equivalentSkills", arraySchema(objectSchema(Map.of("required", stringSchema(), "evidence", stringSchema())))),
             Map.entry("missingSkills", arraySchema(stringSchema())), Map.entry("missingKeywords", arraySchema(stringSchema())),
-            Map.entry("fitChecks", arraySchema(objectSchema(Map.of("type", enumSchema("location", "education", "experience", "workMode", "noticePeriod"), "required", stringSchema(), "candidate", stringSchema(), "status", enumSchema("ok", "warn", "gap"), "note", stringSchema())))),
+            Map.entry("fitChecks", arraySchema(objectSchema(Map.of("type", enumSchema("location", "education", "experience", "workMode", "noticePeriod", "employmentType", "seniority", "certification", "workAuthorization", "industry"), "required", stringSchema(), "candidate", stringSchema(), "status", enumSchema("ok", "warn", "gap"), "note", stringSchema())))),
             Map.entry("experience", objectSchema(Map.of("requiredMin", nullableNumber(), "requiredMax", nullableNumber(), "candidateYears", nullableNumber(), "note", stringSchema())))
         ));
     }
 
     private Map<String, Object> suggestionsSchema() {
-        return objectSchema(Map.of("suggestions", arraySchema(objectSchema(Map.of("id", stringSchema(), "section", enumSchema("summary", "bullet", "skills"), "before", stringSchema(), "after", stringSchema(), "reason", stringSchema()))), "cautions", arraySchema(stringSchema())));
+        return objectSchema(Map.of("suggestions", arraySchema(objectSchema(Map.of("id", stringSchema(), "section", enumSchema("summary", "bullet", "skills"), "before", stringSchema(), "after", stringSchema(), "reason", stringSchema(), "evidence", arraySchema(stringSchema())))), "cautions", arraySchema(stringSchema())));
     }
     private Map<String, Object> applicationAnswersSchema() {
         return objectSchema(Map.of("answers", arraySchema(objectSchema(Map.of(

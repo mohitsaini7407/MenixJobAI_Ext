@@ -482,6 +482,13 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0}
 #analysisSection .component-score.score-good{--score-color:#1769e0}
 #analysisSection .component-score.score-strong{--score-color:#16a34a}
 #analysisSection .component-score.score-neutral{--score-color:#94a3b8}
+#analysisSection .match-evidence{margin:9px 0 0;padding:10px 12px;border:1px solid var(--analysis-border);border-radius:13px;background:#fff}
+#analysisSection .match-evidence summary{min-height:30px;display:flex;align-items:center;cursor:pointer;color:var(--analysis-text);font-weight:700}
+#analysisSection .match-evidence ul{display:grid;gap:8px;margin:8px 0 0;padding:0;list-style:none}
+#analysisSection .match-evidence li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;padding:8px;border-radius:9px;background:var(--analysis-blue-light);font-size:12px}
+#analysisSection .match-evidence li strong{color:var(--analysis-text)}
+#analysisSection .match-evidence li span{color:var(--analysis-muted);font-size:11px}
+#analysisSection .match-evidence li p{grid-column:1/-1;margin:0;color:var(--analysis-muted);overflow-wrap:anywhere}
 #analysisSection .fit-check-copy .fit-result-note{color:#475569;font-weight:650}
 #analysisSection .fit-check-row.ok .fit-result-note{color:var(--analysis-green)}
 #analysisSection .fit-check-row.gap .fit-result-note{color:var(--analysis-red)}

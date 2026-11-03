@@ -49,6 +49,7 @@ public class TailoredResumeController {
                 ResumeData resume = parseResume(request.resumeText(), request.fullName());
                 docx = buildDocx(resume);
             }
+            String validation = validateGeneratedDocx(docx, request.resumeText(), request.fullName());
             String date = LocalDate.now(ZoneId.of("Asia/Kolkata")).toString();
             String requestedName = request.fullName() == null || request.fullName().isBlank()
                 ? request.resumeText().lines().findFirst().orElse("Candidate") : request.fullName();
@@ -56,9 +57,11 @@ public class TailoredResumeController {
             if (safeName.isBlank()) safeName = "Candidate";
             String filename = safeName + "_ATS_Resume_" + date + ".docx";
             ResponseEntity.BodyBuilder response = ResponseEntity.ok().contentType(MediaType.parseMediaType(DOCX_TYPE))
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"");
-            if (!usedMasterTemplate) response.header("X-Resume-Format-Note", "For the exact same format, upload your resume as DOCX.")
-                .header(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, "X-Resume-Format-Note");
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .header("X-Resume-Validation-Status", "passed")
+                .header("X-Resume-Validation-Note", validation)
+                .header(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, "X-Resume-Validation-Status, X-Resume-Validation-Note, X-Resume-Format-Note");
+            if (!usedMasterTemplate) response.header("X-Resume-Format-Note", "For the exact same format, upload your resume as DOCX.");
             return response.body(docx);
         } catch (ResponseStatusException ex) {
             throw ex;
@@ -66,6 +69,31 @@ public class TailoredResumeController {
             logger.error("Could not format tailored resume as DOCX", ex);
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Could not format the resume.", ex);
         }
+    }
+
+    private String validateGeneratedDocx(byte[] bytes, String sourceText, String fullName) throws Exception {
+        if (bytes == null || bytes.length == 0) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: generated document is empty.");
+        String extracted;
+        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            extracted = String.join("\n", allBodyParagraphs(document).stream().map(XWPFParagraph::getText).filter(Objects::nonNull).toList());
+        }
+        String normalizedOutput = extracted.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        if (extracted.isBlank() || extracted.length() < Math.max(30, sourceText.length() / 2)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: generated document is unreadable or missing substantial content.");
+        }
+        if (fullName != null && !fullName.isBlank()
+            && !normalizedOutput.contains(fullName.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").trim())) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: candidate name is missing from the generated document.");
+        }
+        Matcher emails = Pattern.compile("[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+", Pattern.CASE_INSENSITIVE).matcher(sourceText);
+        while (emails.find()) if (!normalizedOutput.contains(emails.group().toLowerCase(Locale.ROOT))) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: an email address from the Master Resume is missing.");
+        }
+        Matcher years = Pattern.compile("\\b(?:19|20)\\d{2}\\b").matcher(sourceText);
+        while (years.find()) if (!normalizedOutput.contains(years.group())) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: a source date is missing from the generated document.");
+        }
+        return "DOCX opened successfully; candidate identity, email and source years were preserved.";
     }
 
     byte[] editMasterTemplate(byte[] masterBytes, List<TemplateEdit> edits) throws Exception {

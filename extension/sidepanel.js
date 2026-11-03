@@ -112,7 +112,7 @@ function renderRecruiterContact(state = 'checking') {
 
 const RESUME_DB_NAME = 'menixjobai-resumes';
 const RESUME_STORE_NAME = 'files';
-const TECH_SKILL_GROUPS = `javascript|js;typescript|ts;python;java;c++;c#|c sharp;go language|golang;rust;php;ruby;kotlin;swift;scala;objective-c;dart;elixir;clojure;haskell;sql;html;css;sass;less;react|react.js|reactjs;angular;vue|vue.js;next.js|nextjs;nuxt; svelte;node.js|nodejs|node;express|express.js;nestjs;django;flask;fastapi;spring boot|spring;asp.net|.net;laravel;rails;graphql;rest api;grpc;websocket;redux;zustand;tailwind css|tailwind;bootstrap;webpack;vite;babel;jest;vitest;cypress;playwright;selenium;git;github;gitlab;docker;kubernetes|k8s;helm;terraform;ansible;jenkins;github actions;circleci;linux;bash;powershell;aws;azure;google cloud|gcp;cloud computing;serverless;lambda;ec2;s3;cloudfront;postgresql|postgres;mysql;mariadb;sqlite;mongodb|mongo;redis;elasticsearch;opensearch;cassandra;dynamodb;oracle database;sql server;neo4j;firebase;supabase;prisma;hibernate;jpa;apache kafka|kafka;rabbitmq;spark;apache spark;hadoop;airflow;dbt;etl;data warehousing;machine learning|ml;deep learning;natural language processing|nlp;computer vision;tensorflow;pytorch;scikit-learn|sklearn;pandas;numpy;opencv;generative ai;llm|large language model;prompt engineering;data analysis;data science;power bi;tableau;excel;looker;figma;agile;scrum;microservices;distributed systems;system design;api design;oauth;jwt;cybersecurity;penetration testing;unit testing;integration testing;test automation;accessibility;seo;wordpress;shopify;android;ios;react native;flutter;unity;unreal engine;blockchain;solidity;web3;networking;tcp/ip;dns;load balancing;nginx;apache;prometheus;grafana;datadog;open telemetry|opentelemetry;feature flags;content management system|cms;customer relationship management|crm;product analytics;financial modeling;investment analysis;portfolio management;business intelligence|bi;data visualization;requirements analysis;technical writing;project management;program management;product management;quality assurance|qa;software testing;computer science;object-oriented programming|oop;functional programming;design patterns;data structures;algorithms;data modeling;database design;data engineering;business development;advisory services;venture capital;private equity;financial services`.split(';').map(group => group.trim().split('|').map(alias => alias.trim())).filter(group => group[0]);
+const LOCAL_STOP_WORDS = new Set('a an and are as at be by for from in into is it of on or that the their to with will you your this these those must should have has required preferred requirements responsibilities experience years year ability strong excellent including working knowledge skills qualification qualifications candidate candidates role team develop development manage management support use using build built work'.split(' '));
 
 // ------------------------------
 // STATUS
@@ -152,20 +152,18 @@ function containsTerm(text, term) {
 }
 
 function localQuickScore(resumeText, jobDescription) {
-  const resume = ` ${cleanText(resumeText).toLowerCase()} `;
-  const job = ` ${cleanText(jobDescription).toLowerCase()} `;
-  const requiredSkills = TECH_SKILL_GROUPS.filter(group => group.some(alias => containsTerm(job, alias)));
-  const matchedGroups = requiredSkills.filter(group => group.some(alias => containsTerm(resume, alias)));
-  const matchedTechnical = matchedGroups.map(group => group[0]);
-  const missingTechnical = requiredSkills.filter(group => !matchedGroups.includes(group)).map(group => group[0]);
-  const keywords = [...new Set((cleanText(jobDescription).toLowerCase().match(/[a-z][a-z0-9+#.]{3,}/g) || []))]
-    .filter(word => !new Set(['experience', 'required', 'preferred', 'candidate', 'candidates', 'years', 'year', 'ability', 'strong', 'excellent', 'including', 'working', 'knowledge', 'skills', 'responsibilities', 'qualification', 'qualifications']).has(word))
-    .filter(word => !TECH_SKILL_GROUPS.some(group => group.some(alias => containsTerm(` ${word} `, alias))))
-    .slice(0, 24);
-  const matchedKeywords = keywords.filter(word => containsTerm(resume, word));
-  const missingKeywords = keywords.filter(word => !containsTerm(resume, word)).slice(0, 8);
-  const softTerms = ['communication', 'leadership', 'teamwork', 'problem solving', 'collaboration', 'adaptability', 'mentoring', 'critical thinking', 'time management'];
-  const matchedSoft = softTerms.filter(term => containsTerm(job, term) && containsTerm(resume, term));
+  const resume = ` ${cleanText(resumeText).toLowerCase().replace(/[^\p{L}\p{N}+#.]+/gu, ' ')} `;
+  const job = cleanText(jobDescription).toLowerCase();
+  const jobLines = String(jobDescription || '').split(/[\n•;.!?]+/).map(line => line.toLowerCase().trim()).filter(Boolean);
+  const requirementLines = jobLines.filter(line => /\b(?:must|required|preferred|requirement|responsibilit|qualification|experience with|knowledge of|proficien|certif|degree|build|manage|analy[sz]|deploy|design|operate|support)\b/.test(line));
+  const relevantText = requirementLines.length ? requirementLines.join(' ') : jobLines.join(' ');
+  const tokensFrom = text => [...new Set((text.match(/[\p{L}][\p{L}\p{N}+#.]{2,}/gu) || []).filter(word => !LOCAL_STOP_WORDS.has(word)))];
+  const requirements = tokensFrom(relevantText).slice(0, 80);
+  const allKeywords = tokensFrom(jobLines.join(' ')).slice(0, 100);
+  const matchedTerms = requirements.filter(term => containsTerm(resume, term));
+  const missingTerms = requirements.filter(term => !containsTerm(resume, term));
+  const matchedKeywords = allKeywords.filter(term => containsTerm(resume, term));
+  const missingKeywords = allKeywords.filter(term => !containsTerm(resume, term)).slice(0, 8);
   const requiredYears = jobDescription.match(/\b(?:minimum|min\.?|at least)?\s*(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\b/i)
     || jobDescription.match(/\b(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?experience\b/i);
   const candidateYears = resumeText.match(/\b(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?experience\b/i);
@@ -178,9 +176,9 @@ function localQuickScore(resumeText, jobDescription) {
   }
   const educationScore = !degreeRequired ? null : degreeCandidate ? (containsTerm(job, 'related') || containsTerm(job, 'equivalent') ? 80 : 70) : 0;
   const scores = {
-    skills: requiredSkills.length ? Math.round(matchedGroups.length / requiredSkills.length * 100) : null,
+    skills: requirements.length ? Math.round(matchedTerms.length / requirements.length * 100) : null,
     experience: experienceScore,
-    keywords: keywords.length ? Math.round(matchedKeywords.length / keywords.length * 100) : null,
+    keywords: allKeywords.length ? Math.round(matchedKeywords.length / allKeywords.length * 100) : null,
     education: educationScore
   };
   const score = matchScoreFromComponents(scores);
@@ -191,9 +189,9 @@ function localQuickScore(resumeText, jobDescription) {
     confidence: 'low',
     verdict: 'Quick estimate based on matching resume and job-description terms.',
     reasons: [],
-    matchedSkills: { technical: matchedTechnical, soft: matchedSoft },
+    matchedSkills: { technical: matchedTerms.slice(0, 24), soft: [] },
     equivalentSkills: [],
-    missingSkills: missingTechnical,
+    missingSkills: missingTerms.slice(0, 24),
     missingKeywords,
     fitChecks: [],
     experience: {
@@ -216,7 +214,7 @@ async function overviewCacheKey(resumeText, jobDescription) {
     .replace(/^\s*(?:home|jobs|login|sign up|download app)\s*(?:\|.*)?$/gim, ' ')
     .slice(0, 6000)).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const resumeHash = await digestText(normalizedResume);
-  return `matchOverview:${await digestText(`${resumeHash}\n${normalizedJob}\ngemini-2.5-flash\noverview-v2`)}`;
+  return `matchOverview:${await digestText(`${resumeHash}\n${normalizedJob}\ngemini-2.5-flash\noverview-evidence-v3`)}`;
 }
 
 async function sha256Hex(text) {
@@ -474,7 +472,8 @@ function renderResumeWorkflow() {
   const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
   const uploading = workflow?.status === 'UPLOADING_RESUME';
   const fileState = restored ? 'Master resume restored' : uploading ? 'Uploading to Naukri' : uploaded ? 'Uploaded and verified on Naukri' : 'Saved in this browser';
-  $('tailoredResumeStatus').textContent = `${fileSize ? `${Math.max(1, Math.round(fileSize / 1024))} KB · ` : ''}${fileState}`;
+  $('tailoredResumeStatus').textContent = `${fileSize ? `${Math.max(1, Math.round(fileSize / 1024))} KB · ` : ''}${fileState}${workflow?.validationNote ? ' · Validated' : ''}`;
+  $('tailoredResumeStatus').title = workflow?.validationNote || '';
   renderResumeDocumentPreview(activeResumePreviewText || (hasResumeSelection ? 'Loading resume preview...' : ''));
   $('manualUploadGuide').classList.add('hidden');
   $('returnToJobBtn').classList.toggle('hidden', !hasJob || !workflow?.jobUrl);
@@ -1120,7 +1119,8 @@ async function loadSettings() {
   resumeWorkflows = Array.isArray(saved.resumeWorkflows) ? saved.resumeWorkflows : [];
   activeResumeWorkflow = resumeWorkflows.find(item => item.jobKey === saved.activeResumeJobKey) || null;
   const savedJobUrl = saved.activeJobSnapshot?.url || activeResumeWorkflow?.jobUrl;
-  if (activeResumeWorkflow?.jobUrl && savedJobUrl === activeResumeWorkflow.jobUrl && saved.activeJobAnalysis) {
+  if (activeResumeWorkflow?.jobUrl && savedJobUrl === activeResumeWorkflow.jobUrl
+    && saved.activeJobAnalysis?.scoringVersion === 'evidence-weighted-v1') {
     lastAnalysis = saved.activeJobAnalysis;
   }
   $('resumeStatus').textContent = masterText
@@ -1276,10 +1276,6 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       && url.hostname.endsWith('naukri.com')
       && tab.url !== activeResumeWorkflow.jobUrl
       && !isNaukriJobListing) return;
-    // Returning from the profile is only for resume upload. Keep the saved job
-    // snapshot and its analysis instead of treating it as a newly detected job.
-    if (currentJobTabUrl === tab.url && activeResumeWorkflow?.jobUrl === tab.url
-      && $('jobDescription').value.trim().length >= 100) return;
     const pageChanged = currentJobTabUrl !== tab.url;
     currentJobTabUrl = tab.url;
     const isNaukriListing = url.hostname.endsWith('naukri.com') && /\/job-listings?-/i.test(url.pathname);
@@ -1460,6 +1456,13 @@ async function captureActiveJob(tabId = null, attempt = 0) {
 
     if (requestId !== captureRequestId) return;
     const pageText = result?.text || '';
+    const nextTitle = cleanText(result?.heading || result?.title?.replace(/\s*[-|].*$/, ''));
+    const nextCompany = cleanCompanyName(result?.company || '');
+    const sameCapturedJob = currentJobTabUrl === tab.url
+      && $('jobDescription').value.trim() === pageText
+      && cleanText($('jobTitleInput').value) === nextTitle
+      && cleanCompanyName($('companyInput').value) === nextCompany;
+    if (sameCapturedJob) return;
     if (pageText.length < 100 || !result?.isJobPage) {
       if (attempt < 3) {
         window.setTimeout(() => captureActiveJob(tab.id, attempt + 1), 650 * (attempt + 1));
@@ -1469,8 +1472,8 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     }
 
     $('jobUrl').value = result.url;
-    $('jobTitleInput').value = cleanText(result.heading || result.title.replace(/\s*[-|].*$/, ''));
-    $('companyInput').value = cleanCompanyName(result.company);
+    $('jobTitleInput').value = nextTitle;
+    $('companyInput').value = nextCompany;
     $('locationInput').value = cleanText(result.location);
     $('jobDescription').value = pageText;
     jobMetadata = {
@@ -1964,7 +1967,7 @@ async function generateTemporaryResumeForActiveJob() {
       temporaryResumeName: fileName, temporaryResumeSize: generated.blob.size, previewStorageId, generatedAt: new Date().toISOString(),
       status: 'TAILORED_RESUME_GENERATED', pipelineStep: 1, lastDownloadedResumeName: '',
       downloadedFileName: '', downloadedAt: '', lastDownloadId: null, manualUploadNeeded: false,
-      lastError: '', formatNote: generated.formatNote || ''
+      lastError: '', formatNote: generated.formatNote || '', validationNote: generated.validationNote || ''
     });
     await loadWorkflowResumePreview();
     setStatus('Tailored resume generated.', 'success');
@@ -2265,6 +2268,7 @@ async function chooseResumeForThisJob() {
         ? await readResumeFile(workflow.temporaryResumeId).catch(() => null) : null;
       const expectedNamePattern = /^.+_\d{2}-\d{2}-\d{4}\.docx$/i;
       if (!stored?.file || !expectedNamePattern.test(workflow.temporaryResumeName || '')) {
+        await prepareTailoredWorkingCopy();
         await generateTemporaryResumeForActiveJob();
         workflow = activeResumeWorkflow;
         if (workflow?.selectedType !== 'tailored' || !workflow.temporaryResumeId) throw new Error(workflow?.lastError || 'Could not generate the tailored resume.');
@@ -2584,6 +2588,7 @@ async function loadAiSuggestions() {
       suggestionData = data;
       renderAiSuggestions(data);
       $('suggestionsSummaryHint').textContent = data.cached ? 'Cached edits' : `${(data.suggestions || []).length} edits`;
+      return data;
     } catch (error) {
       if (controller.signal.aborted) return;
       container.replaceChildren();
@@ -2622,10 +2627,17 @@ function renderAiSuggestions(data) {
     const afterText = document.createElement('p'); afterText.textContent = suggestion.after || '';
     after.append(afterLabel, afterText); card.append(after);
     if (suggestion.reason) { const reason = document.createElement('p'); reason.className = 'suggestion-reason'; reason.textContent = `Reason: ${suggestion.reason}`; card.append(reason); }
+    if (Array.isArray(suggestion.evidence) && suggestion.evidence.length) {
+      const evidence = document.createElement('p'); evidence.className = 'suggestion-reason';
+      evidence.textContent = `Master Resume evidence: ${suggestion.evidence.join('; ')}`; card.append(evidence);
+    }
+    const validation = document.createElement('p'); validation.className = 'suggestion-reason';
+    validation.textContent = suggestion.validation === 'verified' ? 'Validated against the Master Resume.' : 'Not validated; this edit cannot be applied.';
+    card.append(validation);
     const actions = document.createElement('div'); actions.className = 'suggestion-actions';
     const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'suggestion-action'; copy.textContent = 'Copy'; copy.setAttribute('aria-label', `Copy suggestion ${index + 1}`);
     copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(suggestion.after || ''); copy.textContent = 'Copied'; } catch { copy.textContent = 'Copy unavailable'; } });
-    const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'suggestion-action apply'; apply.textContent = 'Apply to resume'; apply.disabled = !suggestion.before;
+    const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'suggestion-action apply'; apply.textContent = 'Apply to resume'; apply.disabled = !suggestion.before || suggestion.validation !== 'verified';
     apply.addEventListener('click', () => {
       const master = $('resumeText').value;
       tailoredWorkingCopy = tailoredWorkingCopy || master;
@@ -2645,6 +2657,24 @@ function renderAiSuggestions(data) {
     const list = document.createElement('ul'); cautions.forEach(value => { const li = document.createElement('li'); li.textContent = value; list.append(li); });
     details.append(list); container.append(details);
   }
+}
+
+async function prepareTailoredWorkingCopy() {
+  if (tailoredWorkingCopy) return tailoredWorkingCopy;
+  const master = $('resumeText').value;
+  const data = suggestionData || await loadAiSuggestions();
+  if (!data) throw new Error('Job-specific resume suggestions could not be validated. Retry after the backend is available.');
+  let working = master;
+  let applied = 0;
+  for (const suggestion of data.suggestions || []) {
+    if (suggestion.validation !== 'verified' || !suggestion.before || !working.includes(suggestion.before)) continue;
+    working = working.replace(suggestion.before, suggestion.after || '');
+    applied++;
+  }
+  tailoredWorkingCopy = working;
+  if (applied) setStatus(`Applied ${applied} evidence-checked edit${applied === 1 ? '' : 's'} to this job's working copy. Master Resume is unchanged.`, 'success');
+  else setStatus('No supported edits were needed. Creating a job-specific copy from the unchanged Master Resume.', 'info');
+  return tailoredWorkingCopy;
 }
 
 async function analyzeCurrentMatch(automatic) {
@@ -2703,10 +2733,11 @@ async function analyzeCurrentMatch(automatic) {
       const overviewRequest = {
         resumeProfile: resumeProfileResult?.profile || null,
         resumeHash: resumeProfileResult?.resumeHash || await sha256Hex(cleanText(resumeText)),
+        // Keep the original text available to the backend evidence validator even when a cached profile is used.
+        resumeText,
         jobDescription,
         jobMeta
       };
-      if (!resumeProfileResult?.profile) overviewRequest.resumeText = resumeText;
       wakingTimer = window.setTimeout(() => setStatus('Waking up the server…', 'info'), 5000);
       const data = await api('/ai/overview', {
         method: 'POST',
@@ -2761,8 +2792,10 @@ function normalizeOverviewResult(data) {
       scores: Object.fromEntries(['skills', 'experience', 'keywords', 'education']
         .map(key => [key, normalizeScore(data.scores[key])]))
     };
-    normalized.matchScore = matchScoreFromComponents(normalized.scores);
-    normalized.matchLevel = normalized.matchScore === null ? 'Not scored' : normalized.matchScore >= 80 ? 'Strong Match' : normalized.matchScore >= 65 ? 'Good Match' : normalized.matchScore >= 40 ? 'Partial Match' : 'Low Match';
+    const evidenceScored = data.scoringVersion === 'evidence-weighted-v1' && data.scoreBreakdown;
+    normalized.matchScore = evidenceScored ? normalizeScore(data.matchScore) : matchScoreFromComponents(normalized.scores);
+    normalized.matchLevel = evidenceScored ? (data.matchLevel || (normalized.matchScore === null ? 'Not scored' : normalized.matchScore >= 80 ? 'Strong Match' : normalized.matchScore >= 65 ? 'Good Match' : normalized.matchScore >= 40 ? 'Partial Match' : 'Low Match'))
+      : normalized.matchScore === null ? 'Not scored' : normalized.matchScore >= 80 ? 'Strong Match' : normalized.matchScore >= 65 ? 'Good Match' : normalized.matchScore >= 40 ? 'Partial Match' : 'Low Match';
     return normalized;
   }
   const rawText = data?.review?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('\n') || '';
@@ -2793,7 +2826,9 @@ function renderAnalysis(data, source = 'ai') {
   header.className = 'match-heading';
   const titleStack = document.createElement('div'); titleStack.className = 'match-title-stack';
   const heading = document.createElement('h2'); heading.textContent = 'Match Analysis';
-  titleStack.append(heading);
+  const scoreNote = document.createElement('p');
+  scoreNote.textContent = `Estimated resume-to-job match · ${String(result.scoreConfidence || result.confidence || 'low').replace(/^./, letter => letter.toUpperCase())} confidence`;
+  titleStack.append(heading, scoreNote);
   const state = document.createElement('span'); state.className = `overview-state ${quick ? 'quick' : 'refined'}`;
   state.textContent = quick ? 'Quick estimate' : 'Refined by AI';
   header.append(titleStack, state);
@@ -2818,10 +2853,19 @@ function renderAnalysis(data, source = 'ai') {
 
   const breakdown = document.createElement('section'); breakdown.className = 'overview-column breakdown-column';
   const breakdownTitle = document.createElement('h3'); breakdownTitle.textContent = 'Match Breakdown'; breakdown.append(breakdownTitle);
-  const rows = [
-    ['Skills', result.scores?.skills, 'Explicit technical requirements supported by the resume.'],
-    ['Keywords', result.scores?.keywords, 'Required job terms found in the resume.']
-  ];
+  const breakdownLabels = {
+    requiredSkills: 'Required skills', relevantExperience: 'Relevant experience',
+    projectsResponsibilities: 'Projects & responsibilities', preferredSkills: 'Preferred skills',
+    keywords: 'Keywords', educationCertifications: 'Education & certifications'
+  };
+  const rows = result.scoreBreakdown
+    ? Object.entries(breakdownLabels).map(([key, label]) => [label,
+      normalizeScore(result.scoreBreakdown[key]?.score),
+      `${result.scoreBreakdown[key]?.weight ?? 0}% category weight. Evidence-based requirement score.`])
+    : [
+      ['Skills', result.scores?.skills, 'Explicit technical requirements supported by the resume.'],
+      ['Keywords', result.scores?.keywords, 'Required job terms found in the resume.']
+    ];
   const metrics = document.createElement('div'); metrics.className = 'component-scores';
   rows.forEach(([label, value, reason]) => {
     const row = document.createElement('div'); row.className = `component-score ${scoreBand(value)}`; row.title = value === null || value === undefined ? reason : `${label}: ${value}%`;
@@ -2883,7 +2927,7 @@ function renderFitChecks(items) {
     icon.textContent = status === 'ok' ? '✓' : status === 'gap' ? '×' : status === 'warn' ? '!' : '–';
     const body = document.createElement('div'); body.className = 'fit-check-copy';
     const title = document.createElement('h3');
-    title.textContent = ({ location: 'Location', workMode: 'Work Mode', education: 'Education', experience: 'Experience', noticePeriod: 'Notice Period' })[item.type] || item.type || 'Eligibility';
+    title.textContent = ({ location: 'Location', workMode: 'Work Mode', education: 'Education', experience: 'Experience', noticePeriod: 'Notice Period', employmentType: 'Employment Type', seniority: 'Seniority', certification: 'Certification', workAuthorization: 'Work Authorization', industry: 'Industry' })[item.type] || item.type || 'Eligibility';
     const candidateLine = document.createElement('p');
     const candidateLabel = document.createElement('strong'); candidateLabel.textContent = 'Resume: ';
     candidateLine.append(candidateLabel, document.createTextNode(hasCandidate ? candidate : 'Not specified'));
@@ -2943,6 +2987,28 @@ function renderSkillBreakdown(result) {
   $('relatedKeywordsGroup').classList.toggle('hidden', !keywords.length);
   $('relatedKeywordsHeading').textContent = `Related Keywords (${keywords.length})`;
   renderChipList($('missingKeywordsList'), keywords, 'keyword');
+  renderRequirementEvidence(result.requirements || []);
+}
+
+function renderRequirementEvidence(requirements) {
+  const root = $('matchEvidenceList');
+  root.replaceChildren();
+  const checked = requirements.filter(item => item?.name).slice(0, 30);
+  const details = document.createElement('details'); details.className = 'match-evidence';
+  const summary = document.createElement('summary'); summary.textContent = `Requirement evidence (${checked.length})`;
+  details.append(summary);
+  const list = document.createElement('ul');
+  checked.forEach(item => {
+    const row = document.createElement('li');
+    const classification = String(item.classification || 'UNKNOWN').replaceAll('_', ' ').toLowerCase();
+    const importance = String(item.importance || item.category || 'requirement').replaceAll('_', ' ').toLowerCase();
+    const title = document.createElement('strong'); title.textContent = `${item.name} - ${classification} - ${importance}`;
+    const source = document.createElement('span'); source.textContent = item.evidenceSection || 'Resume evidence';
+    const evidence = document.createElement('p'); evidence.textContent = item.evidence ? `Resume evidence: "${item.evidence}"` : 'No supporting resume evidence found.';
+    row.append(title, source, evidence); list.append(row);
+  });
+  if (!checked.length) { const empty = document.createElement('li'); empty.textContent = 'No structured job requirements were returned.'; list.append(empty); }
+  details.append(list); root.append(details);
 }
 
 function renderChipList(list, values, tone, emptyText = 'None found') {
@@ -2988,6 +3054,7 @@ function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') {
   renderFitChecks([]);
   renderImprovementAreas({ missingSkills: [], missingKeywords: [] });
   ['matchedSkillsList', 'softSkillsList', 'equivalentSkillsList', 'missingSkillsList', 'missingKeywordsList'].forEach(id => $(id).replaceChildren());
+  $('matchEvidenceList').replaceChildren();
   $('matchedSkillsHeading').textContent = 'Matched Skills (0)';
   $('missingSkillsHeading').textContent = 'Missing Skills (0)';
   $('relatedKeywordsGroup').classList.add('hidden');
@@ -3034,8 +3101,11 @@ async function generateResumeStep(job) {
   }
   const response = await fetch(`${apiBase}/ai/tailor-docx`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
   if (!response.ok) throw new Error(await responseError(response));
+  if (response.headers.get('X-Resume-Validation-Status') !== 'passed') {
+    throw new Error('The backend did not validate the generated DOCX. Deploy the current backend before tailoring resumes.');
+  }
   const blob = await response.blob();
-  return { blob, filename: localPipelineFilename(fullName, masterText), formatNote: response.headers.get('X-Resume-Format-Note') || '' };
+  return { blob, filename: localPipelineFilename(fullName, masterText), formatNote: response.headers.get('X-Resume-Format-Note') || '', validationNote: response.headers.get('X-Resume-Validation-Note') || '' };
 }
 
 $('generateBtn').addEventListener('click', async () => {
