@@ -6,11 +6,40 @@ import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageMar;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.util.Base64;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class TailoredResumeTemplateTest {
+    @Test
+    void generatedResponsePassesFormattingStructureAndContentValidation() throws Exception {
+        byte[] masterBytes;
+        String sourceText = "MOHIT SAINI\nBuilt a React dashboard for 3 student teams.";
+        try (XWPFDocument master = new XWPFDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            XWPFParagraph name = master.createParagraph();
+            XWPFRun nameRun = name.createRun(); nameRun.setText("MOHIT SAINI"); nameRun.setBold(true); nameRun.setFontSize(14);
+            XWPFParagraph project = master.createParagraph();
+            XWPFRun projectRun = project.createRun(); projectRun.setText("Built a React dashboard for 3 student teams."); projectRun.setFontFamily("Georgia"); projectRun.setFontSize(10);
+            master.write(output); masterBytes = output.toByteArray();
+        }
+        var request = new TailoredResumeController.TailoredDocxRequest(sourceText, "React developer", "MOHIT SAINI",
+            Base64.getEncoder().encodeToString(masterBytes), List.of(new TailoredResumeController.TemplateEdit(
+                "React dashboard", "React dashboard", "project", "React", List.of("Built a React dashboard for 3 student teams."), true)));
+
+        var response = new TailoredResumeController().tailorDocx(request);
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals("passed", response.getHeaders().getFirst("X-Resume-Validation-Status"));
+        assertNotNull(response.getBody());
+        try (XWPFDocument result = new XWPFDocument(new ByteArrayInputStream(response.getBody()))) {
+            assertEquals("MOHIT SAINI", result.getParagraphs().get(0).getText());
+            assertTrue(result.getParagraphs().get(0).getRuns().get(0).isBold());
+            assertEquals("Georgia", result.getParagraphs().get(1).getRuns().get(0).getFontFamily());
+            assertEquals(10, result.getParagraphs().get(1).getRuns().get(0).getFontSize());
+        }
+    }
+
     @Test
     void editedTemplateKeepsFormattingMarginsAndSectionHeadings() throws Exception {
         byte[] masterBytes;

@@ -44,4 +44,19 @@ class ResumeTailoringValidatorTest {
         assertFalse(metric.valid());
         assertFalse(technology.valid());
     }
+
+    @Test
+    void acceptsAClaimOnlyWhenTheUserExplicitlyConfirmedItsEvidence() {
+        String before = "Built project dashboards.";
+        String after = "Built WordPress project dashboards for a student team.";
+        String confirmed = "Candidate explicitly confirmed practical experience with WordPress. Details: Built WordPress project dashboards for a student team.";
+
+        var withoutConfirmation = ResumeTailoringValidator.validate(MASTER, MASTER, "WordPress developer", before, after,
+            List.of(confirmed));
+        var withConfirmation = ResumeTailoringValidator.validate(MASTER, MASTER, "WordPress developer", before, after,
+            List.of(confirmed), List.of(confirmed));
+
+        assertFalse(withoutConfirmation.valid());
+        assertTrue(withConfirmation.valid());
+    }
 }

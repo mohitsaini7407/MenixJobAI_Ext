@@ -653,3 +653,28 @@ input[type="checkbox"]{accent-color:var(--analysis-blue)}
 .action-status[data-type="info"]{color:#1557b0}
 .tailoring-progress{padding:10px;border:1px solid #b7cff7;border-radius:10px;background:#eef5ff;color:#174b91;font-size:12px}
 .tailoring-progress p{margin:5px 0 0;color:#52647c;font-size:11px;line-height:1.4}
+.tailoring-review{display:grid;gap:9px;padding:12px;border:1px solid var(--analysis-border);border-radius:13px;background:#fff;color:var(--analysis-text)}
+.tailoring-review h3{margin:0;font-size:15px}
+.tailoring-review-copy,.ats-assessment-note{margin:0;color:var(--analysis-muted);font-size:11px;line-height:1.45}
+.tailoring-review-requirements{display:grid;gap:5px;padding:9px;border-radius:9px;background:var(--analysis-blue-light);font-size:11px;line-height:1.4}
+.tailoring-confirmations{margin-top:4px;padding-top:7px;border-top:1px solid var(--analysis-border);color:var(--analysis-text)}
+.tailoring-confirmations>summary{cursor:pointer;font-size:11px;font-weight:700}
+.tailoring-confirmation-list{display:grid;gap:7px;margin-top:7px}
+.tailoring-confirmation-item{display:grid;gap:5px;padding:8px;border:1px solid var(--analysis-border);border-radius:9px;background:#fff}
+.tailoring-confirmation-item strong{font-size:11px}
+.tailoring-confirmation-item select,.tailoring-confirmation-item textarea{width:100%;min-height:36px;border:1px solid var(--analysis-border);border-radius:7px;background:#fff;color:var(--analysis-text);font-size:11px}
+.tailoring-confirmation-item textarea{min-height:50px;padding:7px;resize:vertical;line-height:1.4}
+.tailoring-review-edits{display:grid;gap:8px}
+.tailoring-edit-card{display:grid;gap:6px;padding:9px;border:1px solid var(--analysis-border);border-radius:10px;background:#fff}
+.tailoring-edit-card>label{display:flex;align-items:flex-start;gap:7px;font-size:12px;font-weight:700;cursor:pointer}
+.tailoring-edit-card input[type="checkbox"]{width:17px;height:17px;margin:0;accent-color:var(--analysis-blue)}
+.tailoring-edit-card strong{font-size:11px}
+.tailoring-edit-card p{margin:0;color:var(--analysis-muted);font-size:11px;line-height:1.4;overflow-wrap:anywhere}
+.tailoring-edit-card textarea{min-height:58px;padding:8px;border:1px solid var(--analysis-border);border-radius:8px;color:var(--analysis-text);font-size:12px;line-height:1.45}
+.tailoring-review-warnings{color:#8a5700;font-size:11px;line-height:1.45}
+.tailoring-review-warnings ul{margin:5px 0;padding-left:17px}
+.tailoring-review-actions{display:grid;gap:7px}
+.ats-assessment-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.ats-assessment-row{padding:8px;border:1px solid var(--analysis-border);border-radius:9px;background:#fff}
+.ats-assessment-row strong{display:block;color:var(--analysis-text);font-size:14px}
+.ats-assessment-row span{display:block;color:var(--analysis-muted);font-size:10px;line-height:1.3}

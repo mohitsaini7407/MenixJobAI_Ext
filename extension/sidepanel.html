@@ -98,6 +98,11 @@
               <h3>Areas to Improve</h3>
               <ul id="areasToImproveList" class="improvement-list"></ul>
             </section>
+            <section class="insights-card" aria-label="Resume optimization estimates">
+              <h3>Resume Checks</h3>
+              <div id="atsAssessment" class="ats-assessment-list"></div>
+              <p id="atsAssessmentNote" class="ats-assessment-note"></p>
+            </section>
             <details id="aiSuggestionsDetails" class="ai-suggestions" open>
               <summary><span>Resume Improvement Suggestions</span><span id="suggestionsSummaryHint" class="suggestions-summary-hint">Open to load</span></summary>
               <div id="analysis" class="analysis"></div>
@@ -141,6 +146,20 @@
           <section id="tailoringProgressCard" class="tailoring-progress hidden" aria-live="polite">
             <strong>Tailoring for this job</strong>
             <p id="tailoringProgressStatus">Preparing a job-specific copy. Your Master Resume stays unchanged.</p>
+          </section>
+          <section id="tailoringReviewCard" class="tailoring-review hidden" aria-label="Review proposed resume edits">
+            <h3>Review job-specific improvements</h3>
+            <p id="tailoringReviewJob" class="tailoring-review-copy"></p>
+            <div id="tailoringReviewRequirements" class="tailoring-review-requirements"></div>
+            <div id="tailoringReviewEdits" class="tailoring-review-edits"></div>
+            <details id="tailoringReviewWarnings" class="tailoring-review-warnings hidden">
+              <summary>Unsupported requirements and validation warnings</summary>
+              <ul id="tailoringReviewWarningList"></ul>
+            </details>
+            <div class="tailoring-review-actions">
+              <button id="regenerateTailoringBtn" class="btn secondary full" type="button">Regenerate suggestions</button>
+              <button id="generateApprovedEditsBtn" class="btn primary full" type="button">Generate tailored resume</button>
+            </div>
           </section>
           <section id="activeResumePreview" class="workflow-resume-preview" aria-label="Selected resume preview">
             <div class="resume-row tailored-file-row">

@@ -2,6 +2,7 @@ package com.menix.api;
 
 import com.menix.service.ResumeTailoringValidator;
 import org.apache.poi.xwpf.usermodel.*;
+import org.apache.xmlbeans.XmlObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.*;
@@ -30,7 +31,13 @@ public class TailoredResumeController {
         public TemplateEdit(String before, String after) { this(before, after, null, null, List.of(), null); }
     }
     public record TailoredDocxRequest(String resumeText, String jobDescription, String fullName,
-                                      String masterDocxBase64, List<TemplateEdit> templateEdits) {}
+                                      String masterDocxBase64, List<TemplateEdit> templateEdits,
+                                      List<String> confirmedFacts) {
+        public TailoredDocxRequest(String resumeText, String jobDescription, String fullName,
+                                   String masterDocxBase64, List<TemplateEdit> templateEdits) {
+            this(resumeText, jobDescription, fullName, masterDocxBase64, templateEdits, List.of());
+        }
+    }
 
     @PostMapping(value = "/tailor-docx", produces = DOCX_TYPE)
     public ResponseEntity<byte[]> tailorDocx(@RequestBody TailoredDocxRequest request) {
@@ -45,7 +52,7 @@ public class TailoredResumeController {
             byte[] source = Base64.getDecoder().decode(request.masterDocxBase64());
             String sourceText = extractDocumentText(source);
             String sourceStructure = documentStructureSignature(source);
-            byte[] docx = editMasterTemplate(source, request.templateEdits() == null ? List.of() : request.templateEdits());
+            byte[] docx = editMasterTemplate(source, request.templateEdits() == null ? List.of() : request.templateEdits(), request.confirmedFacts());
             String validation = validateGeneratedDocx(docx, sourceText, request.fullName());
             if (!sourceStructure.equals(documentStructureSignature(docx))) {
                 throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
@@ -105,6 +112,10 @@ public class TailoredResumeController {
     }
 
     byte[] editMasterTemplate(byte[] masterBytes, List<TemplateEdit> edits) throws Exception {
+        return editMasterTemplate(masterBytes, edits, List.of());
+    }
+
+    byte[] editMasterTemplate(byte[] masterBytes, List<TemplateEdit> edits, List<String> confirmedFacts) throws Exception {
         if (masterBytes == null || masterBytes.length == 0) return null;
         if (edits == null || edits.isEmpty()) return masterBytes.clone();
         String masterText = extractDocumentText(masterBytes);
@@ -118,7 +129,7 @@ public class TailoredResumeController {
                 List<String> evidence = edit.evidence() == null || edit.evidence().isEmpty()
                     ? List.of(edit.before()) : edit.evidence();
                 ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
-                    masterText, masterText, "", edit.before(), edit.after(), evidence);
+                    masterText, masterText, "", edit.before(), edit.after(), evidence, confirmedFacts);
                 if (!validation.valid()) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
                     "Resume edit rejected: " + validation.reason());
                 List<XWPFParagraph> matches = allBodyParagraphs(document).stream()
@@ -246,20 +257,40 @@ public class TailoredResumeController {
                 signature.append(element instanceof XWPFTable ? "TABLE" : "PARAGRAPH").append(';');
                 if (element instanceof XWPFTable table) appendTableShape(table, signature);
             }
+            for (XWPFParagraph paragraph : allBodyParagraphs(document)) appendParagraphFormat(paragraph, signature);
             if (document.getDocument().getBody().isSetSectPr()) signature.append(document.getDocument().getBody().getSectPr().xmlText());
             signature.append("|H:").append(document.getHeaderList().size()).append("|F:").append(document.getFooterList().size());
-            for (XWPFHeader header : document.getHeaderList()) signature.append('|').append(header.getParagraphs().size()).append(':').append(header.getTables().size());
-            for (XWPFFooter footer : document.getFooterList()) signature.append('|').append(footer.getParagraphs().size()).append(':').append(footer.getTables().size());
+            for (XWPFHeader header : document.getHeaderList()) {
+                signature.append('|').append(header.getParagraphs().size()).append(':').append(header.getTables().size());
+                header.getParagraphs().forEach(paragraph -> appendParagraphFormat(paragraph, signature));
+                header.getTables().forEach(table -> appendTableShape(table, signature));
+            }
+            for (XWPFFooter footer : document.getFooterList()) {
+                signature.append('|').append(footer.getParagraphs().size()).append(':').append(footer.getTables().size());
+                footer.getParagraphs().forEach(paragraph -> appendParagraphFormat(paragraph, signature));
+                footer.getTables().forEach(table -> appendTableShape(table, signature));
+            }
             return signature.toString();
         }
     }
 
+    private void appendParagraphFormat(XWPFParagraph paragraph, StringBuilder signature) {
+        signature.append("P{").append(xml(paragraph.getCTP().getPPr())).append("}R[").append(paragraph.getRuns().size()).append(':');
+        paragraph.getRuns().forEach(run -> signature.append('{').append(xml(run.getCTR().getRPr())).append('}'));
+        signature.append("]H[");
+        paragraph.getCTP().getHyperlinkList().forEach(link -> signature.append(xml(link)));
+        signature.append(']');
+    }
+
+    private String xml(XmlObject object) { return object == null ? "" : object.xmlText(); }
+
     private void appendTableShape(XWPFTable table, StringBuilder target) {
-        target.append('[').append(table.getRows().size()).append(':');
+        target.append('[').append(xml(table.getCTTbl().getTblPr())).append(':').append(table.getRows().size()).append(':');
         for (XWPFTableRow row : table.getRows()) {
-            target.append(row.getTableCells().size()).append(',');
+            target.append(xml(row.getCtRow().getTrPr())).append(':').append(row.getTableCells().size()).append(',');
             for (XWPFTableCell cell : row.getTableCells()) {
-                target.append(cell.getParagraphs().size()).append('{');
+                target.append(xml(cell.getCTTc().getTcPr())).append(':').append(cell.getParagraphs().size()).append('{');
+                cell.getParagraphs().forEach(paragraph -> appendParagraphFormat(paragraph, target));
                 for (XWPFTable nested : cell.getTables()) appendTableShape(nested, target);
                 target.append('}');
             }

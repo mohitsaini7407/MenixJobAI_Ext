@@ -16,13 +16,19 @@ public final class ResumeTailoringValidator {
 
     public static Validation validate(String masterResume, String workingResume, String jobDescription,
                                       String before, String after, List<String> evidence) {
+        return validate(masterResume, workingResume, jobDescription, before, after, evidence, List.of());
+    }
+
+    public static Validation validate(String masterResume, String workingResume, String jobDescription,
+                                      String before, String after, List<String> evidence, List<String> confirmedFacts) {
         if (masterResume == null || masterResume.isBlank()) return new Validation(false, "Master Resume evidence is unavailable.");
+        String evidenceSource = masterResume + "\n" + String.join("\n", confirmedFacts == null ? List.of() : confirmedFacts);
         if (before == null || before.isBlank() || !containsNormalized(workingResume, before)) {
             return new Validation(false, "The source text was not found in the working resume.");
         }
         if (after == null || after.isBlank()) return new Validation(false, "The proposed replacement is empty.");
-        if (evidence == null || evidence.isEmpty() || evidence.stream().anyMatch(item -> !containsNormalized(masterResume, item))) {
-            return new Validation(false, "No exact supporting excerpt was found in the Master Resume.");
+        if (evidence == null || evidence.isEmpty() || evidence.stream().anyMatch(item -> !containsNormalized(evidenceSource, item))) {
+            return new Validation(false, "No exact supporting excerpt was found in the Master Resume or user-confirmed facts.");
         }
         Matcher originalNumbers = NUMBER.matcher(before);
         while (originalNumbers.find()) if (!containsNormalized(after, originalNumbers.group())) {
@@ -37,15 +43,15 @@ public final class ResumeTailoringValidator {
             }
         }
         Matcher numbers = NUMBER.matcher(after);
-        while (numbers.find()) if (!containsNormalized(masterResume, numbers.group())) {
-            return new Validation(false, "The proposed edit adds a number or metric absent from the Master Resume.");
+        while (numbers.find()) if (!containsNormalized(evidenceSource, numbers.group())) {
+            return new Validation(false, "The proposed edit adds a number or metric absent from the Master Resume and user-confirmed facts.");
         }
         Matcher terms = SPECIFIC_TERM.matcher(after);
         while (terms.find()) {
             String term = terms.group();
             if (SAFE_SENTENCE_STARTS.contains(term)) continue;
-            if (!containsNormalized(masterResume, term)) {
-                return new Validation(false, "The proposed edit adds a named skill or claim without Master Resume evidence.");
+            if (!containsNormalized(evidenceSource, term)) {
+                return new Validation(false, "The proposed edit adds a named skill or claim without Master Resume or user-confirmed evidence.");
             }
         }
         return new Validation(true, "Verified against quoted Master Resume evidence.");

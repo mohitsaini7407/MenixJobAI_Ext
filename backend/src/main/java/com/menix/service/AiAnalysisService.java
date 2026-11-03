@@ -15,10 +15,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -60,7 +62,16 @@ public class AiAnalysisService {
                                   String jobDescription, Map<String, Object> jobMeta, String resumeHash) {}
     public record SuggestionsRequest(Map<String, Object> resumeProfile, String resumeText,
                                      String jobDescription, Map<String, Object> jobMeta,
-                                     String workingResume, String resumeHash) {}
+                                     String workingResume, String resumeHash, List<String> confirmedFacts, boolean forceRegenerate) {
+        public SuggestionsRequest(Map<String, Object> resumeProfile, String resumeText, String jobDescription,
+                                  Map<String, Object> jobMeta, String workingResume, String resumeHash) {
+            this(resumeProfile, resumeText, jobDescription, jobMeta, workingResume, resumeHash, List.of(), false);
+        }
+        public SuggestionsRequest(Map<String, Object> resumeProfile, String resumeText, String jobDescription,
+                                  Map<String, Object> jobMeta, String workingResume, String resumeHash, boolean forceRegenerate) {
+            this(resumeProfile, resumeText, jobDescription, jobMeta, workingResume, resumeHash, List.of(), forceRegenerate);
+        }
+    }
 
     public boolean authorizeDiagnostics(String token) {
         if (diagnosticsToken == null || diagnosticsToken.isBlank() || token == null) return false;
@@ -134,23 +145,26 @@ public class AiAnalysisService {
         String jobDescription = trimJobDescription(request.jobDescription());
         String candidate = request.workingResume() != null && !request.workingResume().isBlank()
             ? request.workingResume() : resumeText;
-        String key = cacheKey(resumeHash, jobDescription, SUGGESTION_VERSION + "-" + sha256(candidate));
-        Map<String, Object> cached = readCache(key, "suggestions");
+        List<String> confirmedFacts = request.confirmedFacts() == null ? List.of() : request.confirmedFacts().stream()
+            .filter(Objects::nonNull).map(this::clean).filter(value -> !value.isBlank()).limit(30).toList();
+        String key = cacheKey(resumeHash, jobDescription + "\n" + json(confirmedFacts), SUGGESTION_VERSION + "-" + sha256(candidate));
+        Map<String, Object> cached = request.forceRegenerate() ? null : readCache(key, "suggestions");
         if (cached != null) { cached.put("cached", true); return cached; }
         String prompt = """
-            Tailor the working resume for this specific job using only facts supported by the permanent Master Resume.
+            Tailor the working resume for this specific job using only facts supported by the permanent Master Resume
+            or explicitly confirmed by the candidate in the separate user-confirmed facts list.
             Make selective in-place wording improvements only: do not reorder sections, projects or bullets, and do not add
-            a technology, employer, date, duration,
-            achievement, metric, credential, responsibility or experience that is not explicitly supported.
+            a technology, employer, date, duration, achievement, metric, credential, responsibility or experience
+            that is not explicitly supported by one of those two sources.
             Do not insert job-description terms into the resume unless they are supported by an exact evidence excerpt.
             Return JSON with suggestions (array of {id,section,before,after,reason,relatedRequirement,evidence,confidence}) and cautions.
-            Sections must be summary, bullet, or skills. Return at most 8 concise edits. Each `before` must be an exact
+            Sections may be summary, bullet, skills, project, experience, or achievement. Return at most 8 concise edits. Each `before` must be an exact
             excerpt from one paragraph in the WORKING RESUME; do not combine paragraphs. Keep `after` concise and close
             to the original length so the original page layout is not disrupted. Each evidence item must be an exact, short excerpt from MASTER RESUME
             that directly supports the replacement. Confidence is a number from 0 to 1. Preserve each sentence's
             meaning, names, dates and factual details. If no truthful edit is useful, return an empty suggestions array.
-            MASTER RESUME (permanent source of truth):\n%s\nWORKING RESUME:\n%s\nJOB DESCRIPTION:\n%s
-            """.formatted(resumeText, candidate, jobDescription);
+            MASTER RESUME (permanent source of truth):\n%s\nUSER-CONFIRMED CANDIDATE FACTS (usable only as explicitly confirmed):\n%s\nWORKING RESUME:\n%s\nJOB DESCRIPTION:\n%s
+            """.formatted(resumeText, json(confirmedFacts), candidate, jobDescription);
         Map<String, Object> raw = callGemini(prompt, suggestionsSchema(), 900, false);
         boolean degraded = Boolean.TRUE.equals(raw.remove("_menixDegraded"));
         List<Map<String, Object>> normalized = new ArrayList<>();
@@ -163,7 +177,7 @@ public class AiAnalysisService {
                 Map<String, Object> suggestion = new LinkedHashMap<>();
                 suggestion.put("id", clean(Objects.toString(map.get("id"), "suggestion-" + normalized.size())));
                 String section = clean(Objects.toString(map.get("section"), "bullet"));
-                suggestion.put("section", List.of("summary", "bullet", "skills").contains(section) ? section : "bullet");
+                suggestion.put("section", List.of("summary", "bullet", "skills", "project", "experience", "achievement").contains(section) ? section : "bullet");
                 suggestion.put("before", clean(Objects.toString(map.get("before"), "")));
                 suggestion.put("after", clean(Objects.toString(map.get("after"), "")));
                 suggestion.put("reason", clean(Objects.toString(map.get("reason"), "")));
@@ -173,7 +187,7 @@ public class AiAnalysisService {
                 List<String> evidence = stringList(map.get("evidence"));
                 ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
                     resumeText, candidate, jobDescription, suggestion.get("before").toString(),
-                    suggestion.get("after").toString(), evidence);
+                    suggestion.get("after").toString(), evidence, confirmedFacts);
                 if (validation.valid()) {
                     suggestion.put("evidence", evidence);
                     suggestion.put("validation", "verified");
@@ -365,16 +379,18 @@ public class AiAnalysisService {
 
         RequirementEvidenceMatcher.Result evidenceResult = RequirementEvidenceMatcher.evaluate(
             objectList(source.get("requirements")), resumeEvidence, jobIdentity.get("seniority").toString(), resumeAvailable);
+        List<Map<String, Object>> requirements = evidenceResult.requirements();
         out.put("requirements", evidenceResult.requirements());
+        out.put("requirementPriorities", requirementPriorities(evidenceResult.requirements()));
         out.put("scoreBreakdown", scoreBreakdown(evidenceResult));
         out.put("matchScore", evidenceResult.matchScore());
+        out.put("atsAssessment", atsAssessment(requirements, evidenceResult, resumeEvidence, resumeAvailable));
         out.put("scoringVersion", "evidence-weighted-v1");
         out.put("scores", legacyScores(evidenceResult.breakdown()));
         out.put("confidence", enumValue(source.get("confidence"), List.of("low", "medium", "high"), "low"));
         out.put("verdict", limitWords(clean(Objects.toString(source.get("verdict"), "")), 20));
         out.put("reasons", stringList(source.get("reasons")).stream().limit(3).toList());
         Map<String, Object> matchedSkillsSource = asMap(source.get("matchedSkills"));
-        List<Map<String, Object>> requirements = evidenceResult.requirements();
         out.put("matchedSkills", Map.of(
             "technical", requirementNames(requirements, Set.of("REQUIRED_SKILL", "PREFERRED_SKILL"), Set.of("EXACT_MATCH")),
             "soft", stringList(matchedSkillsSource.get("soft")).stream().filter(value -> containsResumeEvidence(resumeEvidence, value)).toList()));
@@ -386,6 +402,73 @@ public class AiAnalysisService {
         out.put("fitChecks", objectList(source.get("fitChecks")));
         out.put("experience", source.get("experience") instanceof Map<?, ?> ? source.get("experience") : Map.of());
         return out;
+    }
+
+    private Map<String, List<Map<String, Object>>> requirementPriorities(List<Map<String, Object>> requirements) {
+        Map<String, List<Map<String, Object>>> priorities = new LinkedHashMap<>();
+        priorities.put("critical", new ArrayList<>());
+        priorities.put("important", new ArrayList<>());
+        priorities.put("preferred", new ArrayList<>());
+        priorities.put("additional", new ArrayList<>());
+        for (Map<String, Object> item : requirements) {
+            String importance = Objects.toString(item.get("importance"), "OPTIONAL");
+            String bucket = switch (importance) {
+                case "MUST_HAVE" -> "critical";
+                case "PREFERRED" -> "preferred";
+                case "OPTIONAL" -> "additional";
+                default -> "important";
+            };
+            priorities.get(bucket).add(item);
+        }
+        return priorities;
+    }
+
+    private Map<String, Object> atsAssessment(List<Map<String, Object>> requirements,
+                                              RequirementEvidenceMatcher.Result result,
+                                              String resumeText, boolean resumeAvailable) {
+        List<Map<String, Object>> keywordRequirements = requirements.stream()
+            .filter(item -> Set.of("REQUIRED_SKILL", "PREFERRED_SKILL", "KEYWORD").contains(item.get("category")))
+            .filter(item -> !"UNKNOWN".equals(item.get("classification"))).toList();
+        double keywordWeight = keywordRequirements.stream().mapToDouble(item -> importanceWeight(Objects.toString(item.get("importance"), "OPTIONAL"))).sum();
+        double keywordCredit = keywordRequirements.stream().mapToDouble(item -> importanceWeight(Objects.toString(item.get("importance"), "OPTIONAL")) * switch (Objects.toString(item.get("classification"), "UNKNOWN")) {
+            case "EXACT_MATCH" -> 1d; case "EQUIVALENT_MATCH" -> 0.9d; case "RELATED_EXPERIENCE" -> 0.5d; default -> 0d;
+        }).sum();
+        Integer keywordCoverage = keywordWeight == 0 ? null : (int) Math.round(100d * keywordCredit / keywordWeight);
+        boolean hasExtractedText = resumeAvailable && !resumeText.stripLeading().startsWith("{") && !resumeText.stripLeading().startsWith("[");
+        Integer readability = hasExtractedText ? readabilityEstimate(resumeText) : null;
+        Map<String, Object> assessment = new LinkedHashMap<>();
+        assessment.put("jobMatchScore", result.matchScore());
+        assessment.put("keywordCoverageScore", keywordCoverage);
+        assessment.put("atsReadabilityScore", readability);
+        assessment.put("projectRelevanceScore", result.breakdown().get("projectsResponsibilities"));
+        assessment.put("label", "Internal estimate; not an employer ATS score or hiring prediction.");
+        assessment.put("readabilityNote", hasExtractedText
+            ? "Heuristic based on extractable text, common section headings and basic contact details. Visual DOCX parsing can differ by ATS."
+            : "Upload a resume to estimate parsing readability.");
+        return assessment;
+    }
+
+    private double importanceWeight(String importance) {
+        return switch (importance) {
+            case "MUST_HAVE" -> 2d;
+            case "PREFERRED" -> 1d;
+            case "OPTIONAL" -> 0.5d;
+            default -> 1.25d;
+        };
+    }
+
+    private int readabilityEstimate(String text) {
+        String value = clean(text);
+        String lower = value.toLowerCase(Locale.ROOT);
+        int score = 35;
+        long headings = List.of("summary", "objective", "skills", "experience", "internship", "projects", "education", "certifications")
+            .stream().filter(heading -> Pattern.compile("(?i)(?:^|\\b)" + Pattern.quote(heading) + "(?:\\b|$)").matcher(value).find()).count();
+        score += (int) Math.min(35, headings * 7);
+        int words = value.isBlank() ? 0 : value.split("\\s+").length;
+        score += words >= 100 && words <= 900 ? 15 : words >= 50 ? 8 : 0;
+        if (lower.matches("(?s).*\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b.*")) score += 8;
+        if (Pattern.compile("(?<!\\d)\\+?\\d[\\d ()-]{7,}\\d(?!\\d)").matcher(value).find()) score += 7;
+        return Math.max(0, Math.min(100, score));
     }
 
     private Map<String, Object> scoreBreakdown(RequirementEvidenceMatcher.Result result) {
@@ -598,7 +681,7 @@ public class AiAnalysisService {
 
     private Map<String, Object> suggestionsSchema() {
         return objectSchema(Map.of("suggestions", arraySchema(objectSchema(Map.ofEntries(
-            Map.entry("id", stringSchema()), Map.entry("section", enumSchema("summary", "bullet", "skills")),
+            Map.entry("id", stringSchema()), Map.entry("section", enumSchema("summary", "bullet", "skills", "project", "experience", "achievement")),
             Map.entry("before", stringSchema()), Map.entry("after", stringSchema()), Map.entry("reason", stringSchema()),
             Map.entry("relatedRequirement", stringSchema()), Map.entry("evidence", arraySchema(stringSchema())),
             Map.entry("confidence", Map.of("type", "NUMBER", "minimum", 0, "maximum", 1))
