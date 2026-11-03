@@ -66,6 +66,7 @@ let tailoringRequestInProgress = false;
 let applicationAnswerItems = [];
 let applicationQuestionsLoading = false;
 let candidateRequirementConfirmations = {};
+let requirementConfirmationIndex = 0;
 
 // Wake Render as soon as the extension document opens; this is intentionally fire-and-forget.
 void fetch(`${DEFAULT_API}/health`).catch(() => {});
@@ -483,8 +484,6 @@ async function performTailoringForActiveJob({ applyAfter = false, forceRegenerat
     ...activeResumeWorkflow, selectedType: 'tailored', status: 'TAILORING_IN_PROGRESS',
     lastError: '', tailoringProgress: 'Preparing job analysis and resume suggestions.'
   });
-  $('tailoringProgressCard').classList.remove('hidden');
-  $('tailoringProgressStatus').textContent = 'Preparing job analysis and resume suggestions…';
   setStatus('Tailoring this resume for the selected job…', 'info');
   renderResumeWorkflow();
 
@@ -495,8 +494,6 @@ async function performTailoringForActiveJob({ applyAfter = false, forceRegenerat
     renderAnalysis(quickOverview, 'quick');
   }
   if (!analysisPromise && !lastAnalysis) void analyzeCurrentMatch(true);
-  $('tailoringProgressStatus').textContent = 'Refining the match and preparing evidence-checked edits…';
-
   let data = suggestionData;
   if (forceRegenerate || !data) data = await loadAiSuggestions({ forceRegenerate });
   if (activeResumeWorkflow?.jobKey !== jobKey) throw new Error('The selected job changed while tailoring. Open the intended job and retry.');
@@ -514,10 +511,14 @@ async function performTailoringForActiveJob({ applyAfter = false, forceRegenerat
     acceptedTailoringEditIndexes: suggestions.map((edit, index) => edit?.safeToApply === true && edit?.validation === 'verified' ? index : -1).filter(index => index >= 0),
     lastError: ''
   });
-  $('tailoringProgressStatus').textContent = 'Suggestions are evidence-checked. Review, edit, accept, or reject each before generation.';
   renderResumeWorkflow();
+  if (!unansweredTailoringRequirements(Array.isArray(lastAnalysis?.requirements) ? lastAnalysis.requirements : []).length) {
+    setStatus('No confirmations needed. Continuing…', 'info');
+    await generateApprovedTailoredResume();
+    return;
+  }
   $('tailoringReviewCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  setStatus(`Review ${suggestions.length} evidence-checked suggestion(s). Your Master Resume stays unchanged.`, 'success');
+  setStatus('Resume ready to tailor.', 'success');
 }
 
 async function handleTailorAction(applyAfter) {
@@ -542,7 +543,7 @@ async function handleTailorAction(applyAfter) {
       return;
     }
     if (workflow?.status === 'TAILORING_REVIEW') {
-      $('tailoringReviewCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      await generateApprovedTailoredResume();
       return;
     }
     if (workflow?.selectedType === 'master') {
@@ -571,63 +572,75 @@ function renderTailoringReview(workflow = activeResumeWorkflow) {
   const open = workflow?.status === 'TAILORING_REVIEW';
   card.classList.toggle('hidden', !open);
   if (!open) return;
-  const job = currentJobPayload();
-  $('tailoringReviewJob').textContent = `${job.title || workflow.title || 'Selected job'}${job.company || workflow.company ? ` · ${job.company || workflow.company}` : ''}. Your Master Resume remains unchanged.`;
-
   const requirements = $('tailoringReviewRequirements');
   requirements.replaceChildren();
   const items = Array.isArray(lastAnalysis?.requirements) ? lastAnalysis.requirements : [];
   const matched = items.filter(item => ['EXACT_MATCH', 'EQUIVALENT_MATCH', 'RELATED_EXPERIENCE'].includes(item?.classification));
-  const unsupported = items.filter(item => ['MISSING', 'UNKNOWN'].includes(item?.classification));
-  const summary = document.createElement('div');
-  summary.textContent = `Resume evidence: ${matched.length} supported/partial requirement(s), ${unsupported.length} unsupported or unclear.`;
-  requirements.append(summary);
-  const details = document.createElement('details');
-  const summaryLabel = document.createElement('summary'); summaryLabel.textContent = 'Job requirements and evidence'; details.append(summaryLabel);
-  const list = document.createElement('ul');
+  const askItems = unansweredTailoringRequirements(items);
+  const requirementHeading = document.createElement('div');
+  requirementHeading.className = 'requirements-heading';
+  const requirementTitle = document.createElement('strong'); requirementTitle.textContent = 'Job requirements';
+  const requirementCount = document.createElement('span'); requirementCount.textContent = `${matched.length} matched · ${askItems.length} to confirm`;
+  requirementHeading.append(requirementTitle, requirementCount);
+  requirements.append(requirementHeading);
+  const requirementList = document.createElement('div'); requirementList.className = 'requirements-list';
   items.slice(0, 24).forEach(item => {
-    const row = document.createElement('li');
+    const row = document.createElement('article'); row.className = 'requirement-row';
+    const title = document.createElement('strong'); title.textContent = item.name || 'Requirement';
     const status = String(item.classification || 'UNKNOWN').replaceAll('_', ' ').toLowerCase();
-    row.textContent = `${item.name}: ${status}${item.evidence ? ` — “${item.evidence}”` : ''}`;
-    list.append(row);
+    const badge = document.createElement('span'); badge.className = `requirement-status ${['exact match', 'equivalent match', 'related experience'].includes(status) ? 'is-matched' : 'is-missing'}`;
+    badge.textContent = status;
+    const top = document.createElement('div'); top.className = 'requirement-row-heading'; top.append(title, badge); row.append(top);
+    if (item.evidence) { const evidence = document.createElement('p'); evidence.textContent = item.evidence; row.append(evidence); }
+    requirementList.append(row);
   });
-  if (!items.length) { const row = document.createElement('li'); row.textContent = 'Job match analysis is still loading; requirement evidence will appear after it completes.'; list.append(row); }
-  details.append(list); requirements.append(details);
+  if (!items.length) { const loading = document.createElement('p'); loading.className = 'requirements-empty'; loading.textContent = 'Requirements are loading.'; requirementList.append(loading); }
+  requirements.append(requirementList);
 
-  const confirmations = document.createElement('details'); confirmations.className = 'tailoring-confirmations';
-  const confirmationTitle = document.createElement('summary'); confirmationTitle.textContent = 'Confirm relevant skills missing from the resume';
-  confirmations.append(confirmationTitle);
-  const askList = document.createElement('div'); askList.className = 'tailoring-confirmation-list';
-  const askItems = items.filter(item => ['MISSING', 'UNKNOWN'].includes(item?.classification)
-    && ['REQUIRED_SKILL', 'PREFERRED_SKILL', 'EXPERIENCE', 'PROJECT_RESPONSIBILITY', 'EDUCATION_CERTIFICATION'].includes(item?.category)).slice(0, 8);
-  askItems.forEach(item => {
+  if (askItems.length) {
+    requirementConfirmationIndex = Math.min(requirementConfirmationIndex, askItems.length - 1);
+    const item = askItems[requirementConfirmationIndex];
     const key = normalizeAnswerKey(item.name);
     const saved = candidateRequirementConfirmations[key] || {};
-    const field = document.createElement('div'); field.className = 'tailoring-confirmation-item';
-    const name = document.createElement('strong'); name.textContent = item.name;
-    const choice = document.createElement('select'); choice.dataset.confirmationKey = key; choice.dataset.requirementName = item.name;
-    [['', 'Not confirmed'], ['practical', 'Yes, practical experience'], ['basic', 'Basic knowledge'], ['no', 'No']].forEach(([value, label]) => {
-      const option = document.createElement('option'); option.value = value; option.textContent = label; choice.append(option);
+    const confirmation = document.createElement('section'); confirmation.className = 'tailoring-confirmation-step';
+    const stepLabel = document.createElement('span'); stepLabel.className = 'confirmation-step-count'; stepLabel.textContent = `Confirm skill ${requirementConfirmationIndex + 1} of ${askItems.length}`;
+    const question = document.createElement('strong'); question.className = 'confirmation-question'; question.textContent = item.name;
+    const choices = document.createElement('div'); choices.className = 'confirmation-choice-list';
+    [['practical', 'Practical experience'], ['basic', 'Basic knowledge'], ['no', 'No experience']].forEach(([value, label]) => {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'confirmation-choice'; button.textContent = label;
+      button.setAttribute('aria-pressed', String(saved.status === value));
+      button.addEventListener('click', async () => {
+        choices.querySelectorAll('button').forEach(choice => { choice.disabled = true; });
+        try {
+          candidateRequirementConfirmations[key] = { name: item.name, status: value, details: '', updatedAt: new Date().toISOString() };
+          await chrome.storage.local.set({ [CONFIRMED_REQUIREMENT_FACTS_KEY]: candidateRequirementConfirmations });
+          if (requirementConfirmationIndex + 1 < askItems.length) {
+            requirementConfirmationIndex += 1;
+            renderTailoringReview(workflow);
+          } else {
+            requirementConfirmationIndex = 0;
+            setStatus('Refreshing suggestions…', 'info');
+            await tailorResumeForActiveJob({ applyAfter: Boolean(workflow.tailoringApplyAfter), forceRegenerate: true });
+          }
+        } catch (error) {
+          choices.querySelectorAll('button').forEach(choice => { choice.disabled = false; });
+          setStatus(error.message || 'Could not save that choice.', 'error');
+        }
+      });
+      choices.append(button);
     });
-    choice.value = saved.status || '';
-    const evidence = document.createElement('textarea'); evidence.dataset.confirmationDetails = key;
-    evidence.value = saved.details || ''; evidence.placeholder = 'Add truthful details (required for practical experience or basic knowledge)';
-    evidence.setAttribute('aria-label', `Details supporting your ${item.name} experience`);
-    field.append(name, choice, evidence); askList.append(field);
-  });
-  if (!askItems.length) { const note = document.createElement('p'); note.textContent = 'No missing skills or qualifications need confirmation.'; askList.append(note); }
-  const saveConfirmations = document.createElement('button'); saveConfirmations.type = 'button'; saveConfirmations.className = 'btn secondary full';
-  saveConfirmations.textContent = 'Save confirmations & regenerate suggestions';
-  saveConfirmations.addEventListener('click', () => { void saveRequirementConfirmations(true).catch(error => setStatus(error.message || 'Could not save candidate confirmations.', 'error')); });
-  confirmations.append(askList, saveConfirmations); requirements.append(confirmations);
+    confirmation.append(stepLabel, question, choices);
+    requirements.append(confirmation);
+  }
 
   const editRoot = $('tailoringReviewEdits'); editRoot.replaceChildren();
   const suggestions = Array.isArray(workflow.tailoringSuggestions) ? workflow.tailoringSuggestions : [];
   const accepted = new Set(workflow.acceptedTailoringEditIndexes || []);
   suggestions.forEach((edit, index) => {
-    const article = document.createElement('article'); article.className = 'tailoring-edit-card';
-    const label = document.createElement('label');
+    const article = document.createElement('details'); article.className = 'tailoring-edit-card';
+    const label = document.createElement('summary');
     const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.tailoringEditIndex = String(index);
+    checkbox.addEventListener('click', event => event.stopPropagation());
     checkbox.checked = accepted.has(index) && edit.safeToApply === true && edit.validation === 'verified';
     checkbox.disabled = edit.safeToApply !== true || edit.validation !== 'verified';
     checkbox.addEventListener('change', () => {
@@ -640,8 +653,8 @@ function renderTailoringReview(workflow = activeResumeWorkflow) {
     });
     const heading = document.createElement('span'); heading.textContent = `${String(edit.section || 'resume').replace(/^./, value => value.toUpperCase())}${edit.relatedRequirement ? ` · ${edit.relatedRequirement}` : ''} · ${Math.round((Number(edit.confidence) || 0) * 100)}% confidence`;
     label.append(checkbox, heading); article.append(label);
-    const before = document.createElement('p'); before.textContent = `Original: ${edit.before || ''}`;
-    const afterLabel = document.createElement('strong'); afterLabel.textContent = 'Proposed text — edit before accepting';
+    const before = document.createElement('p'); before.textContent = `Before: ${edit.before || ''}`;
+    const afterLabel = document.createElement('strong'); afterLabel.textContent = 'After';
     const after = document.createElement('textarea'); after.value = edit.after || ''; after.setAttribute('aria-label', `Proposed ${edit.section || 'resume'} text`); after.dataset.tailoringEditText = String(index);
     after.addEventListener('input', () => {
       if (activeResumeWorkflow?.tailoringSuggestions?.[index]) {
@@ -649,33 +662,21 @@ function renderTailoringReview(workflow = activeResumeWorkflow) {
         void chrome.storage.local.set({ resumeWorkflows });
       }
     });
-    const reason = document.createElement('p'); reason.textContent = `Reason: ${edit.reason || 'Improves relevance to a supported job requirement.'}`;
-    const evidence = document.createElement('p'); evidence.textContent = `Master Resume evidence: ${(edit.evidence || []).join('; ')}`;
+    const reason = document.createElement('p'); reason.textContent = edit.reason || '';
+    const evidence = document.createElement('p'); evidence.textContent = (edit.evidence || []).join('; ');
+    if (!reason.textContent) reason.remove();
+    if (!evidence.textContent) evidence.remove();
     article.append(before, afterLabel, after, reason, evidence); editRoot.append(article);
   });
-  if (!suggestions.length) {
-    const empty = document.createElement('p'); empty.textContent = 'No supported edits were proposed. You can generate a separate copy of the original DOCX.'; editRoot.append(empty);
-  }
-  const warnings = [...(workflow.tailoringCautions || []), ...(workflow.rejectedSuggestions || []).map(item => item.validationReason).filter(Boolean)];
-  $('tailoringReviewWarnings').classList.toggle('hidden', !warnings.length);
-  const warningList = $('tailoringReviewWarningList'); warningList.replaceChildren();
-  warnings.forEach(value => { const li = document.createElement('li'); li.textContent = value; warningList.append(li); });
-  $('generateApprovedEditsBtn').textContent = workflow.tailoringApplyAfter ? 'Generate Resume & Continue to Apply' : 'Generate Tailored Resume';
+}
+
+function unansweredTailoringRequirements(items = []) {
+  return items.filter(item => ['MISSING', 'UNKNOWN'].includes(item?.classification)
+    && ['REQUIRED_SKILL', 'PREFERRED_SKILL', 'EXPERIENCE', 'PROJECT_RESPONSIBILITY', 'EDUCATION_CERTIFICATION'].includes(item?.category)
+    && !candidateRequirementConfirmations[normalizeAnswerKey(item.name)]).slice(0, 8);
 }
 
 async function saveRequirementConfirmations(regenerate = false) {
-  const choices = [...$('tailoringReviewRequirements').querySelectorAll('[data-confirmation-key]')];
-  for (const choice of choices) {
-    const key = choice.dataset.confirmationKey;
-    const status = choice.value;
-    const details = $('tailoringReviewRequirements').querySelector(`[data-confirmation-details="${key}"]`)?.value.trim() || '';
-    if (['practical', 'basic'].includes(status) && !details) {
-      setStatus(`Add supporting details for ${choice.dataset.requirementName} before saving this confirmation.`, 'error');
-      return false;
-    }
-    if (!status) delete candidateRequirementConfirmations[key];
-    else candidateRequirementConfirmations[key] = { name: choice.dataset.requirementName, status, details, updatedAt: new Date().toISOString() };
-  }
   await chrome.storage.local.set({ [CONFIRMED_REQUIREMENT_FACTS_KEY]: candidateRequirementConfirmations });
   if (regenerate && activeResumeWorkflow) {
     await tailorResumeForActiveJob({ applyAfter: Boolean(activeResumeWorkflow.tailoringApplyAfter), forceRegenerate: true });
@@ -688,7 +689,7 @@ function confirmedCandidateFacts({ positiveOnly = false } = {}) {
     && (!positiveOnly || ['practical', 'basic'].includes(item.status)))
     .map(item => item.status === 'no'
       ? `Candidate explicitly confirmed no experience with ${item.name}.`
-      : `Candidate explicitly confirmed ${item.status === 'practical' ? 'practical experience' : 'basic knowledge'} with ${item.name}. Details: ${item.details}`);
+      : `Candidate explicitly confirmed ${item.status === 'practical' ? 'practical experience' : 'basic knowledge'} with ${item.name}.${item.details ? ` Details: ${item.details}` : ''}`);
 }
 
 async function generateApprovedTailoredResume() {
@@ -717,7 +718,6 @@ async function generateApprovedTailoredResume() {
       return acceptedEdit ? { ...item, after: acceptedEdit.after } : item;
     }), lastError: ''
   });
-  $('tailoringProgressStatus').textContent = 'Applying approved, evidence-checked changes to the original DOCX layout…';
   setStatus('Generating a separate resume from the unchanged Master Resume…', 'info');
   try {
     await generateTemporaryResumeForActiveJob();
@@ -763,8 +763,6 @@ function renderResumeWorkflow() {
   $('tailoredResumeSection').classList.toggle('hidden', !hasResumeSelection && !tailoring);
   $('activeWorkflowHeading').textContent = workflow?.selectedType === 'master' ? 'Master Resume for This Job' : 'Tailored Resume';
   $('applyResumePreview').classList.toggle('hidden', !hasResumeSelection && !tailoring);
-  $('tailoringProgressCard').classList.toggle('hidden', !tailoring);
-  if (tailoring) $('tailoringProgressStatus').textContent = workflow?.lastError || 'Creating a job-specific copy. Master Resume remains unchanged.';
   renderTailoringReview(workflow);
   $('activeResumePreview').classList.toggle('hidden', !hasResumeSelection);
   $('applyResumePreviewFilename').textContent = workflow?.selectedType === 'tailored' ? workflow.temporaryResumeName : workflow?.selectedResumeName || resumeFileName;
@@ -1536,7 +1534,7 @@ function updatePrimaryAction() {
   const hasTailoredFile = Boolean(workflow?.temporaryResumeId);
   button.disabled = !ready || restored || (applicationStarted && !companyFormOpen);
   if (companyFormOpen) button.textContent = 'Review Application';
-  else if (workflow?.status === 'TAILORING_REVIEW') button.textContent = 'Review Resume Edits';
+  else if (workflow?.status === 'TAILORING_REVIEW') button.textContent = 'Tailor & Apply';
   else if (workflow?.status === 'APPLICATION_SUBMITTED') button.textContent = 'Application submitted';
   else if (applicationStarted) button.textContent = 'Application in progress';
   else if (restored) button.textContent = 'Resume restored on Naukri';
@@ -3077,7 +3075,6 @@ async function loadAiSuggestions({ forceRegenerate = false } = {}) {
         } catch (error) {
           const transient = /bad gateway|gateway timeout|service unavailable|temporar|network|fetch failed|timed? out/i.test(String(error?.message || error));
           if (!transient || attempt === 1 || controller.signal.aborted) throw error;
-          $('tailoringProgressStatus').textContent = 'The AI service is waking up. Retrying once…';
           setStatus('AI service is temporarily unavailable. Retrying tailoring…', 'info');
           await delay(1200);
           if (controller.signal.aborted) return;
@@ -3640,14 +3637,6 @@ async function generateResumeStep(job) {
 }
 
 $('generateBtn').addEventListener('click', () => { void handleTailorAction(true); });
-$('generateApprovedEditsBtn').addEventListener('click', () => {
-  void generateApprovedTailoredResume().catch(error => setStatus(error.message || 'Could not generate the tailored resume.', 'error'));
-});
-$('regenerateTailoringBtn').addEventListener('click', () => {
-  if (!activeResumeWorkflow) return;
-  void tailorResumeForActiveJob({ applyAfter: Boolean(activeResumeWorkflow.tailoringApplyAfter), forceRegenerate: true })
-    .catch(error => setStatus(error.message || 'Could not regenerate suggestions.', 'error'));
-});
 function scheduleActiveJobCapture(tabId, delay = 250) {
   if (captureDebounceTimer) window.clearTimeout(captureDebounceTimer);
   captureDebounceTimer = window.setTimeout(() => {
