@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MenixJobAI – Resume Assistant",
-  "version": "1.0.5",
+  "version": "1.0.10",
   "description": "Analyze jobs and prepare tailored resumes from your Brave side panel.",
   "icons": {
     "16": "icons/icon16.png",
@@ -24,6 +24,9 @@
     "https://*.naukri.com/*",
     "http://localhost:8080/*",
     "http://127.0.0.1:8080/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: https:"
