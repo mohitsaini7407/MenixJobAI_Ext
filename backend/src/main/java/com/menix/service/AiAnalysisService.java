@@ -34,7 +34,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class AiAnalysisService {
     private static final Logger log = LoggerFactory.getLogger(AiAnalysisService.class);
-    private static final String PROMPT_VERSION = "overview-evidence-v3";
+    private static final String PROMPT_VERSION = "overview-evidence-v4-noise-filter";
     private static final String SUGGESTION_VERSION = "suggestions-evidence-v3";
     private static final String ANSWER_VERSION = "application-answers-v1";
     private final RestClient restClient;
@@ -340,6 +340,10 @@ public class AiAnalysisService {
             Do not duplicate the same requirement in different categories. Do not put location, work mode, notice
             period or work authorization in skills; put them in fitChecks. A related degree is equivalent unless the
             job says the degree is mandatory and exclusive. Parse years and compare dated roles conservatively.
+            Only list concrete qualifications, technologies, tools, certifications, or explicit responsibilities
+            stated in the job description. Never turn navigation/footer fragments, company legal suffixes, generic
+            words, or scraped site labels (for example "connect", "time", "app", "Ltd", "privacy policy", or
+            "careers") into requirements. If the description contains no concrete requirement, return an empty list.
             Do not calculate or return any score; Java validates evidence and calculates all scores.
             Return concise reasons (maximum 3), one-sentence verdict (maximum 20 words), and medium/low confidence
             when the JD is incomplete. Avoid generic skill lists and keyword stuffing.

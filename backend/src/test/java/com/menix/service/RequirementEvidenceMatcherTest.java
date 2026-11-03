@@ -60,6 +60,20 @@ class RequirementEvidenceMatcherTest {
         assertEquals("UNKNOWN", result.requirements().get(0).get("classification"));
     }
 
+    @Test
+    void dropsNaukriFooterAndNavigationWordsBeforeScoring() {
+        var result = RequirementEvidenceMatcher.evaluate(List.of(
+            requirement("Java", "REQUIRED_SKILL", "MISSING", "", "UNKNOWN"),
+            requirement("connect", "REQUIRED_SKILL", "MISSING", "", "UNKNOWN"),
+            requirement("Privacy Policy", "REQUIRED_SKILL", "MISSING", "", "UNKNOWN"),
+            requirement("Ltd", "REQUIRED_SKILL", "MISSING", "", "UNKNOWN")
+        ), "Computer science student; coursework in Java", "entry level", true);
+
+        assertEquals(1, result.requirements().size());
+        assertEquals("Java", result.requirements().get(0).get("name"));
+        assertEquals("EXACT_MATCH", result.requirements().get(0).get("classification"));
+    }
+
     private Map<String, Object> requirement(String name, String category, String classification, String evidence, String section) {
         return Map.of("name", name, "category", category, "importance", "MUST_HAVE",
             "classification", classification, "evidence", evidence, "evidenceSection", section,

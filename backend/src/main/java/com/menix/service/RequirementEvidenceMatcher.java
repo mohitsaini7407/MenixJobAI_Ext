@@ -16,6 +16,15 @@ public final class RequirementEvidenceMatcher {
         "preferredSkills", 10d, "keywords", 10d, "educationCertifications", 5d
     );
     private static final Map<String, String> ALIASES = aliases();
+    // Naukri job pages often append navigation, legal and company footer text to
+    // the visible JD. These terms are not candidate requirements on their own.
+    private static final Set<String> PAGE_NOISE = Set.of(
+        "about", "careers", "employer", "home", "sitemap", "credits", "help", "center",
+        "summons", "notices", "grievances", "report", "issue", "privacy", "policy",
+        "terms", "conditions", "fraud", "alert", "trust", "safety", "apply", "get",
+        "real", "connect", "time", "app", "ltd", "limited", "copyright", "contact",
+        "support", "login", "signup", "subscribe", "download", "share", "follow"
+    );
 
     private RequirementEvidenceMatcher() {}
 
@@ -33,6 +42,7 @@ public final class RequirementEvidenceMatcher {
         for (Map<String, Object> raw : ordered) {
             String name = clean(raw.get("name"));
             if (name.isBlank()) continue;
+            if (isPageNoise(name)) continue;
             if (!seenRequirements.add(canonical(name))) continue;
             String category = enumValue(raw.get("category"), Set.of("REQUIRED_SKILL", "PREFERRED_SKILL", "EXPERIENCE",
                 "PROJECT_RESPONSIBILITY", "KEYWORD", "EDUCATION_CERTIFICATION", "ELIGIBILITY"), "REQUIRED_SKILL");
@@ -204,6 +214,16 @@ public final class RequirementEvidenceMatcher {
     private static String canonical(String value) {
         String normalized = normalize(value);
         return ALIASES.getOrDefault(normalized, normalized);
+    }
+
+    private static boolean isPageNoise(String value) {
+        String normalized = normalize(value);
+        if (normalized.isBlank()) return true;
+        String[] words = normalized.split(" ");
+        // Reject a generic footer/navigation label even if the model wraps it
+        // in a longer phrase such as "connect with us" or "privacy policy".
+        if (words.length <= 3 && java.util.Arrays.stream(words).allMatch(PAGE_NOISE::contains)) return true;
+        return words.length == 1 && PAGE_NOISE.contains(normalized);
     }
 
     private static String normalize(String value) {

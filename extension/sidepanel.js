@@ -27,6 +27,7 @@ const NAUKRI_CONFIG = {
   }
 };
 const RESUME_UPLOAD_HISTORY_KEY = 'resumeUploadHistory';
+const CONFIRMED_ANSWER_PROFILE_KEY = 'confirmedApplicationAnswers';
 const RESUME_UPLOAD_DELAY_MS = 1000;
 
 let apiBase = DEFAULT_API;
@@ -50,6 +51,7 @@ let overviewController = null;
 let quickOverview = null;
 let aiRefinementFailed = false;
 let suggestionData = null;
+let suggestionLoadError = '';
 let suggestionRequestPromise = null;
 let suggestionController = null;
 let tailoredWorkingCopy = '';
@@ -59,6 +61,7 @@ let activeResumeWorkflow = null;
 let activeResumePreviewText = '';
 let resumeUploadPipelinePromise = null;
 let tailorGenerationInProgress = false;
+let tailoringRequestInProgress = false;
 let applicationAnswerItems = [];
 let applicationQuestionsLoading = false;
 
@@ -113,7 +116,8 @@ function renderRecruiterContact(state = 'checking') {
 
 const RESUME_DB_NAME = 'menixjobai-resumes';
 const RESUME_STORE_NAME = 'files';
-const LOCAL_STOP_WORDS = new Set('a an and are as at be by for from in into is it of on or that the their to with will you your this these those must should have has required preferred requirements responsibilities experience years year ability strong excellent including working knowledge skills qualification qualifications candidate candidates role team develop development manage management support use using build built work'.split(' '));
+const LOCAL_STOP_WORDS = new Set('a an and are as at be by for from in into is it of on or that the their to with will you your this these those must should have has required preferred requirements responsibilities experience years year ability strong excellent including working knowledge skills qualification qualifications candidate candidates role team develop development manage management support use using build built work about careers employer home sitemap credits help center summons notices grievances report issue privacy policy terms conditions fraud alert trust safety apply get real connect time app ltd limited copyright contact login signup subscribe download share follow'.split(' '));
+const NON_SKILL_LABELS = new Set('about careers employer home sitemap credits help center summons notices grievances report issue privacy policy terms conditions fraud alert trust safety apply get real connect time app ltd limited copyright contact login signup subscribe download share follow'.split(' '));
 
 // ------------------------------
 // STATUS
@@ -126,6 +130,12 @@ function setStatus(message, type = 'info') {
 
   el.textContent = message;
   el.dataset.type = type;
+  const visibleStatus = $('actionStatus');
+  if (visibleStatus) {
+    visibleStatus.textContent = message;
+    visibleStatus.dataset.type = type;
+    visibleStatus.classList.toggle('hidden', !message || message === 'Ready');
+  }
 }
 
 function cleanText(value) {
@@ -215,7 +225,7 @@ async function overviewCacheKey(resumeText, jobDescription) {
     .replace(/^\s*(?:home|jobs|login|sign up|download app)\s*(?:\|.*)?$/gim, ' ')
     .slice(0, 6000)).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const resumeHash = await digestText(normalizedResume);
-  return `matchOverview:${await digestText(`${resumeHash}\n${normalizedJob}\ngemini-2.5-flash\noverview-evidence-v3`)}`;
+  return `matchOverview:${await digestText(`${resumeHash}\n${normalizedJob}\ngemini-2.5-flash\noverview-evidence-v4-noise-filter`)}`;
 }
 
 async function sha256Hex(text) {
@@ -434,157 +444,151 @@ function renderResumeDocumentPreview(text) {
   container.append(page);
 }
 
-function renderTailoringReview(workflow = activeResumeWorkflow) {
-  const card = $('tailoringReviewCard');
-  if (!workflow || !card) return;
-  const suggestions = Array.isArray(workflow.tailoringSuggestions) ? workflow.tailoringSuggestions : [];
-  const accepted = new Set(Array.isArray(workflow.acceptedTailoringEditIndexes) ? workflow.acceptedTailoringEditIndexes : []);
-  const job = currentJobPayload();
-  $('tailoringReviewJob').textContent = `${job.title || workflow.title || 'Selected job'}${job.company || workflow.company ? ` · ${job.company || workflow.company}` : ''}`;
-  $('tailoringReviewMatch').textContent = lastAnalysis
-    ? `Estimated match: ${lastAnalysis.matchScore ?? 'N/A'}% · ${String(lastAnalysis.confidence || 'low')} confidence. Review each supported edit; Master Resume stays unchanged.`
-    : 'Review evidence-backed changes before generating a separate resume.';
-
-  const supported = [
-    ...normalizeAnalysisItems(lastAnalysis?.matchedSkills?.technical),
-    ...(Array.isArray(lastAnalysis?.equivalentSkills) ? lastAnalysis.equivalentSkills.map(item => item?.required).filter(Boolean) : [])
-  ];
-  const unsupported = [...new Set([
-    ...normalizeAnalysisItems(lastAnalysis?.missingSkills),
-    ...normalizeAnalysisItems(lastAnalysis?.missingKeywords)
-  ])];
-  const fillList = (id, values, emptyText) => {
-    const list = $(id); list.replaceChildren();
-    const unique = [...new Set(values)].slice(0, 12);
-    (unique.length ? unique : [emptyText]).forEach(value => { const item = document.createElement('li'); item.textContent = value; list.append(item); });
-  };
-  fillList('tailoringSupportedSkills', supported, 'No directly supported skills found.');
-  fillList('tailoringUnsupportedSkills', unsupported, 'No missing requirements identified.');
-
-  const editsRoot = $('tailoringReviewEdits'); editsRoot.replaceChildren();
-  const applicable = suggestions.filter(item => item && item.safeToApply === true && item.validation === 'verified');
-  if (!applicable.length) {
-    const empty = document.createElement('p'); empty.className = 'suggestions-empty';
-    empty.textContent = 'No validated content edits were suggested. The generated file will retain the Master Resume content.';
-    editsRoot.append(empty);
-  }
-  suggestions.forEach((suggestion, index) => {
-    const article = document.createElement('article'); article.className = 'tailoring-edit-card';
-    if (suggestion.safeToApply === true && suggestion.validation === 'verified') {
-      const label = document.createElement('label');
-      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = accepted.has(index); checkbox.dataset.editIndex = String(index);
-      checkbox.addEventListener('change', () => {
-        const next = new Set(Array.isArray(activeResumeWorkflow?.acceptedTailoringEditIndexes) ? activeResumeWorkflow.acceptedTailoringEditIndexes : []);
-        if (checkbox.checked) next.add(index); else next.delete(index);
-        activeResumeWorkflow.acceptedTailoringEditIndexes = [...next];
-        void chrome.storage.local.set({ resumeWorkflows });
-      });
-      const heading = document.createElement('span');
-      heading.textContent = `${suggestion.section || 'Resume'}${suggestion.relatedRequirement ? ` · ${suggestion.relatedRequirement}` : ''} · ${Math.round((Number(suggestion.confidence) || 0) * 100)}% confidence`;
-      label.append(checkbox, heading); article.append(label);
-      const before = document.createElement('p'); before.textContent = `Original: ${suggestion.before || ''}`;
-      const after = document.createElement('p'); after.className = 'tailoring-after'; after.textContent = `Improved: ${suggestion.after || ''}`;
-      const reason = document.createElement('p'); reason.textContent = `Reason: ${suggestion.reason || 'Improves relevance to this job.'}`;
-      const evidence = document.createElement('p'); evidence.textContent = `Master Resume evidence: ${(suggestion.evidence || []).join('; ')}`;
-      article.append(before, after, reason, evidence);
-    } else {
-      const warning = document.createElement('p'); warning.textContent = `Withheld edit: ${suggestion.validationReason || 'This change could not be verified against the Master Resume.'}`; article.append(warning);
+async function tailorResumeForActiveJob(options = {}) {
+  if (tailoringRequestInProgress || tailorGenerationInProgress) return;
+  tailoringRequestInProgress = true;
+  updatePrimaryAction();
+  try { return await performTailoringForActiveJob(options); }
+  catch (error) {
+    if (activeResumeWorkflow) {
+      await persistResumeWorkflow({
+        ...activeResumeWorkflow,
+        status: 'TAILORING_FAILED',
+        lastError: error.message || 'Resume tailoring failed. Retry.'
+      }).catch(() => {});
     }
-    editsRoot.append(article);
-  });
-
-  const warnings = [...(workflow.tailoringCautions || []), ...(workflow.rejectedSuggestions || []).map(item => item.validationReason).filter(Boolean)];
-  const warningsDetails = $('tailoringReviewWarnings');
-  warningsDetails.classList.toggle('hidden', !warnings.length);
-  const warningsList = $('tailoringReviewWarningList'); warningsList.replaceChildren();
-  warnings.forEach(value => { const item = document.createElement('li'); item.textContent = value; warningsList.append(item); });
-  card.classList.remove('hidden');
+    setStatus(error.message || 'Resume tailoring failed. Retry.', 'error');
+    throw error;
+  }
+  finally {
+    tailoringRequestInProgress = false;
+    updatePrimaryAction();
+  }
 }
 
-async function openTailoringReview() {
-  if (!activeResumeWorkflow) throw new Error('Open a job listing first.');
-  const data = suggestionData || await loadAiSuggestions();
-  if (!data) throw new Error('Tailoring suggestions could not be loaded. Retry when the backend is available.');
-  const suggestions = [
-    ...(Array.isArray(data.suggestions) ? data.suggestions : []),
-    ...(Array.isArray(data.rejectedSuggestions) ? data.rejectedSuggestions : [])
-  ];
-  const hasStoredReview = ['TAILORING_REVIEW', 'TAILORED_RESUME_REVIEWED'].includes(activeResumeWorkflow.status)
-    && Array.isArray(activeResumeWorkflow.tailoringSuggestions);
-  const acceptedTailoringEditIndexes = hasStoredReview
-    ? (activeResumeWorkflow.acceptedTailoringEditIndexes || [])
-    : suggestions.flatMap((item, index) => item.safeToApply === true && item.validation === 'verified' ? [index] : []);
+async function performTailoringForActiveJob({ applyAfter = false } = {}) {
+  if (!activeResumeWorkflow) throw new Error('Open a Naukri job listing first.');
+  const jobKey = activeResumeWorkflow.jobKey;
+  const masterText = $('resumeText').value.trim();
+  if (!masterText) throw new Error('Upload your Master Resume first.');
+  if (!$('jobDescription').value.trim()) throw new Error('The job description was not captured. Open the job description or paste it, then retry.');
+  const master = await readResumeFile('master');
+  if (!master?.file || !/\.docx$/i.test(master.name || resumeFileName || '')) {
+    throw new Error('To preserve the original design, use the Master Resume DOCX before tailoring.');
+  }
+
   await persistResumeWorkflow({
-    ...activeResumeWorkflow, selectedType: 'tailored', status: 'TAILORING_REVIEW',
-    tailoringSuggestions: suggestions, tailoringCautions: data.cautions || [],
-    rejectedSuggestions: data.rejectedSuggestions || [], acceptedTailoringEditIndexes,
+    ...activeResumeWorkflow, selectedType: 'tailored', status: 'TAILORING_IN_PROGRESS',
+    lastError: '', tailoringProgress: 'Preparing job analysis and resume suggestions.'
+  });
+  $('tailoringProgressCard').classList.remove('hidden');
+  $('tailoringProgressStatus').textContent = 'Preparing job analysis and resume suggestions…';
+  setStatus('Tailoring this resume for the selected job…', 'info');
+  renderResumeWorkflow();
+
+  // Keep score refinement running in the background. The local estimate is enough
+  // to start tailoring while the overview request continues independently.
+  if (!quickOverview) {
+    quickOverview = localQuickScore(masterText, $('jobDescription').value.trim());
+    renderAnalysis(quickOverview, 'quick');
+  }
+  if (!analysisPromise && !lastAnalysis) void analyzeCurrentMatch(true);
+  $('tailoringProgressStatus').textContent = 'Refining the match and preparing evidence-checked edits…';
+
+  let data = suggestionData;
+  if (!data) data = await loadAiSuggestions();
+  if (activeResumeWorkflow?.jobKey !== jobKey) throw new Error('The selected job changed while tailoring. Open the intended job and retry.');
+  if (!data) throw new Error(`AI tailoring could not finish: ${suggestionLoadError || 'check your connection and retry.'}`);
+
+  const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+  let working = masterText;
+  const edits = [];
+  let skipped = 0;
+  for (const edit of suggestions) {
+    if (edit?.safeToApply !== true || edit?.validation !== 'verified' || !edit.before || !edit.after) continue;
+    if (!working.includes(edit.before)) { skipped++; continue; }
+    working = working.replace(edit.before, edit.after);
+    edits.push(edit);
+  }
+  approvedTailoringEdits = edits;
+  tailoredWorkingCopy = working;
+  await persistResumeWorkflow({
+    ...activeResumeWorkflow,
+    selectedType: 'tailored',
+    status: 'TAILORING_IN_PROGRESS',
+    tailoringSuggestions: suggestions,
+    tailoringCautions: data.cautions || [],
+    rejectedSuggestions: data.rejectedSuggestions || [],
+    tailoringEditCount: edits.length,
     lastError: ''
   });
-  renderTailoringReview(activeResumeWorkflow);
-  $('tailoringReviewCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  $('tailoringProgressStatus').textContent = 'Applying verified edits and keeping your Master Resume unchanged…';
+  $('tailoringProgressCard').classList.remove('hidden');
+  renderResumeWorkflow();
+
+  await generateTemporaryResumeForActiveJob();
+  if (!activeResumeWorkflow?.temporaryResumeId) return;
+  $('tailoredResumeSection').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const completionMessage = edits.length
+    ? `Tailored resume ready with ${edits.length} verified edit(s). AI match refinement continues in the background.`
+    : 'No safe wording changes were found; a separate copy of the original DOCX is ready. AI match refinement continues in the background.';
+  setStatus(skipped ? `${completionMessage} ${skipped} unmatched edit(s) were skipped.` : completionMessage, edits.length ? 'success' : 'info');
+  if (applyAfter) await chooseResumeForThisJob();
 }
 
-async function generateReviewedTailoredResume() {
-  const button = $('generateReviewedTailoredBtn');
-  if (button.disabled) return;
-  button.disabled = true;
-  button.textContent = 'Generating tailored resume…';
+async function handleTailorAction(applyAfter) {
   try {
     const workflow = activeResumeWorkflow;
-    const suggestions = Array.isArray(workflow?.tailoringSuggestions) ? workflow.tailoringSuggestions : [];
-    const acceptedIndexes = new Set(Array.isArray(workflow?.acceptedTailoringEditIndexes) ? workflow.acceptedTailoringEditIndexes : []);
-    const master = $('resumeText').value;
-    let working = master;
-    approvedTailoringEdits = [];
-    suggestions.forEach((suggestion, index) => {
-      if (!acceptedIndexes.has(index) || suggestion.safeToApply !== true || suggestion.validation !== 'verified') return;
-      if (!suggestion.before || !working.includes(suggestion.before)) {
-        throw new Error('An accepted change no longer matches the Master Resume text. Reopen the review and try again.');
+    if (applyAfter) {
+      const destinationUrl = workflow?.companyApplyUrl || jobMetadata.companyApplyUrl;
+      let destination = null;
+      try { if (destinationUrl) destination = new URL(destinationUrl); } catch { /* Continue to Naukri when no valid external URL was captured. */ }
+      if (destination?.protocol === 'https:' && !/(^|\.)naukri\.com$/i.test(destination.hostname)) {
+        const granted = await chrome.permissions.request({ origins: [`${destination.origin}/*`] });
+        if (!granted) throw new Error('Allow access to the company application site, then click Tailor & Apply again.');
       }
-      working = working.replace(suggestion.before, suggestion.after || '');
-      approvedTailoringEdits.push(suggestion);
-    });
-    tailoredWorkingCopy = working;
-    const reviewed = await persistResumeWorkflow({
-      ...workflow, selectedType: 'tailored', status: 'TAILORED_RESUME_REVIEWED',
-      acceptedTailoringEditIndexes: [...acceptedIndexes], lastError: ''
-    });
-    await generateTemporaryResumeForActiveJob();
-    if (activeResumeWorkflow?.temporaryResumeId) await chooseResumeForThisJob();
-    return reviewed;
-  } catch (error) { setStatus(`Could not generate tailored resume: ${error.message}`, 'error'); }
-  finally {
-    button.disabled = false;
-    button.textContent = 'Generate Resume & Continue';
+    }
+    if (workflow?.status === 'APPLICATION_IN_PROGRESS' && workflow.companyApplicationTabId) {
+      const applicationTab = await chrome.tabs.get(workflow.companyApplicationTabId).catch(() => null);
+      if (applicationTab?.id) {
+        await chrome.tabs.update(applicationTab.id, { active: true });
+        if (applicationTab.windowId != null) await chrome.windows.update(applicationTab.windowId, { focused: true }).catch(() => {});
+        setStatus('Review the application and submit it yourself on the company site.', 'info');
+      }
+      return;
+    }
+    if (workflow?.selectedType === 'master') {
+      if (applyAfter) await chooseResumeForThisJob();
+      else { await loadWorkflowResumePreview(); $('tailoredResumeSection').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+      return;
+    }
+    if (workflow?.temporaryResumeId && applyAfter) {
+      await chooseResumeForThisJob();
+      return;
+    }
+    if (!applyAfter && workflow?.temporaryResumeId) {
+      await loadWorkflowResumePreview();
+      $('tailoredResumeSection').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+    await tailorResumeForActiveJob({ applyAfter });
+  } catch (error) {
+    setStatus(error.message || 'Tailored resume could not be generated.', 'error');
   }
 }
-
-async function cancelTailoringReview() {
-  if (!activeResumeWorkflow) return;
-  tailoredWorkingCopy = '';
-  approvedTailoringEdits = [];
-  await persistResumeWorkflow({
-    ...activeResumeWorkflow, selectedType: '', status: lastAnalysis ? 'JD_ANALYZED' : 'JOB_DETECTED',
-    tailoringSuggestions: [], tailoringCautions: [], rejectedSuggestions: [], acceptedTailoringEditIndexes: [], lastError: ''
-  });
-}
-
-$('generateReviewedTailoredBtn').addEventListener('click', generateReviewedTailoredResume);
-$('cancelTailoringReviewBtn').addEventListener('click', cancelTailoringReview);
 
 function renderResumeWorkflow() {
   const workflow = activeResumeWorkflow;
   const hasJob = Boolean(workflow);
   const hasResumeSelection = Boolean(workflow?.selectedType === 'tailored' && workflow.temporaryResumeName)
     || Boolean(workflow?.selectedType === 'master' && resumeFileName);
-  const reviewingTailoring = ['TAILORING_REVIEW', 'TAILORED_RESUME_REVIEWED'].includes(workflow?.status)
-    && !workflow?.temporaryResumeId;
+  const tailoring = ['TAILORING_IN_PROGRESS', 'TAILORING_FAILED'].includes(workflow?.status);
   const hasSelectedFile = hasResumeSelection && workflow?.status !== 'MASTER_RESUME_RESTORED';
   const states = {
     JOB_DETECTED: 'Analyzing…',
     JD_ANALYZED: lastAnalysis ? `Match ${lastAnalysis.matchScore ?? 'N/A'}% · Choose a resume.` : 'Waiting for analysis.',
-    TAILORING_REVIEW: 'Review proposed changes.',
-    TAILORED_RESUME_REVIEWED: 'Generating the reviewed resume.',
+    TAILORING_IN_PROGRESS: 'Tailoring this resume for the selected job.',
+    TAILORING_FAILED: 'Tailoring needs a retry.',
     MASTER_RESUME_SELECTED: 'Master resume selected.',
     MASTER_RESUME_UPLOADED: 'Master resume uploaded and verified.',
     TAILORED_RESUME_GENERATED: 'Tailored resume ready.',
@@ -598,13 +602,16 @@ function renderResumeWorkflow() {
     APPLICATION_CANCELLED: 'Cancelled. Restore the master resume.'
   };
   $('activeWorkflowStatus').textContent = workflow ? states[workflow.status] || workflow.status : 'Waiting for job analysis.';
-  const canAnswerQuestions = Boolean(workflow && ['APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow.status));
+  const canAnswerQuestions = Boolean(
+    (workflow && ['APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow.status))
+    || (/^https:\/\/(?:[^/]+\.)?naukri\.com\/job-listings?-/i.test(currentJobTabUrl) && Boolean(resumeFileName))
+  );
   $('applicationAnswersSection').classList.toggle('hidden', !canAnswerQuestions);
-  $('tailoredResumeSection').classList.toggle('hidden', !hasResumeSelection && !reviewingTailoring);
+  $('tailoredResumeSection').classList.toggle('hidden', !hasResumeSelection && !tailoring);
   $('activeWorkflowHeading').textContent = workflow?.selectedType === 'master' ? 'Master Resume for This Job' : 'Tailored Resume';
-  $('applyResumePreview').classList.toggle('hidden', !hasResumeSelection);
-  $('tailoringReviewCard').classList.toggle('hidden', !reviewingTailoring);
-  if (reviewingTailoring) renderTailoringReview(workflow);
+  $('applyResumePreview').classList.toggle('hidden', !hasResumeSelection && !tailoring);
+  $('tailoringProgressCard').classList.toggle('hidden', !tailoring);
+  if (tailoring) $('tailoringProgressStatus').textContent = workflow?.lastError || 'Creating a job-specific copy. Master Resume remains unchanged.';
   $('activeResumePreview').classList.toggle('hidden', !hasResumeSelection);
   $('applyResumePreviewFilename').textContent = workflow?.selectedType === 'tailored' ? workflow.temporaryResumeName : workflow?.selectedResumeName || resumeFileName;
   const selectedName = workflow?.selectedType === 'tailored' ? workflow.temporaryResumeName : workflow?.selectedResumeName || resumeFileName;
@@ -650,7 +657,99 @@ function renderManualUploadGuide(workflow) {
   steps.forEach(text => { const item = document.createElement('li'); item.textContent = text; guide.append(item); });
 }
 
-const SENSITIVE_QUESTION_PATTERN = /\b(?:gender|race|ethnicity|disability|veteran|military|sexual orientation|visa|work authorization|sponsor(?:ship)?|authorized to work|eligible to work|work permit|citizenship|nationality|criminal|background check|date of birth|birth date|age)\b/i;
+const SENSITIVE_QUESTION_PATTERN = /\b(?:gender|race|ethnicity|disability|veteran|military|sexual orientation|visa|work authorization|sponsor(?:ship)?|authorized to work|eligible to work|work permit|citizenship|nationality|criminal|background check|date of birth|birth date|age|consent|terms and conditions|declaration|attest)\b|\b(?:do you agree|confirm that you agree)\b/i;
+
+function normalizeAnswerKey(value) {
+  return cleanText(value).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function mapApplicationQuestionField(question) {
+  const text = normalizeAnswerKey(question);
+  if (/full name|candidate name|your name|first name|last name/.test(text)) return 'fullName';
+  if (/\bemail\b|email id/.test(text)) return 'email';
+  if (/\bphone\b|\bmobile\b|contact number/.test(text)) return 'phone';
+  if (/graduat|passing year|pass out|completion year|year of (?:your )?(?:degree|study)|when did you (?:complete|graduate)/.test(text)) return 'graduationYear';
+  if (/highest qualification|highest education|degree|educational qualification|course|major|branch of study/.test(text)) return 'qualification';
+  if (/college|university|institute|school name/.test(text)) return 'college';
+  if (/current (?:city|location|residence)|where do you live|location/.test(text)) return 'currentLocation';
+  if (/programming language|languages do you know/.test(text)) return 'programmingLanguages';
+  if (/technical skills|skills do you know|technologies do you know|frameworks do you know/.test(text)) return 'technicalSkills';
+  if (/how many years|total experience|years of experience|experience do you have/.test(text)) return 'totalExperience';
+  if (/notice period|when can you join|joining date|available to join|immediate join|available immediately/.test(text)) return 'availability';
+  if (/expected (?:salary|ctc|compensation)|salary expectation|expected pay/.test(text)) return 'expectedSalary';
+  if (/current (?:salary|ctc)|present (?:salary|ctc)/.test(text)) return 'currentSalary';
+  if (/relocat/.test(text)) return 'willingToRelocate';
+  if (/work arrangement|work mode|work from (?:home|office)|on.?site|remote work/.test(text)) return 'preferredWorkArrangement';
+  return '';
+}
+
+function extractVerifiedResumeAnswer(fieldKey, resumeText) {
+  const text = String(resumeText || '').replace(/\r/g, '');
+  const lines = text.split('\n').map(line => line.replace(/^\s*[•*-]\s*/, '').trim()).filter(Boolean);
+  const section = (start, end) => {
+    const startIndex = lines.findIndex(line => new RegExp(`^${start}(?:\\s|$)`, 'i').test(line));
+    if (startIndex < 0) return [];
+    const remaining = lines.slice(startIndex + 1);
+    const endIndex = remaining.findIndex(line => new RegExp(`^(?:${end})(?:\\s|$)`, 'i').test(line));
+    return remaining.slice(0, endIndex < 0 ? remaining.length : endIndex);
+  };
+  if (fieldKey === 'fullName') return lines[0] || '';
+  if (fieldKey === 'email') return text.match(/[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+/i)?.[0] || '';
+  if (fieldKey === 'phone') return text.match(/\+?\d[\d ()-]{7,}\d/)?.[0]?.trim() || '';
+  if (fieldKey === 'currentLocation') {
+    const contactLine = lines.slice(1, 5).find(line => /\+?\d[\d ()-]{7,}\d/.test(line) && /[,|]/.test(line));
+    return contactLine?.split('|')[0]?.trim() || '';
+  }
+  if (fieldKey === 'qualification' || fieldKey === 'college' || fieldKey === 'graduationYear') {
+    const education = section('EDUCATION', 'CERTIFICATIONS|ACHIEVEMENTS|PROJECTS|SKILLS|EXPERIENCE');
+    if (fieldKey === 'graduationYear') {
+      const educationText = education.join(' ');
+      const years = [...educationText.matchAll(/\b(?:19|20)\d{2}\b/g)].map(match => Number(match[0]));
+      return years.length ? String(Math.max(...years)) : '';
+    }
+    const degreeLine = education.find(line => /\b(?:B\.?Tech|B\.?E\.?|B\.?Sc\.?|M\.?Tech|M\.?E\.?|M\.?Sc\.?|MCA|BCA|Bachelor|Master|Ph\.?D)\b/i.test(line)) || '';
+    if (fieldKey === 'qualification') return degreeLine.match(/\b(?:B\.?Tech(?:nology)?|B\.?E\.?|B\.?Sc\.?|M\.?Tech(?:nology)?|M\.?E\.?|M\.?Sc\.?|MCA|BCA|Bachelor(?:'s)?|Master(?:'s)?|Ph\.?D)\b[^|()]*/i)?.[0]?.trim() || '';
+    return degreeLine.match(/\b(?:PIET|[A-Z][A-Za-z]+\s+(?:University|College|Institute)|Institute of [^,|]+|University of [^,|]+)/i)?.[0]?.trim() || '';
+  }
+  if (fieldKey === 'programmingLanguages') {
+    const skills = section('SKILLS', 'EXPERIENCE|INTERNSHIP|PROJECTS|EDUCATION');
+    const languageLine = skills.find(line => /^languages\s*:/i.test(line));
+    return languageLine?.replace(/^languages\s*:\s*/i, '').trim() || '';
+  }
+  if (fieldKey === 'technicalSkills') {
+    const skills = section('SKILLS', 'EXPERIENCE|INTERNSHIP|PROJECTS|EDUCATION');
+    return skills.join('; ');
+  }
+  if (fieldKey === 'totalExperience') {
+    const explicit = text.match(/\b(?:total |overall )?(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?(?:professional\s+)?experience\b/i);
+    return explicit?.[1] ? `${explicit[1]} years` : '';
+  }
+  return '';
+}
+
+async function readConfirmedApplicationAnswers() {
+  const stored = await chrome.storage.local.get([CONFIRMED_ANSWER_PROFILE_KEY]);
+  return stored[CONFIRMED_ANSWER_PROFILE_KEY] || {};
+}
+
+async function rememberConfirmedApplicationAnswer(question, fieldKey, answer) {
+  const value = cleanText(answer);
+  if (!value) return;
+  const saved = await readConfirmedApplicationAnswers();
+  const updated = {
+    ...saved,
+    [fieldKey || `question:${normalizeAnswerKey(question)}`]: {
+      question: cleanText(question), value, source: 'user_confirmed', verified: true, updatedAt: Date.now()
+    }
+  };
+  await chrome.storage.local.set({ [CONFIRMED_ANSWER_PROFILE_KEY]: updated });
+}
+
+async function forgetConfirmedApplicationAnswer(fieldKey, question) {
+  const saved = await readConfirmedApplicationAnswers();
+  delete saved[fieldKey || `question:${normalizeAnswerKey(question)}`];
+  await chrome.storage.local.set({ [CONFIRMED_ANSWER_PROFILE_KEY]: saved });
+}
 
 async function activeApplicationTab() {
   const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -664,97 +763,129 @@ async function activeApplicationTab() {
 }
 
 async function findApplicationQuestions(tabId) {
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      const visible = element => Boolean(element.getClientRects().length)
-        && getComputedStyle(element).visibility !== 'hidden'
-        && getComputedStyle(element).display !== 'none';
-      const elementsIn = root => {
-        const found = [...root.querySelectorAll('input,textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]')];
-        for (const element of [...root.querySelectorAll('*')]) if (element.shadowRoot) found.push(...elementsIn(element.shadowRoot));
-        return found;
-      };
-      const controls = [...new Set(elementsIn(document))].filter(element => {
-        if (!visible(element) || element.disabled || element.readOnly || element.closest('#__menixjobai_dock')) return false;
-        if (element instanceof HTMLInputElement && !['text','email','tel','url','number','search','radio'].includes(element.type)) return false;
-        if (element instanceof HTMLInputElement && element.type === 'radio') {
-          const group = elementsIn(document).filter(item => item instanceof HTMLInputElement && item.type === 'radio' && item.name === element.name && item.form === element.form);
-          return !group.some(item => item.checked);
-        }
-        if (element instanceof HTMLSelectElement) return !element.value || /^(?:select|choose|please)/i.test(element.selectedOptions[0]?.textContent?.trim() || '');
-        if (element instanceof HTMLElement && element.isContentEditable) return !element.innerText.trim();
-        return !String(element.value ?? element.innerText ?? '').trim();
-      });
-      const labelFor = element => {
-        const explicit = [...(element.labels || [])].map(label => label.innerText || '').join(' ');
-        const aria = element.getAttribute('aria-label') || '';
-        const labelled = (element.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => document.getElementById(id)?.innerText || '').join(' ');
-        const legend = element.closest('fieldset')?.querySelector('legend')?.innerText || '';
-        const nearby = element.closest('label')?.innerText || '';
-        const fallback = element.getAttribute('placeholder') || element.name || element.id || '';
-        const nearbyPrompt = (() => {
-          let node = element;
-          for (let depth = 0; node?.parentElement && depth < 6; depth++, node = node.parentElement) {
-            const siblings = [...node.parentElement.children];
-            const index = siblings.indexOf(node);
-            for (let i = index - 1; i >= 0; i--) {
-              const text = (siblings[i].innerText || siblings[i].textContent || '').replace(/\s+/g, ' ').trim();
-              const question = text.match(/[^?]{3,240}\?/g)?.at(-1)?.trim();
-              if (question) return question;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const visible = element => Boolean(element?.getClientRects().length)
+          && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none';
+        const elementsIn = root => {
+          const found = [...root.querySelectorAll('input,textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]')];
+          for (const element of [...root.querySelectorAll('*')]) if (element.shadowRoot) found.push(...elementsIn(element.shadowRoot));
+          return found;
+        };
+        const all = [...new Set(elementsIn(document))];
+        const supported = all.filter(element => {
+          if (!visible(element) || element.disabled || element.readOnly || element.closest('#__menixjobai_dock')) return false;
+          if (element instanceof HTMLInputElement && !['text','email','tel','url','number','search','radio','checkbox','date'].includes(element.type)) return false;
+          return true;
+        });
+        const labelFor = element => {
+          const text = value => String(value || '').replace(/\s+/g, ' ').trim();
+          const direct = [...(element.labels || [])].map(label => text(label.innerText || label.textContent)).filter(Boolean);
+          const labelled = (element.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => text(document.getElementById(id)?.innerText)).filter(Boolean);
+          const fieldset = text(element.closest('fieldset')?.querySelector('legend')?.innerText);
+          const aria = text(element.getAttribute('aria-label'));
+          const placeholder = text(element.getAttribute('placeholder'));
+          let prompt = '';
+          let ancestor = element.parentElement;
+          for (let depth = 0; ancestor && depth < 5; depth++, ancestor = ancestor.parentElement) {
+            const candidate = text(ancestor.innerText || ancestor.textContent);
+            if (candidate.length >= 5 && candidate.length <= 260 && /\?|\b(?:graduat|qualif|experience|salary|relocat|available|join|location|city|skill|degree|college|university|language|notice|CTC|work from|expected)\b/i.test(candidate)) { prompt = candidate; break; }
+          }
+          const fallback = text(element.getAttribute('name') || element.id).replace(/[_-]+/g, ' ');
+          const accessible = [...direct, ...labelled, aria].filter(Boolean);
+          return (accessible.find(value => intent.test(value)) || fieldset || prompt || accessible[0] || placeholder || fallback).slice(0, 300);
+        };
+        const intent = /\?|\b(?:full name|candidate name|first name|last name|email|email id|phone|mobile|contact number|graduat|passing year|pass out|qualification|degree|college|university|institute|current (?:city|location)|where do you live|experience|salary|CTC|notice period|when can you join|available to join|relocat|work arrangement|work mode|work from|programming language|technical skills|technologies do you know|highest education|expected|select your)\b/i;
+        const questionLike = element => intent.test(labelFor(element));
+        const candidates = supported.filter(element => questionLike(element));
+        const output = [];
+        const grouped = new Set();
+        candidates.forEach(element => {
+          if (element instanceof HTMLInputElement && ['radio','checkbox'].includes(element.type)) {
+            const key = `${element.type}:${element.form?.id || ''}:${element.name || element.id || `unnamed-${output.length}`}`;
+            if (grouped.has(key)) return;
+            const group = element.name
+              ? candidates.filter(item => item instanceof HTMLInputElement && item.type === element.type && item.name === element.name && item.form === element.form)
+              : [element];
+            if (group.length > 1 || element.type === 'radio') {
+              grouped.add(key);
+              const question = element.closest('fieldset')?.querySelector('legend')?.innerText?.trim() || labelFor(element);
+              const id = `menix-question-${output.length}`;
+              group.forEach(item => { item.dataset.menixAnswerId = id; });
+              output.push({ id, question, kind: element.type, options: group.map(item => ({ value: item.value, label: item.closest('label')?.innerText?.trim() || [...(item.labels || [])].map(label => label.innerText.trim()).join(' ') || item.value })), currentValue: group.find(item => item.checked)?.value || '', currentLabel: group.find(item => item.checked)?.closest('label')?.innerText?.trim() || '' });
+              return;
             }
           }
-          return '';
-        })();
-        return [explicit, nearby, legend, labelled, aria, nearbyPrompt, fallback].map(value => value.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 300);
-      };
-      const questions = [];
-      const radioGroups = new Map();
-      for (const element of controls) {
-        if (element instanceof HTMLInputElement && element.type === 'radio') {
-          const key = element.name || `radio-${questions.length}`;
-          if (radioGroups.has(key)) continue;
-          const group = elementsIn(document).filter(item => item instanceof HTMLInputElement && item.type === 'radio' && item.name === element.name && item.form === element.form && visible(item));
-          const question = element.closest('fieldset')?.querySelector('legend')?.innerText || labelFor(element);
-          const id = `menix-question-${questions.length}`;
-          group.forEach(item => { item.dataset.menixAnswerId = id; });
-          radioGroups.set(key, true);
-          questions.push({ id, question, kind: 'radio', options: group.map(item => ({ value: item.value, label: item.closest('label')?.innerText?.trim() || document.querySelector(`label[for="${CSS.escape(item.id || '')}"]`)?.innerText?.trim() || item.value })) });
-          continue;
-        }
-        const id = `menix-question-${questions.length}`;
-        element.dataset.menixAnswerId = id;
-        questions.push({
-          id, question: labelFor(element),
-          kind: element instanceof HTMLSelectElement ? 'select' : 'text',
-          options: element instanceof HTMLSelectElement ? [...element.options].filter(option => option.value).map(option => ({ value: option.value, label: option.textContent.trim() })) : []
+          const id = `menix-question-${output.length}`;
+          element.dataset.menixAnswerId = id;
+          const isSelect = element instanceof HTMLSelectElement;
+          const kind = isSelect ? 'select' : element instanceof HTMLInputElement && element.type === 'checkbox' ? 'checkbox' : element.getAttribute('role') === 'combobox' ? 'custom-select' : 'text';
+          const selectedLabel = isSelect ? (element.selectedOptions[0]?.textContent?.trim() || '') : '';
+          const selectedIsPlaceholder = /^(?:(?:please\s+)?(?:select|choose)\b.*|--+|\*+)$/i.test(selectedLabel);
+          output.push({
+            id, question: labelFor(element), kind,
+            options: isSelect ? [...element.options].filter(option => option.value).map(option => ({ value: option.value, label: option.textContent.trim() })) : [],
+            currentValue: isSelect ? (selectedIsPlaceholder ? '' : selectedLabel) : element instanceof HTMLInputElement && element.type === 'checkbox' ? (element.checked ? 'true' : '') : String(element.value ?? element.innerText ?? '').trim(),
+            currentLabel: ''
+          });
         });
+        return output;
       }
-      return questions.filter(item => item.question);
-    }
-  });
-  return Array.isArray(result?.result) ? result.result : [];
+    });
+    const found = Array.isArray(result?.result) ? result.result : [];
+    if (found.length) return found;
+    if (attempt < 5) await delay(400);
+  }
+  return [];
 }
 
 function renderApplicationAnswers(items) {
   const list = $('applicationAnswersList');
   list.replaceChildren();
   applicationAnswerItems = items;
-  $('fillApplicationAnswersBtn').classList.toggle('hidden', !items.some(item => item.answer || item.needsUserInput));
+  $('fillApplicationAnswersBtn').classList.toggle('hidden', !items.some(item => item.answer && !item.alreadyFilled));
   for (const item of items) {
     const card = document.createElement('article');
-    card.className = `application-answer-card${item.needsUserInput ? ' needs-user-input' : ''}`;
+    card.className = `application-answer-card${item.needsUserInput && !item.alreadyFilled ? ' needs-user-input' : ''}`;
     const heading = document.createElement('h3'); heading.textContent = item.question;
     const note = document.createElement('p'); note.className = 'answer-confidence';
-    note.textContent = item.sensitive ? 'Sensitive question — answer this yourself.'
-      : item.needsUserInput ? 'No supported answer found. Add your own answer to fill it.'
-        : `AI draft · ${item.confidence} confidence · review before filling`;
+    note.textContent = item.alreadyFilled ? 'Already answered on the page; left unchanged.'
+      : item.sensitive ? 'Sensitive or legal question. MenixJobAI will not suggest or autofill this answer.'
+        : item.verified ? `${item.answerSource === 'user_confirmed' ? 'Previously confirmed answer' : 'Verified in Master Resume'}${item.evidence ? ` · ${item.evidence}` : ''}.`
+          : item.answerSource === 'ai_draft' ? 'AI draft only. Check it and confirm before filling.'
+            : 'No supported answer found. Enter your answer and confirm before filling.';
     const answer = document.createElement('textarea');
-    answer.value = item.answer || ''; answer.rows = 2; answer.setAttribute('aria-label', `Answer for ${item.question}`);
+    answer.value = item.alreadyFilled ? item.currentValue : (item.answer || ''); answer.rows = 2; answer.setAttribute('aria-label', `Answer for ${item.question}`);
     answer.dataset.answerId = item.id;
-    const fill = document.createElement('button'); fill.className = 'btn answer-fill'; fill.type = 'button'; fill.textContent = 'Fill this answer';
+    answer.dataset.questionText = item.question;
+    answer.dataset.fieldKey = item.fieldKey || '';
+    answer.disabled = Boolean(item.alreadyFilled);
+    const memoryLabel = document.createElement('label'); memoryLabel.className = 'remember-answer-label';
+    const remember = document.createElement('input'); remember.type = 'checkbox'; remember.dataset.rememberAnswerId = item.id;
+    remember.id = `remember-${item.id}`;
+    remember.checked = item.answerSource === 'user_confirmed';
+    remember.disabled = Boolean(item.sensitive || item.alreadyFilled);
+    const rememberText = document.createElement('span'); rememberText.textContent = 'Remember this answer for future applications';
+    memoryLabel.append(remember, rememberText);
+    const fill = document.createElement('button'); fill.className = 'btn answer-fill'; fill.type = 'button'; fill.textContent = item.verified ? 'Fill verified answer' : 'Confirm & fill answer';
+    fill.disabled = Boolean(item.alreadyFilled || (!item.answer && !item.sensitive));
+    answer.addEventListener('input', () => { fill.disabled = Boolean(item.alreadyFilled || !answer.value.trim()); });
     fill.addEventListener('click', () => fillReviewedApplicationAnswers([item.id]));
-    card.append(heading, note, answer, fill);
+    card.append(heading, note, answer);
+    if (!item.alreadyFilled && !item.sensitive) card.append(memoryLabel);
+    if (!item.alreadyFilled) card.append(fill);
+    if (!item.alreadyFilled && item.answerSource === 'user_confirmed') {
+      const forget = document.createElement('button'); forget.className = 'btn answer-forget'; forget.type = 'button'; forget.textContent = 'Forget saved answer';
+      forget.addEventListener('click', async () => {
+        await forgetConfirmedApplicationAnswer(item.fieldKey, item.question);
+        item.answer = ''; item.verified = false; item.answerSource = '';
+        answer.value = ''; fill.disabled = true; note.textContent = 'Saved answer removed. Enter and confirm an answer if needed.';
+        setStatus('Saved application answer removed from this browser.', 'success');
+      });
+      card.append(forget);
+    }
     list.append(card);
   }
 }
@@ -783,16 +914,66 @@ async function suggestApplicationAnswers() {
       }
     }
     const detected = await findApplicationQuestions(tab.id);
-    if (!detected.length) throw new Error('No unanswered application questions were found.');
-    const questions = detected.map(item => ({
-      ...item,
-      sensitive: SENSITIVE_QUESTION_PATTERN.test(item.question),
-      question: item.question
-    }));
-    const answerable = questions.filter(item => !item.sensitive);
+    if (!detected.length) {
+      const note = document.createElement('p'); note.className = 'answer-confidence';
+      note.textContent = 'No visible application questions were detected. Open the recruiter-question form, then retry.';
+      $('applicationAnswersList').append(note);
+      setStatus('Could not find visible application questions. Open the questionnaire and retry.', 'info');
+      return;
+    }
+    const resumeText = $('resumeText').value.trim();
+    const confirmed = await readConfirmedApplicationAnswers();
+    const resumeHash = resumeText ? await sha256Hex(cleanText(resumeText)) : '';
+    const profileKey = resumeHash ? `resumeProfile:${resumeHash}` : '';
+    const profileStorage = profileKey ? await chrome.storage.local.get([profileKey, 'fullName']) : await chrome.storage.local.get(['fullName']);
+    const resumeProfile = profileStorage[profileKey]?.profile || {};
+    const savedFullName = cleanText(profileStorage.fullName || $('fullNameInput').value);
+    const questions = detected.map(item => {
+      const fieldKey = mapApplicationQuestionField(item.question);
+      const stored = (fieldKey && confirmed[fieldKey]?.verified && confirmed[fieldKey])
+        || confirmed[`question:${normalizeAnswerKey(item.question)}`];
+      let answer = '';
+      let answerSource = '';
+      let evidence = '';
+      let verified = false;
+      if (item.currentValue) {
+        answer = item.currentLabel || item.currentValue;
+        answerSource = 'already_filled';
+      } else if (stored?.verified && stored.value) {
+        answer = stored.value; answerSource = 'user_confirmed'; evidence = 'saved by you'; verified = true;
+      } else if (fieldKey) {
+        const profileValue = fieldKey === 'fullName' ? savedFullName
+          : fieldKey === 'currentLocation' ? cleanText(resumeProfile.location)
+          : fieldKey === 'qualification' ? cleanText(resumeProfile.degree)
+            : fieldKey === 'totalExperience' && resumeProfile.yearsExperience !== null && resumeProfile.yearsExperience !== undefined
+              && resumeProfile.yearsExperience !== '' && Number.isFinite(Number(resumeProfile.yearsExperience))
+                ? `${Number(resumeProfile.yearsExperience)} years` : '';
+        answer = profileValue || extractVerifiedResumeAnswer(fieldKey, resumeText);
+        if (answer) {
+          answerSource = profileValue ? 'master_resume_profile' : 'master_resume';
+          evidence = ['technicalSkills', 'programmingLanguages'].includes(fieldKey) ? 'Skills section'
+            : fieldKey === 'currentLocation' ? 'Contact details'
+              : ['graduationYear', 'qualification', 'college'].includes(fieldKey) ? 'Education section'
+                : profileValue ? 'Extracted Master Resume profile' : 'Resume text';
+          verified = true;
+        }
+      }
+      if (verified && item.options?.length) {
+        const expected = normalizeAnswerKey(answer);
+        const exact = item.options.find(option => normalizeAnswerKey(option.label) === expected || normalizeAnswerKey(option.value) === expected);
+        const supportedCheckboxes = item.kind === 'checkbox'
+          ? item.options.filter(option => answer.split(/[;,|\n]+/).map(normalizeAnswerKey).includes(normalizeAnswerKey(option.label))
+            || answer.split(/[;,|\n]+/).map(normalizeAnswerKey).includes(normalizeAnswerKey(option.value)))
+          : [];
+        if (exact) answer = exact.label;
+        else if (supportedCheckboxes.length) answer = supportedCheckboxes.map(option => option.label).join(', ');
+        else { answer = ''; verified = false; answerSource = ''; evidence = ''; }
+      }
+      return { ...item, fieldKey, sensitive: SENSITIVE_QUESTION_PATTERN.test(item.question), answer, verified, answerSource, evidence, alreadyFilled: Boolean(item.currentValue) };
+    });
+    const answerable = questions.filter(item => !item.sensitive && !item.verified && !item.alreadyFilled);
     let generated = [];
     if (answerable.length) {
-      const resumeText = $('resumeText').value.trim();
       if (!resumeText) throw new Error('Upload a Master Resume to draft answers.');
       const response = await api('/ai/application-answers', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -806,18 +987,24 @@ async function suggestApplicationAnswers() {
       generated = response.answers || [];
     }
     const generatedById = new Map(generated.map(item => [item.id, item]));
-    renderApplicationAnswers(questions.map(question => ({
-      ...question, ...(generatedById.get(question.id) || {}),
-      answer: generatedById.get(question.id)?.answer || '',
-      needsUserInput: question.sensitive || generatedById.get(question.id)?.needsUserInput !== false,
-      confidence: generatedById.get(question.id)?.confidence || 'low'
-    })));
-    const fillableIds = generated.filter(item => item.answer && !item.needsUserInput).map(item => item.id);
+    const resolved = questions.map(question => {
+      const draft = generatedById.get(question.id);
+      return {
+        ...question,
+        answer: question.answer || (question.sensitive || question.alreadyFilled ? '' : (draft?.answer || '')),
+        answerSource: question.answerSource || (draft?.answer ? 'ai_draft' : ''),
+        needsUserInput: question.sensitive || !question.verified,
+        confidence: question.verified ? 'high' : (draft?.confidence || 'low')
+      };
+    });
+    renderApplicationAnswers(resolved);
+    const fillableIds = resolved.filter(item => item.verified && !item.alreadyFilled && !item.sensitive).map(item => item.id);
     const fillResult = fillableIds.length ? await fillReviewedApplicationAnswers(fillableIds) : null;
-    const manualCount = questions.length - fillableIds.length;
-    if (fillResult?.filled) setStatus(`Filled ${fillResult.filled} answer${fillResult.filled === 1 ? '' : 's'} from your resume. ${manualCount ? `${manualCount} question${manualCount === 1 ? '' : 's'} need your input.` : 'Review the form before submitting.'}`, 'success');
-    else if (fillableIds.length) setStatus('Answers were drafted, but the page did not accept them. Enter them on the form manually.', 'info');
-    else if (questions.length) setStatus(`Found ${questions.length} question${questions.length === 1 ? '' : 's'}, but your resume does not support an answer. Please answer them yourself.`, 'info');
+    const manualCount = resolved.filter(item => !item.verified && !item.alreadyFilled).length;
+    if (fillResult?.filled) setStatus(`Filled ${fillResult.filled} verified answer${fillResult.filled === 1 ? '' : 's'}; ${manualCount} question${manualCount === 1 ? '' : 's'} need your review. Submit the application yourself.`, 'success');
+    else if (resolved.some(item => item.answerSource === 'ai_draft')) setStatus('AI drafts are ready. Review and confirm them before filling; submit the application yourself.', 'info');
+    else if (manualCount) setStatus(`Found ${manualCount} question${manualCount === 1 ? '' : 's'} that need your answer. No unsupported answer was filled.`, 'info');
+    else setStatus('The detected fields are already answered. Review the application and submit it yourself.', 'success');
   } catch (error) {
     const note = document.createElement('p'); note.className = 'answer-confidence'; note.textContent = error.message;
     $('applicationAnswersList').append(note);
@@ -839,41 +1026,9 @@ async function autoFillCompanyApplication(tabId) {
     }
     const resume = await selectedWorkflowFile();
     const resumeAttached = await attachResumeToCompanyApplication(tabId, resume);
-    const detected = await findApplicationQuestions(tabId);
-    if (!detected.length) {
-      setStatus(resumeAttached ? 'Resume attached. Checking whether the company form is ready to submit.' : 'Company page opened, but its resume field needs a manual file selection.', 'info');
-      if (resumeAttached) await submitCompanyApplication({ requestPermission: false });
-      return;
-    }
-    const questions = detected.map(item => ({ ...item, sensitive: SENSITIVE_QUESTION_PATTERN.test(item.question) }));
-    const answerable = questions.filter(item => !item.sensitive);
-    let generated = [];
-    if (answerable.length) {
-      const resumeText = $('resumeText').value.trim();
-      const response = await api('/ai/application-answers', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          resumeText, jobDescription: $('jobDescription').value.trim(),
-          resumeHash: await sha256Hex(cleanText(resumeText)),
-          questions: answerable.map(({ id, question, options }) => ({ id, question, options: (options || []).map(option => option.label) }))
-        })
-      });
-      generated = response.answers || [];
-    }
-    const answersById = new Map(generated.map(item => [item.id, item]));
-    renderApplicationAnswers(questions.map(question => ({
-      ...question, ...(answersById.get(question.id) || {}), answer: answersById.get(question.id)?.answer || '',
-      needsUserInput: question.sensitive || answersById.get(question.id)?.needsUserInput !== false,
-      confidence: answersById.get(question.id)?.confidence || 'low'
-    })));
-    const fillableIds = generated.filter(item => item.answer && !item.needsUserInput).map(item => item.id);
-    if (fillableIds.length) await fillReviewedApplicationAnswers(fillableIds);
-    if (!resumeAttached) {
-      setStatus('Resume-based answers were filled where supported. Choose the resume in the company form before submitting.', 'info');
-      return;
-    }
-    if (!fillableIds.length) setStatus('Resume attached. No additional answers were supported by the resume; checking the required fields.', 'info');
-    await submitCompanyApplication({ requestPermission: false });
+    await suggestApplicationAnswers();
+    if (!resumeAttached) setStatus('Company application opened. Select the resume manually, review any suggested answers, then submit on the company site.', 'info');
+    else setStatus('Resume attached. Review the answers and submit the application yourself on the company site.', 'success');
   } catch (error) {
     setStatus(`Company form could not be filled automatically: ${error.message}`, 'error');
   }
@@ -912,15 +1067,16 @@ async function attachResumeToCompanyApplication(tabId, resume) {
 async function fillReviewedApplicationAnswers(onlyIds = null) {
   try {
     const tab = await activeApplicationTab();
-    const answers = [...$('applicationAnswersList').querySelectorAll('textarea[data-answer-id]')]
+    const answerFields = [...$('applicationAnswersList').querySelectorAll('textarea[data-answer-id]')];
+    const answers = answerFields
       .filter(field => !onlyIds || onlyIds.includes(field.dataset.answerId))
-      .map(field => ({ id: field.dataset.answerId, answer: field.value.trim() }))
+      .map(field => ({ id: field.dataset.answerId, answer: field.value.trim(), question: field.dataset.questionText || '', fieldKey: field.dataset.fieldKey || '', remember: Boolean($(`remember-${field.dataset.answerId}`)?.checked) }))
       .filter(item => item.answer);
     if (!answers.length) throw new Error('Add or review an answer before filling.');
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id }, args: [answers],
       func: values => {
-        let filled = 0; let skipped = 0;
+        let filled = 0; let skipped = 0; const filledIds = [];
         const normalize = value => String(value || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
         const elementsIn = root => {
           const found = [...root.querySelectorAll('[data-menix-answer-id]')];
@@ -938,15 +1094,41 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
             if (!option) { skipped++; continue; }
             first.value = option.value;
             first.dispatchEvent(new Event('input', { bubbles: true })); first.dispatchEvent(new Event('change', { bubbles: true }));
-            filled++; continue;
+            if (first.value === option.value) { filled++; filledIds.push(item.id); } else skipped++;
+            continue;
           }
           if (first instanceof HTMLInputElement && first.type === 'radio') {
             const target = normalize(item.answer);
             const choice = fields.find(field => normalize(field.closest('label')?.innerText || document.querySelector(`label[for="${CSS.escape(field.id || '')}"]`)?.innerText || field.value) === target);
             if (!choice || fields.some(field => field.checked)) { skipped++; continue; }
             choice.checked = true; choice.dispatchEvent(new Event('input', { bubbles: true })); choice.dispatchEvent(new Event('change', { bubbles: true }));
-            filled++; continue;
+            if (choice.checked) { filled++; filledIds.push(item.id); } else skipped++;
+            continue;
           }
+          if (first instanceof HTMLInputElement && first.type === 'checkbox') {
+            const target = normalize(item.answer);
+            if (fields.length > 1) {
+              const tokens = item.answer.split(/[;,|\n]+/).map(normalize).filter(Boolean);
+              const matched = fields.filter(field => {
+                const label = normalize(field.closest('label')?.innerText || [...(field.labels || [])].map(entry => entry.innerText).join(' ') || field.value);
+                return !field.checked && tokens.some(token => token === label || token.includes(label) || label.includes(token));
+              });
+              if (!matched.length) { skipped++; continue; }
+              matched.forEach(choice => {
+                choice.checked = true;
+                choice.dispatchEvent(new Event('input', { bubbles: true }));
+                choice.dispatchEvent(new Event('change', { bubbles: true }));
+              });
+              if (matched.every(choice => choice.checked)) { filled++; filledIds.push(item.id); } else skipped++;
+              continue;
+            }
+            if (first.checked) { skipped++; continue; }
+            if (!['yes', 'true', 'agree', 'checked', '1'].includes(target)) { skipped++; continue; }
+            first.checked = true; first.dispatchEvent(new Event('input', { bubbles: true })); first.dispatchEvent(new Event('change', { bubbles: true }));
+            if (first.checked) { filled++; filledIds.push(item.id); } else skipped++;
+            continue;
+          }
+          if (first.getAttribute('role') === 'combobox') { skipped++; continue; }
           if (String(first.value || '').trim()) { skipped++; continue; }
           const prototype = first instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
           if (first instanceof HTMLInputElement || first instanceof HTMLTextAreaElement) {
@@ -955,12 +1137,16 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           } else if (first.isContentEditable) first.innerText = item.answer;
           else first.textContent = item.answer;
           first.dispatchEvent(new Event('input', { bubbles: true })); first.dispatchEvent(new Event('change', { bubbles: true }));
-          filled++;
+          if (String(first.value || first.innerText || first.textContent || '').trim() === item.answer) { filled++; filledIds.push(item.id); } else skipped++;
         }
-        return { filled, skipped };
+        return { filled, skipped, filledIds };
       }
     });
     const outcome = result?.result || { filled: 0, skipped: answers.length };
+    const filledIds = new Set(outcome.filledIds || []);
+    for (const item of answers) {
+      if (filledIds.has(item.id) && item.remember) await rememberConfirmedApplicationAnswer(item.question, item.fieldKey, item.answer);
+    }
     setStatus(`Filled ${outcome.filled} answer${outcome.filled === 1 ? '' : 's'}; ${outcome.skipped} field${outcome.skipped === 1 ? '' : 's'} left for you. Review the form; nothing was submitted.`, outcome.filled ? 'success' : 'info');
     return outcome;
   } catch (error) { setStatus(error.message, 'error'); return null; }
@@ -1123,6 +1309,7 @@ function invalidateAnalysis() {
   quickOverview = null;
   aiRefinementFailed = false;
   suggestionData = null;
+  suggestionLoadError = '';
   suggestionController?.abort();
   suggestionController = null;
   suggestionRequestPromise = null;
@@ -1176,48 +1363,32 @@ function updateActionBar() {
 function updatePrimaryAction() {
   const button = $('generateBtn');
   if (!button) return;
-  if (tailorGenerationInProgress) {
+  const ready = Boolean($('resumeText')?.value.trim() && $('jobDescription')?.value.trim());
+  const workflow = activeResumeWorkflow;
+  if (tailorGenerationInProgress || tailoringRequestInProgress) {
     button.disabled = true;
-    button.textContent = 'Tailoring Resume…';
-    return;
-  }
-  if (['TAILORING_REVIEW', 'TAILORED_RESUME_REVIEWED'].includes(activeResumeWorkflow?.status)
-      && !activeResumeWorkflow?.temporaryResumeId) {
-    button.disabled = false;
-    button.textContent = 'Review Tailored Changes';
+    button.textContent = 'Tailoring...';
     return;
   }
   if (resumeUploadPipelinePromise) {
     button.disabled = true;
-    button.textContent = (activeResumeWorkflow?.companyApplyUrl || jobMetadata.companyApplyUrl)
-      ? 'Preparing company application…' : 'Uploading to Naukri…';
+    button.textContent = (workflow?.companyApplyUrl || jobMetadata.companyApplyUrl)
+      ? 'Preparing company application...' : 'Uploading to Naukri...';
     return;
   }
-  if (analysisPromise && !lastAnalysis) {
-    button.disabled = true;
-    button.textContent = 'Refining with AI…';
-  } else if (aiRefinementFailed && !lastAnalysis) {
-    button.disabled = false;
-    button.textContent = 'Retry AI refinement';
-  } else if (!lastAnalysis) {
-    const ready = Boolean($('resumeText')?.value.trim() && $('jobDescription')?.value.trim());
-    button.disabled = !ready;
-    button.textContent = ready ? 'Analyze Job Match' : 'Add Resume and Open a Job';
-  } else {
-    const workflow = activeResumeWorkflow;
-    const applicationStarted = ['APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow?.status);
-    const companyFormOpen = workflow?.status === 'APPLICATION_IN_PROGRESS' && Boolean(workflow?.companyApplicationTabId);
-    const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
-    const uploaded = ['TEMPORARY_RESUME_UPLOADED', 'MASTER_RESUME_UPLOADED'].includes(workflow?.status);
-    button.disabled = (applicationStarted && !companyFormOpen) || restored;
-    button.textContent = companyFormOpen ? 'Submit & Return to Naukri'
-      : workflow?.status === 'APPLICATION_SUBMITTED' ? 'Application submitted'
-        : applicationStarted ? 'Application in progress'
-      : restored ? 'Resume restored on Naukri'
-          : uploaded && workflow?.applicationStartFailed ? 'Retry Apply'
-            : workflow?.selectedType === 'master' ? 'Upload Master Resume & Apply'
-              : 'Tailor Resume & Apply';
-  }
+  const applicationStarted = ['APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow?.status);
+  const companyFormOpen = workflow?.status === 'APPLICATION_IN_PROGRESS' && Boolean(workflow?.companyApplicationTabId);
+  const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
+  const hasTailoredFile = Boolean(workflow?.temporaryResumeId);
+  button.disabled = !ready || restored || (applicationStarted && !companyFormOpen);
+  if (companyFormOpen) button.textContent = 'Review Application';
+  else if (workflow?.status === 'APPLICATION_SUBMITTED') button.textContent = 'Application submitted';
+  else if (applicationStarted) button.textContent = 'Application in progress';
+  else if (restored) button.textContent = 'Resume restored on Naukri';
+  else if (workflow?.status === 'TAILORING_FAILED') button.textContent = 'Retry Tailoring & Apply';
+  else if (hasTailoredFile) button.textContent = 'Apply with Tailored Resume';
+  else if (workflow?.selectedType === 'master') button.textContent = 'Apply with Master Resume';
+  else button.textContent = 'Tailor & Apply';
 }
 function safeFilenamePart(value) {
   return cleanText(value)
@@ -2008,8 +2179,7 @@ async function submitCompanyApplication({ requestPermission = true } = {}) {
         .filter(element => /^(?:submit|submit application|apply|apply now|send application)$/i.test((element.innerText || element.value || element.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()));
       const unique = [...new Set(candidates)];
       if (unique.length !== 1) return { ready: false, reason: unique.length ? 'More than one submit button was found. Choose the correct one on the company page.' : 'Submit button was not found. Submit the form yourself on the company page.' };
-      unique[0].click();
-      return { ready: true };
+      return { ready: false, reason: 'Review the completed form and submit it yourself on the company site.' };
     }
   });
   if (!result?.ready) { setStatus(result?.reason || 'The company form is not ready to submit.', 'info'); return false; }
@@ -2096,7 +2266,7 @@ async function useMasterResumeForThisJob() {
 }
 $('useMasterResumeBtn').addEventListener('click', useMasterResumeForThisJob);
 async function generateTemporaryResumeForActiveJob() {
-  if (!activeResumeWorkflow || !lastAnalysis) return setStatus('Wait for job analysis before generating a tailored resume.', 'error');
+  if (!activeResumeWorkflow || (!lastAnalysis && !quickOverview)) throw new Error('Open a job and add the Master Resume before tailoring.');
   tailorGenerationInProgress = true;
   updatePrimaryAction();
   try {
@@ -2125,8 +2295,9 @@ async function generateTemporaryResumeForActiveJob() {
     await loadWorkflowResumePreview();
     setStatus('Tailored resume generated.', 'success');
   } catch (error) {
-    await persistResumeWorkflow({ ...activeResumeWorkflow, lastError: `Tailored resume generation failed: ${error.message}` });
+    await persistResumeWorkflow({ ...activeResumeWorkflow, status: 'TAILORING_FAILED', lastError: `Tailored resume generation failed: ${error.message}` });
     setStatus(`Could not generate tailored resume: ${error.message}`, 'error');
+    throw error;
   } finally {
     tailorGenerationInProgress = false;
     renderResumeWorkflow();
@@ -2421,7 +2592,7 @@ async function chooseResumeForThisJob() {
         ? await readResumeFile(workflow.temporaryResumeId).catch(() => null) : null;
       const expectedNamePattern = /^.+_\d{2}-\d{2}-\d{4}\.docx$/i;
       if (!stored?.file || !expectedNamePattern.test(workflow.temporaryResumeName || '')) {
-        await openTailoringReview();
+        await tailorResumeForActiveJob({ applyAfter: false });
         return;
       }
     }
@@ -2722,7 +2893,7 @@ async function loadAiSuggestions() {
     try {
       const resumeProfileResult = await lookupResumeProfile(resumeText);
       if (controller.signal.aborted) return;
-      const data = await api('/ai/suggestions', {
+      const requestOptions = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2734,20 +2905,37 @@ async function loadAiSuggestions() {
           jobMeta: { title: cleanText($('jobTitleInput').value), company: cleanText($('companyInput').value), location: cleanText($('locationInput').value) }
         }),
         signal: controller.signal
-      });
+      };
+      let data;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          data = await api('/ai/suggestions', requestOptions);
+          break;
+        } catch (error) {
+          const transient = /bad gateway|gateway timeout|service unavailable|temporar|network|fetch failed|timed? out/i.test(String(error?.message || error));
+          if (!transient || attempt === 1 || controller.signal.aborted) throw error;
+          $('tailoringProgressStatus').textContent = 'The AI service is waking up. Retrying once…';
+          setStatus('AI service is temporarily unavailable. Retrying tailoring…', 'info');
+          await delay(1200);
+          if (controller.signal.aborted) return;
+        }
+      }
       if (controller.signal.aborted) return;
       suggestionData = data;
+      suggestionLoadError = '';
       renderAiSuggestions(data);
       $('suggestionsSummaryHint').textContent = data.cached ? 'Cached edits' : `${(data.suggestions || []).length} edits`;
       return data;
     } catch (error) {
       if (controller.signal.aborted) return;
+      suggestionLoadError = error?.message || 'The AI suggestions request failed.';
       container.replaceChildren();
       const message = document.createElement('p'); message.className = 'suggestions-error'; message.textContent = 'AI suggestions could not load.';
       const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'suggestion-action'; retry.textContent = 'Retry';
-      retry.addEventListener('click', () => { suggestionData = null; void loadAiSuggestions(); });
+      retry.addEventListener('click', () => { suggestionData = null; suggestionLoadError = ''; void loadAiSuggestions(); });
       container.append(message, retry);
       $('suggestionsSummaryHint').textContent = 'Unavailable';
+      return null;
     } finally {
       if (suggestionController === controller) {
         suggestionController = null;
@@ -2898,12 +3086,14 @@ async function analyzeCurrentMatch(automatic) {
     } catch (error) {
       if (controller.signal.aborted) return;
       aiRefinementFailed = !lastAnalysis;
+      const tailoringOwnsStatus = tailoringRequestInProgress
+        || ['TAILORING_IN_PROGRESS', 'TAILORING_FAILED'].includes(activeResumeWorkflow?.status);
       if (lastAnalysis) {
-        setStatus('AI refinement unavailable. Showing the last refined result.', 'info');
+        if (!tailoringOwnsStatus) setStatus('AI refinement unavailable. Showing the last refined result.', 'info');
       } else {
         lastAnalysis = null;
         renderAnalysis(quickOverview, 'quick');
-        setStatus('AI refinement unavailable. Retry when the backend is available.', 'error');
+        if (!tailoringOwnsStatus) setStatus('AI refinement unavailable. Retry when the backend is available.', 'error');
       }
     } finally {
       if (typeof wakingTimer !== 'undefined' && wakingTimer) window.clearTimeout(wakingTimer);
@@ -3113,8 +3303,8 @@ function renderImprovementAreas(result) {
 
 function renderSkillBreakdown(result) {
   const matched = result.matchedSkills || {};
-  const tech = normalizeAnalysisItems(matched.technical);
-  const soft = normalizeAnalysisItems(matched.soft);
+  const tech = cleanSkillLabels(matched.technical);
+  const soft = cleanSkillLabels(matched.soft);
   $('matchedSkillsHeading').textContent = `Matched Skills (${tech.length})`;
   renderChipList($('matchedSkillsList'), tech, 'matched', 'No direct technical skills matched.');
   renderChipList($('softSkillsList'), soft, 'soft');
@@ -3126,7 +3316,7 @@ function renderSkillBreakdown(result) {
     .filter(Boolean);
   $('equivalentSkillsGroup').classList.toggle('hidden', !equivalents.length);
   renderChipList($('equivalentSkillsList'), equivalents, 'equivalent');
-  const missing = normalizeAnalysisItems(result.missingSkills);
+  const missing = cleanSkillLabels(result.missingSkills);
   $('missingSkillsHeading').textContent = `Missing Skills (${missing.length})`;
   if (missing.length) renderChipList($('missingSkillsList'), missing, 'missing');
   else renderChipList($('missingSkillsList'), [], 'empty', 'No important missing technical skills identified.');
@@ -3134,7 +3324,16 @@ function renderSkillBreakdown(result) {
   $('relatedKeywordsGroup').classList.toggle('hidden', !keywords.length);
   $('relatedKeywordsHeading').textContent = `Related Keywords (${keywords.length})`;
   renderChipList($('missingKeywordsList'), keywords, 'keyword');
-  renderRequirementEvidence(result.requirements || []);
+  renderRequirementEvidence((result.requirements || []).filter(item => item?.name && !isNonSkillLabel(item.name)));
+}
+
+function cleanSkillLabels(values) {
+  return [...new Set(normalizeAnalysisItems(values).filter(value => !isNonSkillLabel(value)))];
+}
+
+function isNonSkillLabel(value) {
+  const words = String(value || '').toLowerCase().replace(/[^a-z0-9+#.]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.length <= 3 && words.every(word => NON_SKILL_LABELS.has(word));
 }
 
 function renderRequirementEvidence(requirements) {
@@ -3172,7 +3371,7 @@ function meaningfulMissingKeywords(values, missingSkills = []) {
   const normalize = value => String(value || '').toLowerCase().replace(/[^a-z0-9+#.]+/g, ' ').trim();
   const includesPhrase = (text, phrase) => (` ${text} `).includes(` ${phrase} `);
   const missing = missingSkills.map(normalize).filter(Boolean);
-  return [...new Set(normalizeAnalysisItems(values).filter(value => {
+  return [...new Set(cleanSkillLabels(values).filter(value => {
     const keyword = normalize(value);
     return keyword && !excluded.has(keyword) && !missing.some(skill => includesPhrase(skill, keyword) || includesPhrase(keyword, skill));
   }))].slice(0, 8);
@@ -3257,41 +3456,7 @@ async function generateResumeStep(job) {
   return { blob, filename: localPipelineFilename(fullName, masterText), formatNote: response.headers.get('X-Resume-Format-Note') || '', validationNote: response.headers.get('X-Resume-Validation-Note') || '' };
 }
 
-$('generateBtn').addEventListener('click', async () => {
-  if (activeResumeWorkflow?.status === 'APPLICATION_IN_PROGRESS' && activeResumeWorkflow.companyApplicationTabId) {
-    try { await submitCompanyApplication(); }
-    catch (error) { setStatus(error.message, 'error'); }
-    return;
-  }
-  let companyPermissionRequest = null;
-  const companyApplyUrl = activeResumeWorkflow?.companyApplyUrl || jobMetadata.companyApplyUrl;
-  if (lastAnalysis && companyApplyUrl) {
-    try {
-      const destination = new URL(companyApplyUrl);
-      if (destination.protocol === 'https:' && !/(^|\.)naukri\.com$/i.test(destination.hostname)) {
-        companyPermissionRequest = chrome.permissions.request({ origins: [`${destination.origin}/*`] });
-      }
-    } catch { /* Continue with the Naukri Apply action if no safe company URL was captured. */ }
-  }
-  if (companyPermissionRequest && !(await companyPermissionRequest)) {
-    setStatus('Allow access to the company site to fill its application form, then click Tailor & Apply again.', 'info');
-    return;
-  }
-  if (!lastAnalysis) { await analyzeCurrentMatch(false); return; }
-  if (activeResumeWorkflow?.applicationStartFailed) {
-    try { await returnToJobAndClickApply(activeResumeWorkflow.profileTabId); }
-    catch (error) { setStatus(error.message, 'error'); }
-    return;
-  }
-  if (activeResumeWorkflow?.selectedType !== 'master' && !activeResumeWorkflow?.temporaryResumeId) {
-    try { await openTailoringReview(); }
-    catch (error) { setStatus(error.message, 'error'); }
-    return;
-  }
-  renderResumeWorkflow();
-  $('applyResumePreview').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  await chooseResumeForThisJob();
-});
+$('generateBtn').addEventListener('click', () => { void handleTailorAction(true); });
 function scheduleActiveJobCapture(tabId, delay = 250) {
   if (captureDebounceTimer) window.clearTimeout(captureDebounceTimer);
   captureDebounceTimer = window.setTimeout(() => {

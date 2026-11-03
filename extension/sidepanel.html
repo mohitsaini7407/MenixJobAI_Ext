@@ -138,23 +138,9 @@
           <p id="activeWorkflowStatus" class="sr-only" role="status"></p>
           <ol id="manualUploadGuide" class="manual-upload-guide hidden"></ol>
           <p id="workflowError" class="workflow-error hidden" role="alert"></p>
-          <section id="tailoringReviewCard" class="tailoring-review hidden" aria-label="Review proposed resume edits">
-            <h3>Review job-specific changes</h3>
-            <p id="tailoringReviewJob" class="tailoring-review-job"></p>
-            <p id="tailoringReviewMatch" class="tailoring-review-match"></p>
-            <div class="tailoring-review-columns">
-              <div><strong>Supported skills</strong><ul id="tailoringSupportedSkills"></ul></div>
-              <div><strong>Unsupported requirements</strong><ul id="tailoringUnsupportedSkills"></ul></div>
-            </div>
-            <div id="tailoringReviewEdits" class="tailoring-review-edits"></div>
-            <details id="tailoringReviewWarnings" class="tailoring-review-warnings hidden">
-              <summary>Warnings and withheld edits</summary>
-              <ul id="tailoringReviewWarningList"></ul>
-            </details>
-            <div class="tailoring-review-actions">
-              <button id="generateReviewedTailoredBtn" class="btn primary full" type="button">Generate Resume &amp; Continue</button>
-              <button id="cancelTailoringReviewBtn" class="btn secondary full" type="button">Cancel review</button>
-            </div>
+          <section id="tailoringProgressCard" class="tailoring-progress hidden" aria-live="polite">
+            <strong>Tailoring for this job</strong>
+            <p id="tailoringProgressStatus">Preparing a job-specific copy. Your Master Resume stays unchanged.</p>
           </section>
           <section id="activeResumePreview" class="workflow-resume-preview" aria-label="Selected resume preview">
             <div class="resume-row tailored-file-row">
@@ -182,7 +168,10 @@
 
     <div id="status" class="status sr-only" role="status">Ready</div>
     <div id="actionBar" class="action-bar hidden">
-      <button id="generateBtn" class="btn generate-btn" disabled>✦ &nbsp;Analyze &amp; Tailor Resume</button>
+      <p id="actionStatus" class="action-status hidden" role="status"></p>
+      <div class="action-buttons">
+        <button id="generateBtn" class="btn generate-btn" disabled>Tailor &amp; Apply</button>
+      </div>
     </div>
   </main>
   <script src="sidepanel.js"></script>
