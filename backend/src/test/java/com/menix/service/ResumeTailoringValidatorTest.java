@@ -32,4 +32,16 @@ class ResumeTailoringValidatorTest {
             "Built a React dashboard for client teams", List.of("Delivered 99% performance improvement."));
         assertFalse(result.valid());
     }
+
+    @Test
+    void rejectsRemovingSourceMetricsOrNamedTechnologies() {
+        var metric = ResumeTailoringValidator.validate(MASTER, MASTER, "React developer",
+            "Built a React dashboard for 3 client teams", "Built a React dashboard for client teams",
+            List.of("Built a React dashboard for 3 client teams."));
+        var technology = ResumeTailoringValidator.validate(MASTER, MASTER, "React developer",
+            "Built a React dashboard for 3 client teams", "Built a dashboard for 3 client teams",
+            List.of("Built a React dashboard for 3 client teams."));
+        assertFalse(metric.valid());
+        assertFalse(technology.valid());
+    }
 }

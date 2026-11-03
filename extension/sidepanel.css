@@ -638,3 +638,18 @@ input[type="checkbox"]{accent-color:var(--analysis-blue)}
 .application-answer-card.needs-user-input{border-color:#f1d39a;background:#fffbf2}
 .master-profile-action .btn{min-height:36px;margin:0;padding:7px 9px;font-size:10px}
 .status.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+#analysisSection .tailoring-review{padding:12px;border:1px solid var(--analysis-border);border-radius:13px;background:#fff;color:var(--analysis-text)}
+#analysisSection .tailoring-review h3{margin:0 0 6px;font-size:15px}
+#analysisSection .tailoring-review-job,#analysisSection .tailoring-review-match{margin:4px 0;color:var(--analysis-muted);font-size:12px;line-height:1.4}
+#analysisSection .tailoring-review-columns{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+#analysisSection .tailoring-review-columns>div{min-width:0;padding:9px;border:1px solid var(--analysis-border);border-radius:10px;background:var(--analysis-blue-light)}
+#analysisSection .tailoring-review-columns strong{font-size:12px}
+#analysisSection .tailoring-review-columns ul,#analysisSection .tailoring-review-warnings ul{margin:6px 0 0;padding-left:17px;color:var(--analysis-muted);font-size:11px;line-height:1.4}
+#analysisSection .tailoring-review-edits{display:grid;gap:8px;margin:10px 0}
+#analysisSection .tailoring-edit-card{padding:10px;border:1px solid var(--analysis-border);border-radius:10px;background:#fff}
+#analysisSection .tailoring-edit-card label{display:flex;align-items:flex-start;gap:8px;font-size:12px;font-weight:700;cursor:pointer}
+#analysisSection .tailoring-edit-card input{flex:0 0 auto;width:18px;height:18px;margin:0;accent-color:#1769e0}
+#analysisSection .tailoring-edit-card p{margin:6px 0 0;color:var(--analysis-muted);font-size:11px;line-height:1.45;overflow-wrap:anywhere}
+#analysisSection .tailoring-edit-card .tailoring-after{color:var(--analysis-text)}
+#analysisSection .tailoring-review-warnings{margin:8px 0;color:#9a5b00;font-size:12px}
+#analysisSection .tailoring-review-actions{display:grid;gap:7px;margin-top:10px}

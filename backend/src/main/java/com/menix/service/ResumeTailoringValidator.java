@@ -17,12 +17,24 @@ public final class ResumeTailoringValidator {
     public static Validation validate(String masterResume, String workingResume, String jobDescription,
                                       String before, String after, List<String> evidence) {
         if (masterResume == null || masterResume.isBlank()) return new Validation(false, "Master Resume evidence is unavailable.");
-        if (before == null || before.isBlank() || workingResume == null || !workingResume.contains(before)) {
+        if (before == null || before.isBlank() || !containsNormalized(workingResume, before)) {
             return new Validation(false, "The source text was not found in the working resume.");
         }
         if (after == null || after.isBlank()) return new Validation(false, "The proposed replacement is empty.");
         if (evidence == null || evidence.isEmpty() || evidence.stream().anyMatch(item -> !containsNormalized(masterResume, item))) {
             return new Validation(false, "No exact supporting excerpt was found in the Master Resume.");
+        }
+        Matcher originalNumbers = NUMBER.matcher(before);
+        while (originalNumbers.find()) if (!containsNormalized(after, originalNumbers.group())) {
+            return new Validation(false, "The proposed edit removes a source number, date, or metric.");
+        }
+        Matcher originalTerms = SPECIFIC_TERM.matcher(before);
+        while (originalTerms.find()) {
+            String term = originalTerms.group();
+            if (SAFE_SENTENCE_STARTS.contains(term)) continue;
+            if (!containsNormalized(after, term)) {
+                return new Validation(false, "The proposed edit removes a named technology, project, organization, or other source fact.");
+            }
         }
         Matcher numbers = NUMBER.matcher(after);
         while (numbers.find()) if (!containsNormalized(masterResume, numbers.group())) {

@@ -1,8 +1,7 @@
 package com.menix.api;
 
+import com.menix.service.ResumeTailoringValidator;
 import org.apache.poi.xwpf.usermodel.*;
-import org.apache.poi.wp.usermodel.HeaderFooterType;
-import org.openxmlformats.schemas.wordprocessingml.x2006.main.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.*;
@@ -25,31 +24,33 @@ public class TailoredResumeController {
     private static final Pattern LINK_PATTERN = Pattern.compile(
         "\\[([^\\]]+)]\\((https?://[^\\s)]+|mailto:[^\\s)]+)\\)|(https?://[^\\s<>]+|mailto:[^\\s<>]+)",
         Pattern.CASE_INSENSITIVE);
-    public record TemplateEdit(String before, String after) {}
+    private static final Pattern PHONE_PATTERN = Pattern.compile("(?<!\\d)\\+?\\d[\\d ()-]{7,}\\d(?!\\d)");
+    public record TemplateEdit(String before, String after, String section, String relatedRequirement,
+                               List<String> evidence, Boolean safeToApply) {
+        public TemplateEdit(String before, String after) { this(before, after, null, null, List.of(), null); }
+    }
     public record TailoredDocxRequest(String resumeText, String jobDescription, String fullName,
                                       String masterDocxBase64, List<TemplateEdit> templateEdits) {}
-    private record ResumeLine(String text, boolean entry) {}
-    private record ResumeSection(String heading, List<ResumeLine> lines) {}
-    private record ResumeData(String name, String contact, List<ResumeSection> sections) {}
 
     @PostMapping(value = "/tailor-docx", produces = DOCX_TYPE)
     public ResponseEntity<byte[]> tailorDocx(@RequestBody TailoredDocxRequest request) {
         if (request == null || request.resumeText() == null || request.resumeText().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Master resume text is required.");
         }
+        if (request.masterDocxBase64() == null || request.masterDocxBase64().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Upload the original resume as DOCX to preserve its design. PDF or pasted-text resumes cannot be safely edited in place.");
+        }
         try {
-            byte[] docx;
-            boolean usedMasterTemplate = false;
-            if (request.masterDocxBase64() != null && !request.masterDocxBase64().isBlank()) {
-                byte[] source = Base64.getDecoder().decode(request.masterDocxBase64());
-                docx = editMasterTemplate(source, request.templateEdits() == null ? List.of() : request.templateEdits());
-                usedMasterTemplate = docx != null;
-            } else docx = null;
-            if (docx == null) {
-                ResumeData resume = parseResume(request.resumeText(), request.fullName());
-                docx = buildDocx(resume);
+            byte[] source = Base64.getDecoder().decode(request.masterDocxBase64());
+            String sourceText = extractDocumentText(source);
+            String sourceStructure = documentStructureSignature(source);
+            byte[] docx = editMasterTemplate(source, request.templateEdits() == null ? List.of() : request.templateEdits());
+            String validation = validateGeneratedDocx(docx, sourceText, request.fullName());
+            if (!sourceStructure.equals(documentStructureSignature(docx))) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Resume validation failed: the tailored DOCX structure differs from the Master Resume.");
             }
-            String validation = validateGeneratedDocx(docx, request.resumeText(), request.fullName());
             String date = LocalDate.now(ZoneId.of("Asia/Kolkata")).toString();
             String requestedName = request.fullName() == null || request.fullName().isBlank()
                 ? request.resumeText().lines().findFirst().orElse("Candidate") : request.fullName();
@@ -61,7 +62,6 @@ public class TailoredResumeController {
                 .header("X-Resume-Validation-Status", "passed")
                 .header("X-Resume-Validation-Note", validation)
                 .header(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, "X-Resume-Validation-Status, X-Resume-Validation-Note, X-Resume-Format-Note");
-            if (!usedMasterTemplate) response.header("X-Resume-Format-Note", "For the exact same format, upload your resume as DOCX.");
             return response.body(docx);
         } catch (ResponseStatusException ex) {
             throw ex;
@@ -73,10 +73,7 @@ public class TailoredResumeController {
 
     private String validateGeneratedDocx(byte[] bytes, String sourceText, String fullName) throws Exception {
         if (bytes == null || bytes.length == 0) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: generated document is empty.");
-        String extracted;
-        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
-            extracted = String.join("\n", allBodyParagraphs(document).stream().map(XWPFParagraph::getText).filter(Objects::nonNull).toList());
-        }
+        String extracted = extractDocumentText(bytes);
         String normalizedOutput = extracted.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
         if (extracted.isBlank() || extracted.length() < Math.max(30, sourceText.length() / 2)) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: generated document is unreadable or missing substantial content.");
@@ -89,6 +86,17 @@ public class TailoredResumeController {
         while (emails.find()) if (!normalizedOutput.contains(emails.group().toLowerCase(Locale.ROOT))) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: an email address from the Master Resume is missing.");
         }
+        Matcher phones = PHONE_PATTERN.matcher(sourceText);
+        while (phones.find()) if (!normalizedOutput.contains(phones.group().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT))) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: a phone number from the Master Resume is missing.");
+        }
+        Matcher links = LINK_PATTERN.matcher(sourceText);
+        while (links.find()) {
+            String link = links.group(2) != null ? links.group(2) : links.group(3);
+            if (link != null && !normalizedOutput.contains(link.toLowerCase(Locale.ROOT))) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: a source link is missing.");
+            }
+        }
         Matcher years = Pattern.compile("\\b(?:19|20)\\d{2}\\b").matcher(sourceText);
         while (years.find()) if (!normalizedOutput.contains(years.group())) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume validation failed: a source date is missing from the generated document.");
@@ -98,20 +106,165 @@ public class TailoredResumeController {
 
     byte[] editMasterTemplate(byte[] masterBytes, List<TemplateEdit> edits) throws Exception {
         if (masterBytes == null || masterBytes.length == 0) return null;
+        if (edits == null || edits.isEmpty()) return masterBytes.clone();
+        String masterText = extractDocumentText(masterBytes);
         try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(masterBytes));
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             for (TemplateEdit edit : edits) {
                 if (edit == null || edit.before() == null || edit.before().isBlank() || edit.after() == null) continue;
-                XWPFParagraph paragraph = allBodyParagraphs(document).stream()
-                    .filter(p -> p.getText() != null && p.getText().contains(edit.before()))
-                    .findFirst().orElse(null);
-                if (paragraph == null) continue;
-                String updated = paragraph.getText().replace(edit.before(), edit.after());
-                replaceParagraphTextKeepingRuns(paragraph, updated);
+                if (Boolean.FALSE.equals(edit.safeToApply())) {
+                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "A resume edit marked unsafe was rejected.");
+                }
+                List<String> evidence = edit.evidence() == null || edit.evidence().isEmpty()
+                    ? List.of(edit.before()) : edit.evidence();
+                ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
+                    masterText, masterText, "", edit.before(), edit.after(), evidence);
+                if (!validation.valid()) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Resume edit rejected: " + validation.reason());
+                List<XWPFParagraph> matches = allBodyParagraphs(document).stream()
+                    .filter(paragraph -> paragraph.getText() != null
+                        && locateNormalizedRange(paragraphTextFromRuns(paragraph), edit.before()) != null)
+                    .toList();
+                if (matches.size() != 1) {
+                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, matches.isEmpty()
+                        ? "Resume edit could not be mapped to one original paragraph. No changes were applied."
+                        : "Resume edit matched multiple original paragraphs. No changes were applied.");
+                }
+                applyParagraphRangeEdit(matches.get(0), edit.before(), edit.after());
             }
             document.write(output);
             return output.toByteArray();
         }
+    }
+
+    private void applyParagraphRangeEdit(XWPFParagraph paragraph, String before, String after) {
+        List<XWPFRun> runs = paragraph.getRuns();
+        StringBuilder combined = new StringBuilder();
+        int[] starts = new int[runs.size()];
+        for (int i = 0; i < runs.size(); i++) {
+            starts[i] = combined.length();
+            String text = Objects.toString(runs.get(i).text(), "");
+            combined.append(text);
+        }
+        String paragraphText = combined.toString();
+        int[] range = locateNormalizedRange(paragraphText, before);
+        if (range == null) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Resume edit could not be mapped uniquely inside its original paragraph.");
+        }
+        int start = range[0];
+        int end = range[1];
+        int startRun = findRun(starts, runs, start, false);
+        int endRun = findRun(starts, runs, end, true);
+        if (startRun < 0 || endRun < 0) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+            "Resume edit crossed unsupported document content and was not applied.");
+        String firstText = Objects.toString(runs.get(startRun).text(), "");
+        String prefix = firstText.substring(0, start - starts[startRun]);
+        if (startRun == endRun) {
+            String original = Objects.toString(runs.get(startRun).text(), "");
+            int localEnd = end - starts[startRun];
+            setRunTextPreservingProperties(runs.get(startRun), original.substring(0, start - starts[startRun])
+                + after + original.substring(localEnd));
+            return;
+        }
+        setRunTextPreservingProperties(runs.get(startRun), prefix + after);
+        for (int i = startRun + 1; i < endRun; i++) setRunTextPreservingProperties(runs.get(i), "");
+        String lastText = Objects.toString(runs.get(endRun).text(), "");
+        int localEnd = end - starts[endRun];
+        setRunTextPreservingProperties(runs.get(endRun), lastText.substring(Math.min(localEnd, lastText.length())));
+    }
+
+    private int findRun(int[] starts, List<XWPFRun> runs, int offset, boolean endBoundary) {
+        for (int i = 0; i < runs.size(); i++) {
+            int start = starts[i];
+            int end = start + Objects.toString(runs.get(i).text(), "").length();
+            if (offset >= start && (endBoundary ? offset <= end : offset < end)) return i;
+        }
+        return -1;
+    }
+
+    private void setRunTextPreservingProperties(XWPFRun run, String value) {
+        List<org.openxmlformats.schemas.wordprocessingml.x2006.main.CTText> texts = run.getCTR().getTList();
+        if (texts.isEmpty()) { run.setText(value); return; }
+        texts.get(0).setStringValue(value);
+        for (int i = 1; i < texts.size(); i++) texts.get(i).setStringValue("");
+    }
+
+    private String paragraphTextFromRuns(XWPFParagraph paragraph) {
+        return paragraph.getRuns().stream().map(run -> Objects.toString(run.text(), "")).reduce("", String::concat);
+    }
+
+    /** Maps a whitespace-normalized excerpt back to exact character offsets in the original paragraph. */
+    private int[] locateNormalizedRange(String source, String excerpt) {
+        if (source == null || excerpt == null || excerpt.isBlank()) return null;
+        StringBuilder normalized = new StringBuilder();
+        List<Integer> rawStarts = new ArrayList<>();
+        List<Integer> rawEnds = new ArrayList<>();
+        for (int i = 0; i < source.length(); i++) {
+            char current = source.charAt(i);
+            if (Character.isWhitespace(current)) {
+                if (normalized.length() == 0) continue;
+                if (normalized.charAt(normalized.length() - 1) == ' ') rawEnds.set(rawEnds.size() - 1, i + 1);
+                else { normalized.append(' '); rawStarts.add(i); rawEnds.add(i + 1); }
+            } else {
+                normalized.append(current); rawStarts.add(i); rawEnds.add(i + 1);
+            }
+        }
+        if (normalized.length() > 0 && normalized.charAt(normalized.length() - 1) == ' ') {
+            normalized.setLength(normalized.length() - 1); rawStarts.remove(rawStarts.size() - 1); rawEnds.remove(rawEnds.size() - 1);
+        }
+        String target = excerpt.replaceAll("\\s+", " ").trim();
+        int index = normalized.indexOf(target);
+        if (index < 0 || normalized.indexOf(target, index + 1) >= 0) return null;
+        return new int[] { rawStarts.get(index), rawEnds.get(index + target.length() - 1) };
+    }
+
+    private String extractDocumentText(byte[] bytes) throws Exception {
+        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            return String.join("\n", allDocumentParagraphs(document).stream()
+                .map(XWPFParagraph::getText).filter(Objects::nonNull).toList());
+        }
+    }
+
+    private List<XWPFParagraph> allDocumentParagraphs(XWPFDocument document) {
+        List<XWPFParagraph> paragraphs = new ArrayList<>(allBodyParagraphs(document));
+        for (XWPFHeader header : document.getHeaderList()) {
+            paragraphs.addAll(header.getParagraphs());
+            for (XWPFTable table : header.getTables()) addTableParagraphs(table, paragraphs);
+        }
+        for (XWPFFooter footer : document.getFooterList()) {
+            paragraphs.addAll(footer.getParagraphs());
+            for (XWPFTable table : footer.getTables()) addTableParagraphs(table, paragraphs);
+        }
+        return paragraphs;
+    }
+
+    private String documentStructureSignature(byte[] bytes) throws Exception {
+        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            StringBuilder signature = new StringBuilder();
+            for (IBodyElement element : document.getBodyElements()) {
+                signature.append(element instanceof XWPFTable ? "TABLE" : "PARAGRAPH").append(';');
+                if (element instanceof XWPFTable table) appendTableShape(table, signature);
+            }
+            if (document.getDocument().getBody().isSetSectPr()) signature.append(document.getDocument().getBody().getSectPr().xmlText());
+            signature.append("|H:").append(document.getHeaderList().size()).append("|F:").append(document.getFooterList().size());
+            for (XWPFHeader header : document.getHeaderList()) signature.append('|').append(header.getParagraphs().size()).append(':').append(header.getTables().size());
+            for (XWPFFooter footer : document.getFooterList()) signature.append('|').append(footer.getParagraphs().size()).append(':').append(footer.getTables().size());
+            return signature.toString();
+        }
+    }
+
+    private void appendTableShape(XWPFTable table, StringBuilder target) {
+        target.append('[').append(table.getRows().size()).append(':');
+        for (XWPFTableRow row : table.getRows()) {
+            target.append(row.getTableCells().size()).append(',');
+            for (XWPFTableCell cell : row.getTableCells()) {
+                target.append(cell.getParagraphs().size()).append('{');
+                for (XWPFTable nested : cell.getTables()) appendTableShape(nested, target);
+                target.append('}');
+            }
+        }
+        target.append(']');
     }
 
     private List<XWPFParagraph> allBodyParagraphs(XWPFDocument document) {
@@ -130,196 +283,4 @@ public class TailoredResumeController {
         }
     }
 
-    private void replaceParagraphTextKeepingRuns(XWPFParagraph paragraph, String updated) {
-        List<XWPFRun> runs = paragraph.getRuns();
-        if (runs.isEmpty()) { paragraph.createRun().setText(updated); return; }
-        int offset = 0;
-        for (int i = 0; i < runs.size(); i++) {
-            XWPFRun run = runs.get(i);
-            int originalLength = run.text() == null ? 0 : run.text().length();
-            int end = i == runs.size() - 1 ? updated.length() : Math.min(updated.length(), offset + originalLength);
-            String piece = updated.substring(Math.min(offset, updated.length()), end);
-            run.setText(piece, 0);
-            offset = end;
-        }
-        // Existing run objects and their properties remain in place; paragraph structure is untouched.
-    }
-
-    private ResumeData parseResume(String source, String requestedName) {
-        List<String> lines = Arrays.stream(source.replace("\r", "").split("\n"))
-            .map(String::trim).filter(s -> !s.isBlank()).toList();
-        if (lines.isEmpty()) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "No readable resume content was found.");
-        String name = requestedName == null || requestedName.isBlank() ? lines.get(0) : requestedName.trim();
-        String contact = lines.size() > 1 && !isSectionHeading(lines.get(1)) ? lines.get(1) : "";
-        List<ResumeSection> sections = new ArrayList<>();
-        String currentHeading = "PROFILE";
-        List<ResumeLine> currentLines = new ArrayList<>();
-        int start = contact.isBlank() ? 1 : 2;
-        for (int i = start; i < lines.size(); i++) {
-            String line = lines.get(i);
-            if (isSectionHeading(line)) {
-                if (!currentLines.isEmpty()) sections.add(new ResumeSection(currentHeading, currentLines));
-                currentHeading = normalizeHeading(line);
-                currentLines = new ArrayList<>();
-            } else {
-                currentLines.add(new ResumeLine(line, isEntryLine(line, currentHeading)));
-            }
-        }
-        if (!currentLines.isEmpty()) sections.add(new ResumeSection(currentHeading, currentLines));
-        return new ResumeData(name, contact, sections);
-    }
-
-    private boolean isSectionHeading(String line) {
-        String h = line.trim().replaceAll("[:：]$", "").toUpperCase(Locale.ROOT);
-        return Set.of("SUMMARY", "PROFILE", "PROFESSIONAL SUMMARY", "OBJECTIVE", "SKILLS", "TECHNICAL SKILLS",
-            "CORE COMPETENCIES", "EXPERIENCE", "WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE", "INTERNSHIPS",
-            "PROJECTS", "PERSONAL PROJECTS", "EDUCATION", "CERTIFICATIONS", "CERTIFICATES", "ACHIEVEMENTS",
-            "AWARDS", "PUBLICATIONS", "LANGUAGES", "VOLUNTEERING", "ADDITIONAL INFORMATION", "COURSEWORK").contains(h);
-    }
-
-    private String normalizeHeading(String heading) {
-        String h = heading.trim().replaceAll("[:：]$", "").toUpperCase(Locale.ROOT);
-        return switch (h) {
-            case "PROFILE", "OBJECTIVE" -> "PROFESSIONAL SUMMARY";
-            case "TECHNICAL SKILLS", "CORE COMPETENCIES" -> "SKILLS";
-            case "WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE", "INTERNSHIPS" -> "EXPERIENCE";
-            case "PERSONAL PROJECTS" -> "PROJECTS";
-            case "CERTIFICATES" -> "CERTIFICATIONS";
-            default -> h;
-        };
-    }
-
-    private boolean isEntryLine(String line, String heading) {
-        return ("EXPERIENCE".equals(heading) || "PROJECTS".equals(heading) || "EDUCATION".equals(heading))
-            && (line.contains("\t") || line.matches(".*\\b(19|20)\\d{2}\\b.*"));
-    }
-
-    private byte[] buildDocx(ResumeData resume) throws Exception {
-        try (XWPFDocument doc = new XWPFDocument(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            CTSectPr sectPr = doc.getDocument().getBody().isSetSectPr()
-                ? doc.getDocument().getBody().getSectPr() : doc.getDocument().getBody().addNewSectPr();
-            CTPageMar margins = sectPr.isSetPgMar() ? sectPr.getPgMar() : sectPr.addNewPgMar();
-            margins.setTop(720); margins.setBottom(720); margins.setLeft(850); margins.setRight(850);
-
-            XWPFParagraph nameP = doc.createParagraph();
-            nameP.setAlignment(ParagraphAlignment.CENTER); nameP.setSpacingAfter(35); nameP.setKeepNext(true);
-            XWPFRun nameRun = nameP.createRun(); nameRun.setText(resume.name()); nameRun.setBold(true);
-            nameRun.setFontFamily("Aptos Display"); nameRun.setFontSize(21); nameRun.setColor("163A63");
-
-            if (!resume.contact().isBlank()) {
-                XWPFParagraph contactP = doc.createParagraph(); contactP.setAlignment(ParagraphAlignment.CENTER);
-                contactP.setSpacingAfter(130); contactP.setKeepNext(true);
-                addTextWithLinks(doc, contactP, resume.contact(), "Aptos", 8, "475569", false);
-            }
-
-            for (ResumeSection section : resume.sections()) {
-                if (section.lines().isEmpty()) continue;
-                addSectionHeading(doc, section.heading());
-                for (ResumeLine line : section.lines()) {
-                    String text = line.text();
-                    if (line.entry()) addEntryLine(doc, text);
-                    else if (looksLikeBullet(text) || "EXPERIENCE".equals(section.heading()) || "PROJECTS".equals(section.heading()))
-                        addBullet(doc, cleanBullet(text));
-                    else if ("SKILLS".equals(section.heading()) && text.contains(":")) addSkillLine(doc, text);
-                    else addBodyLine(doc, text);
-                }
-            }
-            addPageNumberFooter(doc);
-            doc.write(out);
-            return out.toByteArray();
-        }
-    }
-
-    private void addSectionHeading(XWPFDocument doc, String heading) {
-        XWPFParagraph p = doc.createParagraph(); p.setSpacingBefore(135); p.setSpacingAfter(55); p.setKeepNext(true);
-        CTPPr paragraphProperties = p.getCTP().getPPr();
-        if (paragraphProperties == null) paragraphProperties = p.getCTP().addNewPPr();
-        CTPBdr borders = paragraphProperties.isSetPBdr() ? paragraphProperties.getPBdr() : paragraphProperties.addNewPBdr();
-        CTBorder bottomBorder = borders.isSetBottom() ? borders.getBottom() : borders.addNewBottom();
-        bottomBorder.setVal(STBorder.SINGLE);
-        bottomBorder.setSz(java.math.BigInteger.valueOf(6));
-        bottomBorder.setColor("CBD5E1");
-        XWPFRun r = p.createRun(); r.setText(heading); r.setBold(true); r.setFontFamily("Aptos");
-        r.setFontSize(10); r.setColor("1D4ED8");
-    }
-
-    private void addEntryLine(XWPFDocument doc, String text) {
-        String[] parts = text.split("\\t+");
-        XWPFParagraph p = doc.createParagraph(); p.setSpacingBefore(65); p.setSpacingAfter(25); p.setKeepNext(true);
-        addTextWithLinks(doc, p, parts[0].trim(), "Aptos", 9, "172B4D", true);
-        for (int i = 1; i < parts.length; i++) {
-            addTextWithLinks(doc, p, "  |  " + parts[i].trim(), "Aptos", 8, "475569", false);
-        }
-    }
-
-    private void addSkillLine(XWPFDocument doc, String text) {
-        int colon = text.indexOf(':'); XWPFParagraph p = doc.createParagraph(); p.setSpacingAfter(35);
-        XWPFRun label = p.createRun(); label.setText(text.substring(0, colon + 1) + " "); label.setBold(true);
-        label.setFontFamily("Aptos"); label.setFontSize(8.7); label.setColor("172B4D");
-        addTextWithLinks(doc, p, text.substring(colon + 1).trim(), "Aptos", 8.7, "334155", false);
-    }
-
-    private void addBodyLine(XWPFDocument doc, String text) {
-        XWPFParagraph p = doc.createParagraph(); p.setSpacingAfter(45); p.setSpacingBetween(1.05);
-        addTextWithLinks(doc, p, text, "Aptos", 9, "263445", false);
-    }
-
-    private void addBullet(XWPFDocument doc, String text) {
-        XWPFParagraph p = doc.createParagraph(); p.setIndentationLeft(260); p.setFirstLineIndent(-150);
-        p.setSpacingAfter(40); p.setSpacingBetween(1.03);
-        XWPFRun bullet = p.createRun(); bullet.setText("•  "); bullet.setFontFamily("Aptos"); bullet.setFontSize(9); bullet.setColor("1D4ED8");
-        addTextWithLinks(doc, p, text, "Aptos", 9, "263445", false);
-    }
-
-    private void addTextWithLinks(XWPFDocument doc, XWPFParagraph paragraph, String text,
-                                  String font, double size, String color, boolean bold) {
-        Matcher matcher = LINK_PATTERN.matcher(text);
-        int cursor = 0;
-        while (matcher.find()) {
-            if (matcher.start() > cursor) {
-                addFormattedRun(paragraph.createRun(), text.substring(cursor, matcher.start()), font, size, color, bold);
-            }
-            String label = matcher.group(1);
-            String url = matcher.group(2);
-            if (url == null) {
-                label = matcher.group(3);
-                url = label;
-            }
-            XWPFHyperlinkRun hyperlinkRun = paragraph.createHyperlinkRun(url);
-            hyperlinkRun.setText(label);
-            addFormattedRun(hyperlinkRun, label, font, size, "0563C1", bold);
-            cursor = matcher.end();
-        }
-        if (cursor < text.length()) {
-            addFormattedRun(paragraph.createRun(), text.substring(cursor), font, size, color, bold);
-        }
-    }
-
-    private void addFormattedRun(XWPFRun run, String text, String font, double size, String color, boolean bold) {
-        run.setText(text);
-        run.setFontFamily(font);
-        run.setFontSize(size);
-        run.setColor(color);
-        run.setBold(bold);
-        if (run instanceof XWPFHyperlinkRun) run.setUnderline(UnderlinePatterns.SINGLE);
-    }
-
-    private boolean looksLikeBullet(String text) {
-        return text.startsWith("•") || text.startsWith("·") || text.startsWith("- ") || text.startsWith("– ");
-    }
-
-    private String cleanBullet(String text) {
-        return text.replaceFirst("^[•·]\\s*", "").replaceFirst("^[-–]\\s*", "").trim();
-    }
-
-    private void addPageNumberFooter(XWPFDocument doc) {
-        XWPFFooter footer = doc.createFooter(HeaderFooterType.DEFAULT);
-        List<XWPFParagraph> paragraphs = footer.getParagraphs();
-        XWPFParagraph p = paragraphs.isEmpty() ? footer.createParagraph() : paragraphs.get(0);
-        p.setAlignment(ParagraphAlignment.CENTER);
-        XWPFRun r = p.createRun(); r.setFontFamily("Aptos"); r.setFontSize(8); r.setColor("64748B"); r.setText("Page ");
-        r.getCTR().addNewFldChar().setFldCharType(STFldCharType.BEGIN);
-        r = p.createRun(); r.getCTR().addNewInstrText().setStringValue(" PAGE ");
-        r = p.createRun(); r.getCTR().addNewFldChar().setFldCharType(STFldCharType.END);
-    }
 }

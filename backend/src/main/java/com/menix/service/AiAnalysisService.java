@@ -35,7 +35,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class AiAnalysisService {
     private static final Logger log = LoggerFactory.getLogger(AiAnalysisService.class);
     private static final String PROMPT_VERSION = "overview-evidence-v3";
-    private static final String SUGGESTION_VERSION = "suggestions-evidence-v2";
+    private static final String SUGGESTION_VERSION = "suggestions-evidence-v3";
     private static final String ANSWER_VERSION = "application-answers-v1";
     private final RestClient restClient;
     private final ObjectMapper mapper;
@@ -139,18 +139,22 @@ public class AiAnalysisService {
         if (cached != null) { cached.put("cached", true); return cached; }
         String prompt = """
             Tailor the working resume for this specific job using only facts supported by the permanent Master Resume.
-            Reorder and rewrite relevant existing evidence; do not add a technology, employer, date, duration,
+            Make selective in-place wording improvements only: do not reorder sections, projects or bullets, and do not add
+            a technology, employer, date, duration,
             achievement, metric, credential, responsibility or experience that is not explicitly supported.
             Do not insert job-description terms into the resume unless they are supported by an exact evidence excerpt.
-            Return JSON with suggestions (array of {id,section,before,after,reason,evidence}) and cautions.
-            Sections must be summary, bullet, or skills. Return at most 8 concise edits. `before` must be an exact
-            excerpt from the WORKING RESUME. Each evidence item must be an exact, short excerpt from MASTER RESUME
-            that directly supports the replacement. If no truthful edit is useful, return an empty suggestions array.
+            Return JSON with suggestions (array of {id,section,before,after,reason,relatedRequirement,evidence,confidence}) and cautions.
+            Sections must be summary, bullet, or skills. Return at most 8 concise edits. Each `before` must be an exact
+            excerpt from one paragraph in the WORKING RESUME; do not combine paragraphs. Keep `after` concise and close
+            to the original length so the original page layout is not disrupted. Each evidence item must be an exact, short excerpt from MASTER RESUME
+            that directly supports the replacement. Confidence is a number from 0 to 1. Preserve each sentence's
+            meaning, names, dates and factual details. If no truthful edit is useful, return an empty suggestions array.
             MASTER RESUME (permanent source of truth):\n%s\nWORKING RESUME:\n%s\nJOB DESCRIPTION:\n%s
             """.formatted(resumeText, candidate, jobDescription);
         Map<String, Object> raw = callGemini(prompt, suggestionsSchema(), 900, false);
         boolean degraded = Boolean.TRUE.equals(raw.remove("_menixDegraded"));
         List<Map<String, Object>> normalized = new ArrayList<>();
+        List<Map<String, Object>> rejected = new ArrayList<>();
         int rejectedCount = 0;
         Object items = raw.get("suggestions");
         if (items instanceof List<?> list) {
@@ -163,6 +167,9 @@ public class AiAnalysisService {
                 suggestion.put("before", clean(Objects.toString(map.get("before"), "")));
                 suggestion.put("after", clean(Objects.toString(map.get("after"), "")));
                 suggestion.put("reason", clean(Objects.toString(map.get("reason"), "")));
+                suggestion.put("relatedRequirement", clean(Objects.toString(map.get("relatedRequirement"), "")));
+                double confidence = map.get("confidence") instanceof Number number ? number.doubleValue() : 0.5d;
+                suggestion.put("confidence", Math.max(0d, Math.min(1d, confidence)));
                 List<String> evidence = stringList(map.get("evidence"));
                 ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
                     resumeText, candidate, jobDescription, suggestion.get("before").toString(),
@@ -170,14 +177,21 @@ public class AiAnalysisService {
                 if (validation.valid()) {
                     suggestion.put("evidence", evidence);
                     suggestion.put("validation", "verified");
+                    suggestion.put("safeToApply", true);
                     normalized.add(suggestion);
                 } else {
                     rejectedCount++;
+                    suggestion.put("evidence", evidence);
+                    suggestion.put("validation", "rejected");
+                    suggestion.put("safeToApply", false);
+                    suggestion.put("validationReason", validation.reason());
+                    rejected.add(suggestion);
                 }
             }
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("suggestions", normalized);
+        result.put("rejectedSuggestions", rejected);
         List<String> cautions = new ArrayList<>(stringList(raw.get("cautions")));
         if (rejectedCount > 0) cautions.add(rejectedCount + " proposed edit(s) were withheld because their source or evidence could not be verified.");
         result.put("cautions", cautions);
@@ -579,7 +593,12 @@ public class AiAnalysisService {
     }
 
     private Map<String, Object> suggestionsSchema() {
-        return objectSchema(Map.of("suggestions", arraySchema(objectSchema(Map.of("id", stringSchema(), "section", enumSchema("summary", "bullet", "skills"), "before", stringSchema(), "after", stringSchema(), "reason", stringSchema(), "evidence", arraySchema(stringSchema())))), "cautions", arraySchema(stringSchema())));
+        return objectSchema(Map.of("suggestions", arraySchema(objectSchema(Map.ofEntries(
+            Map.entry("id", stringSchema()), Map.entry("section", enumSchema("summary", "bullet", "skills")),
+            Map.entry("before", stringSchema()), Map.entry("after", stringSchema()), Map.entry("reason", stringSchema()),
+            Map.entry("relatedRequirement", stringSchema()), Map.entry("evidence", arraySchema(stringSchema())),
+            Map.entry("confidence", Map.of("type", "NUMBER", "minimum", 0, "maximum", 1))
+        ))), "cautions", arraySchema(stringSchema())));
     }
     private Map<String, Object> applicationAnswersSchema() {
         return objectSchema(Map.of("answers", arraySchema(objectSchema(Map.of(
