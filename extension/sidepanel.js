@@ -2,6 +2,32 @@
 const $ = (id) => document.getElementById(id);
 
 const DEFAULT_API = 'https://menixjobai-api.onrender.com/api';
+// Naukri's UI selectors are best-effort; this session cannot inspect a logged-in
+// profile DOM. Confirm input selectors in DevTools with:
+// [...document.querySelectorAll('input[type=file]')].map(i => ({id: i.id, accept: i.accept}))
+const NAUKRI_CONFIG = {
+  main: {
+    profileUrl: 'https://www.naukri.com/mnjuser/profile',
+    inputSelectors: ['#attachCV', 'input[type="file"][accept*="doc" i]', 'input[type="file"]'],
+    dropZoneSelectors: ['[class*="resume" i][class*="upload" i]', '[data-testid*="resume" i]', '[class*="upload" i]'],
+    buttonTextMatches: 'update\\s+resume',
+    fileNameSelectors: ['[class*="resume" i] [class*="name" i]', '[class*="uploaded" i]', '[data-testid*="resume" i]'],
+    successSelectors: ['[role="alert"]', '[class*="toast" i]', '[class*="success" i]'],
+    loginUrlPatterns: ['/mnjuser/login', '/login', '/nlogin']
+  },
+  campus: {
+    // Naukri Campus accounts use the shared profile URL; confirm if your account redirects elsewhere.
+    profileUrl: 'https://www.naukri.com/mnjuser/profile',
+    inputSelectors: ['#attachCV', 'input[type="file"][accept*="doc" i]', 'input[type="file"]'],
+    dropZoneSelectors: ['[data-testid*="resume" i]', '[class*="resume" i][class*="drop" i]', '[class*="upload" i]'],
+    buttonTextMatches: 'update\\s+resume',
+    fileNameSelectors: ['[data-testid*="resume" i]', '[class*="resume" i] [class*="name" i]', '[class*="uploaded" i]'],
+    successSelectors: ['[role="alert"]', '[class*="toast" i]', '[class*="success" i]'],
+    loginUrlPatterns: ['/mnjuser/login', '/login', '/nlogin']
+  }
+};
+const RESUME_UPLOAD_HISTORY_KEY = 'resumeUploadHistory';
+const RESUME_UPLOAD_DELAY_MS = 1000;
 
 let apiBase = DEFAULT_API;
 let lastAnalysis = null;
@@ -11,7 +37,6 @@ let resumeFileName = '';
 let resumeIsSaved = false;
 let resumeFileSize = 0;
 let resumeTextEdited = false;
-let profileResume = null;
 let generatedResumes = [];
 let currentJobTabUrl = '';
 let captureRequestId = 0;
@@ -28,18 +53,14 @@ let suggestionData = null;
 let suggestionRequestPromise = null;
 let suggestionController = null;
 let tailoredWorkingCopy = '';
+let resumeWorkflows = [];
+let activeResumeWorkflow = null;
+let activeResumePreviewText = '';
+let resumeUploadPipelinePromise = null;
+let tailorGenerationInProgress = false;
 
 // Wake Render as soon as the extension document opens; this is intentionally fire-and-forget.
 void fetch(`${DEFAULT_API}/health`).catch(() => {});
-let resumePipelineRunning = false;
-let pipelineRetryContext = null;
-let pipelineLastState = null;
-let restoreMonitorTimer = null;
-let lastUploadedResumeHash = '';
-const NAUKRI_SELECTORS = {
-  resumeInputs: ['#attachCV', 'input[type="file"][name*="resume" i]', '.resume input[type="file"]', '[class*="resume" i] input[type="file"]', '[data-testid*="resume" i] input[type="file"]'],
-  successText: ['resume uploaded', 'resume updated', 'successfully uploaded', 'updated successfully', 'resume has been uploaded']
-};
 const resumeProfileLookups = new Map();
 
 function renderRecruiterContact(state = 'checking') {
@@ -268,7 +289,7 @@ async function deleteResumeFile(id) {
     transaction.oncomplete = resolve;
     transaction.onerror = () => reject(transaction.error || new Error('Could not remove the saved resume file.'));
   });
-  database.close();
+  try { database.close(); } catch { /* The extension may be reloaded while IndexedDB work is finishing. */ }
 }
 
 // ------------------------------
@@ -283,6 +304,194 @@ function currentJobPayload() {
     description: $('jobDescription').value.trim(),
     url: cleanText($('jobUrl').value)
   };
+}
+
+async function resumeWorkflowKey(job) {
+  const normalized = `${job.url || ''}|${job.title || ''}|${job.company || ''}`.toLowerCase().replace(/\s+/g, ' ').trim();
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
+  return [...new Uint8Array(digest)].slice(0, 16).map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+async function persistResumeWorkflow(workflow) {
+  workflow.updatedAt = new Date().toISOString();
+  resumeWorkflows = [workflow, ...resumeWorkflows.filter(item => item.jobKey !== workflow.jobKey)];
+  activeResumeWorkflow = workflow;
+  try {
+    await chrome.storage.local.set({
+      resumeWorkflows,
+      activeResumeJobKey: workflow.jobKey,
+      activeJobSnapshot: currentJobPayload(),
+      activeJobAnalysis: lastAnalysis
+    });
+  } catch (error) {
+    if (/extension context invalidated/i.test(String(error?.message || error))) return workflow;
+    throw error;
+  }
+  renderResumeWorkflow();
+}
+
+async function activateResumeWorkflow(job = currentJobPayload(), tabId = null) {
+  if (!job.url && !job.title) return;
+  const key = await resumeWorkflowKey(job);
+  activeResumeWorkflow = resumeWorkflows.find(item => item.jobKey === key) || {
+    jobKey: key, jobUrl: job.url, title: job.title, company: job.company,
+    status: 'JOB_DETECTED', selectedType: '', temporaryResumeId: '', temporaryResumeName: '',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  activeResumeWorkflow.jobUrl = job.url;
+  activeResumeWorkflow.title = job.title;
+  activeResumeWorkflow.company = job.company;
+  if (tabId) activeResumeWorkflow.jobTabId = tabId;
+  await persistResumeWorkflow(activeResumeWorkflow);
+  await loadWorkflowResumePreview();
+}
+
+function renderResumeDocumentPreview(text) {
+  const container = $('applyResumePreviewContent');
+  container.replaceChildren();
+  const lines = String(text || '').replace(/\r/g, '').split('\n').map(line => line.trim()).filter(Boolean);
+  if (!lines.length) return;
+  if (lines.length === 1 && /^(?:loading|resume preview is unavailable|resume text preview is unavailable)/i.test(lines[0])) {
+    const message = document.createElement('p');
+    message.className = 'resume-document-message';
+    message.textContent = lines[0];
+    container.append(message);
+    return;
+  }
+
+  const page = document.createElement('article');
+  page.className = 'resume-document-page';
+  const contactPattern = /@|\+?\d[\d\s().-]{7,}|linkedin\.com|github\.com|https?:\/\/|\b(?:jaipur|delhi|mumbai|bengaluru|bangalore|pune|hyderabad|gurugram|noida)\b/i;
+  const headingNames = new Set([
+    'summary', 'professional summary', 'profile', 'career objective', 'objective',
+    'experience', 'work experience', 'professional experience', 'employment history',
+    'education', 'technical skills', 'skills', 'core skills', 'projects',
+    'personal projects', 'certifications', 'certificate', 'achievements', 'awards',
+    'internships', 'internship', 'languages', 'publications', 'volunteer experience',
+    'personal details', 'interests', 'additional information'
+  ]);
+  const cleanHeading = line => line.replace(/[:|]+$/, '').trim().toLowerCase();
+  const looksLikeHeading = line => {
+    const cleaned = cleanHeading(line);
+    if (headingNames.has(cleaned)) return true;
+    const letters = line.replace(/[^a-z]/gi, '');
+    return line.length < 58 && letters.length > 2 && (line === line.toUpperCase() || /:$/.test(line));
+  };
+  const name = lines.shift();
+  const nameHeading = document.createElement('h1');
+  nameHeading.className = 'resume-document-name';
+  nameHeading.textContent = name;
+  page.append(nameHeading);
+
+  const contactLines = [];
+  while (lines.length && contactPattern.test(lines[0]) && contactLines.length < 4) contactLines.push(lines.shift());
+  if (contactLines.length) {
+    const contact = document.createElement('p');
+    contact.className = 'resume-document-contact';
+    contact.textContent = contactLines.join('  ·  ');
+    page.append(contact);
+  }
+
+  let sectionBody = page;
+  let bulletList = null;
+  const flushList = () => { bulletList = null; };
+  for (const line of lines) {
+    if (looksLikeHeading(line)) {
+      flushList();
+      const section = document.createElement('section');
+      section.className = 'resume-document-section';
+      const heading = document.createElement('h2');
+      heading.textContent = line.replace(/[:|]+$/, '').trim();
+      section.append(heading);
+      page.append(section);
+      sectionBody = section;
+      continue;
+    }
+    const bullet = line.match(/^(?:[•●▪◦*-]|\d+[.)])\s*(.+)$/);
+    if (bullet) {
+      if (!bulletList) {
+        bulletList = document.createElement('ul');
+        bulletList.className = 'resume-document-list';
+        sectionBody.append(bulletList);
+      }
+      const item = document.createElement('li');
+      item.textContent = bullet[1];
+      bulletList.append(item);
+      continue;
+    }
+    flushList();
+    const paragraph = document.createElement('p');
+    paragraph.className = 'resume-document-paragraph';
+    paragraph.textContent = line;
+    sectionBody.append(paragraph);
+  }
+  container.append(page);
+}
+
+function renderResumeWorkflow() {
+  const workflow = activeResumeWorkflow;
+  const hasJob = Boolean(workflow);
+  const hasResumeSelection = Boolean(workflow?.selectedType === 'tailored' && workflow.temporaryResumeName);
+  const hasTailoredFile = Boolean(workflow?.temporaryResumeId && workflow.status !== 'MASTER_RESUME_RESTORED');
+  const states = {
+    JOB_DETECTED: 'Analyzing…',
+    JD_ANALYZED: lastAnalysis ? `Match ${lastAnalysis.matchScore ?? 'N/A'}% · Choose a resume.` : 'Waiting for analysis.',
+    MASTER_RESUME_SELECTED: 'Master resume selected.',
+    TAILORED_RESUME_GENERATED: 'Tailored resume ready.',
+    WAITING_FOR_PROFILE_UPLOAD: 'Upload the resume on Naukri.',
+    TEMPORARY_RESUME_UPLOADED: 'Resume uploaded.',
+    APPLICATION_IN_PROGRESS: 'Application in progress.',
+    APPLICATION_SUBMITTED: 'Submitted. Restore the master resume.',
+    RESTORATION_PENDING: 'Restore and verify the master resume.',
+    MASTER_RESUME_RESTORED: 'Master resume restored.',
+    RESTORATION_FAILED: 'Restoration failed. Retry.',
+    APPLICATION_CANCELLED: 'Cancelled. Restore the master resume.'
+  };
+  $('activeWorkflowStatus').textContent = workflow ? states[workflow.status] || workflow.status : 'Waiting for job analysis.';
+  $('tailoredResumeSection').classList.toggle('hidden', !hasResumeSelection);
+  $('applyResumePreview').classList.toggle('hidden', !hasResumeSelection);
+  $('activeResumePreview').classList.toggle('hidden', !hasResumeSelection);
+  $('applyResumePreviewFilename').textContent = workflow?.selectedType === 'tailored' ? workflow.temporaryResumeName : workflow?.selectedResumeName || resumeFileName;
+  const selectedName = workflow?.selectedType === 'tailored' ? workflow.temporaryResumeName : workflow?.selectedResumeName || resumeFileName;
+  const fileType = /\.pdf$/i.test(selectedName || '') ? 'PDF' : 'DOC';
+  $('tailoredResumeIcon').classList.toggle('pdf-file-icon', fileType === 'PDF');
+  $('tailoredResumeIcon').classList.toggle('doc-file-icon', fileType === 'DOC');
+  $('tailoredResumeIcon').innerHTML = createResumeFileIcon(fileType);
+  const fileSize = workflow?.selectedType === 'tailored' ? workflow.temporaryResumeSize : resumeFileSize;
+  const uploaded = ['TEMPORARY_RESUME_UPLOADED', 'APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED'].includes(workflow?.status);
+  const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
+  const uploading = workflow?.status === 'UPLOADING_RESUME';
+  const fileState = restored ? 'Master resume restored' : uploading ? 'Uploading to Naukri' : uploaded ? 'Uploaded and verified on Naukri' : 'Saved in this browser';
+  $('tailoredResumeStatus').textContent = `${fileSize ? `${Math.max(1, Math.round(fileSize / 1024))} KB · ` : ''}${fileState}`;
+  renderResumeDocumentPreview(activeResumePreviewText || (hasResumeSelection ? 'Loading resume preview...' : ''));
+  $('manualUploadGuide').classList.add('hidden');
+  $('returnToJobBtn').classList.toggle('hidden', !hasJob || !workflow?.jobUrl);
+  $('workflowError').textContent = workflow?.lastError || '';
+  $('workflowError').classList.add('sr-only');
+  $('viewTailoredResumeBtn').classList.toggle('hidden', !hasTailoredFile);
+  $('downloadActiveResumeBtn').classList.toggle('hidden', !hasTailoredFile);
+}
+
+$('viewTailoredResumeBtn').addEventListener('click', () => {
+  const preview = $('applyResumePreviewContent');
+  const open = preview.classList.contains('hidden');
+  preview.classList.toggle('hidden', !open);
+  if (open) preview.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+
+function renderManualUploadGuide(workflow) {
+  const guide = $('manualUploadGuide');
+  guide.replaceChildren();
+  const show = Boolean(workflow?.manualUploadNeeded);
+  guide.classList.toggle('hidden', !show);
+  if (!show) return;
+  const downloadLocation = workflow.lastDownloadFolder ? `Downloads/${workflow.lastDownloadFolder}` : 'Downloads';
+  const steps = [
+    'Click “Update resume” on Naukri.',
+    `Choose ${workflow.temporaryResumeName || 'the tailored resume'} from ${downloadLocation}.`,
+    'Return here after Naukri confirms the upload.'
+  ];
+  steps.forEach(text => { const item = document.createElement('li'); item.textContent = text; guide.append(item); });
 }
 
 // ------------------------------
@@ -351,27 +560,10 @@ function updateResumeCard(fileName = resumeFileName) {
   $('masterResumeBadge').classList.toggle('success-badge', hasResume && resumeIsSaved);
 }
 
-function updateProfileResumeCard() {
-  $('profileResumeName').textContent = profileResume?.name || 'No profile resume selected';
-  $('profileResumeStatus').textContent = profileResume
-    ? `${profileResume.type || 'Resume file'} · Selected ${profileResume.selectedAt ? formatDate(profileResume.selectedAt) : 'now'}`
-    : 'Choose a PDF or DOCX. Your master resume stays separate.';
-  $('profilePreview').classList.toggle('hidden', !profileResume);
-  $('downloadProfileResumeBtn').classList.toggle('hidden', !profileResume);
-  $('profilePreviewMeta').textContent = profileResume
-    ? `${profileResume.name} · ${profileResume.type || 'Unknown file type'}`
-    : '';
-  $('profilePreviewText').textContent = profileResume?.text
-    ? `${profileResume.text.slice(0, 900)}${profileResume.text.length > 900 ? '…' : ''}`
-    : 'Text preview is unavailable for this saved file. Verify the filename before uploading.';
-  $('confirmProfileUploadBtn').disabled = !profileResume || !$('profileUploadConfirmed').checked;
-}
-
 function updateJobSummary() {
   const title = cleanText($('jobTitleInput').value);
   const company = cleanText($('companyInput').value);
   const location = cleanText($('locationInput').value);
-  const hasDescription = Boolean($('jobDescription').value.trim());
   $('jobTitle').textContent = title || 'No job captured yet';
   $('companyMark').textContent = (company || title || 'J').slice(0, 1).toUpperCase();
   $('companyLogo').onerror = () => {
@@ -394,7 +586,7 @@ function updateJobSummary() {
     $('companyLogo').classList.add('hidden');
     $('companyMark').classList.remove('hidden');
   }
-  $('jobCompanyName').textContent = company || (hasDescription ? 'Job details detected on this page' : 'Open a job listing to detect its details');
+  $('jobCompanyName').textContent = company;
   const ratingText = jobMetadata.rating ? `★ ${jobMetadata.rating}` : '';
   $('jobRating').textContent = ratingText;
   $('jobRating').classList.toggle('hidden', !ratingText);
@@ -472,10 +664,10 @@ function invalidateAnalysis() {
   $('analysis').replaceChildren();
   $('aiSuggestionsDetails').open = false;
   $('suggestionsSummaryHint').textContent = 'Open to load';
+  activateAnalysisTab('skillsTab');
   renderAnalysisPlaceholders();
   $('generateBtn').disabled = true;
   updatePrimaryAction();
-  $('fileResult').classList.add('hidden');
   updateActionBar();
 }
 
@@ -498,18 +690,6 @@ function scheduleAutomaticAnalysis() {
   }, 350);
 }
 
-function switchView(viewId) {
-  document.querySelectorAll('.view').forEach(view => {
-    view.classList.toggle('hidden', view.id !== viewId);
-  });
-  document.querySelectorAll('.tab').forEach(tab => {
-    tab.classList.toggle('active', tab.dataset.view === viewId);
-  });
-  updateActionBar();
-  if (viewId === 'historyView') loadHistory().catch(error => setStatus(`Could not load history: ${error.message}`, 'error'));
-  if (viewId === 'savedView') loadSavedJobs().catch(error => setStatus(`Could not load saved jobs: ${error.message}`, 'error'));
-}
-
 function updateActionBar() {
   const isApplyView = !$('applyView').classList.contains('hidden')
     && $('settings').classList.contains('hidden');
@@ -520,40 +700,32 @@ function updateActionBar() {
 function updatePrimaryAction() {
   const button = $('generateBtn');
   if (!button) return;
-  if (resumePipelineRunning) {
+  if (tailorGenerationInProgress) {
     button.disabled = true;
-    button.textContent = `Working… (${pipelineLastState?.step || 1}/5)`;
+    button.textContent = 'Tailoring Resume…';
     return;
   }
-  if (pipelineLastState?.state === 'failed') {
-    button.disabled = false;
-    button.textContent = `Retry step ${pipelineLastState.step}`;
-    return;
-  }
-  if (pipelineLastState?.state === 'done' && pipelineLastState.step === 5) {
-    button.disabled = false;
-    button.textContent = 'Done. Download again';
+  if (resumeUploadPipelinePromise) {
+    button.disabled = true;
+    button.textContent = 'Uploading to Naukri…';
     return;
   }
   if (analysisPromise && !lastAnalysis) {
     button.disabled = true;
     button.textContent = 'Refining with AI…';
-  } else if (analysisPromise && lastAnalysis) {
-    button.disabled = false;
-    button.textContent = '↓  Download Tailored Resume (DOCX)';
   } else if (aiRefinementFailed && !lastAnalysis) {
     button.disabled = false;
     button.textContent = 'Retry AI refinement';
   } else if (!lastAnalysis) {
     const ready = Boolean($('resumeText')?.value.trim() && $('jobDescription')?.value.trim());
     button.disabled = !ready;
-    button.textContent = ready ? '✦  Analyze & Tailor Resume' : 'Add Resume and Open a Job';
+    button.textContent = ready ? 'Analyze Job Match' : 'Add Resume and Open a Job';
   } else {
-    button.disabled = false;
-    button.textContent = generatedBlobUrl ? '↓  Download Tailored Resume Again' : '↓  Download Tailored Resume (DOCX)';
+    const uploaded = ['TEMPORARY_RESUME_UPLOADED', 'APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED', 'MASTER_RESUME_RESTORED'].includes(activeResumeWorkflow?.status);
+    button.disabled = uploaded;
+    button.textContent = uploaded ? 'Resume updated on Naukri' : 'Tailor Resume';
   }
 }
-
 function updateJobApplicationButton() {
   const validJobUrl = /^https?:\/\//i.test(cleanText($('jobUrl').value));
   $('openJobBtn').classList.toggle('hidden', !validJobUrl);
@@ -601,17 +773,13 @@ async function loadSettings() {
     'masterResumeFileName',
     'masterResumeSize',
     'generatedResumes',
-    'profileResume',
-    'profileResumeUpdate'
-    ,'fullName','autoUploadToNaukri','restoreMasterAfterApply'
+    'resumeWorkflows', 'activeResumeJobKey', 'activeJobSnapshot', 'activeJobAnalysis', 'fullName'
   ]);
 
   apiBase = saved.apiBase || DEFAULT_API;
 
   $('apiBase').value = apiBase;
     $('fullNameInput').value = saved.fullName || '';
-  $('autoUploadSetting').checked = saved.autoUploadToNaukri !== false;
-  $('restoreMasterSetting').checked = saved.restoreMasterAfterApply === true;
   void fetch(`${apiBase}/health`).catch(() => {});
 
   const masterText = saved.masterResumeText || saved.resumeText || '';
@@ -631,48 +799,36 @@ async function loadSettings() {
   resumeFileSize = saved.masterResumeSize || saved.resumeSize || 0;
   resumeIsSaved = Boolean(masterText);
   generatedResumes = Array.isArray(saved.generatedResumes) ? saved.generatedResumes : [];
+  resumeWorkflows = Array.isArray(saved.resumeWorkflows) ? saved.resumeWorkflows : [];
+  activeResumeWorkflow = resumeWorkflows.find(item => item.jobKey === saved.activeResumeJobKey) || null;
+  const savedJobUrl = saved.activeJobSnapshot?.url || activeResumeWorkflow?.jobUrl;
+  if (activeResumeWorkflow?.jobUrl && savedJobUrl === activeResumeWorkflow.jobUrl && saved.activeJobAnalysis) {
+    lastAnalysis = saved.activeJobAnalysis;
+  }
   $('resumeStatus').textContent = masterText
     ? `${resumeFileSize ? `${Math.round(resumeFileSize / 1024)} KB · ` : ''}Saved master resume`
     : 'Upload a PDF or DOCX to get started.';
-  if (saved.profileResume?.id) {
-    try {
-      const storedProfileResume = await readResumeFile(saved.profileResume.id);
-      if (storedProfileResume?.file) {
-        profileResume = {
-          ...saved.profileResume,
-          blob: storedProfileResume.file,
-            selectedAt: saved.profileResume.selectedAt,
-            text: saved.profileResume.id === 'master'
-              ? masterText
-            : ''
-        };
-      }
-    } catch (error) {
-      setStatus(`Saved profile resume could not be loaded: ${error.message}`, 'error');
-    }
-  }
-  if (saved.profileResumeUpdate?.verification === 'user-confirmed') {
-    $('profileConfirmationStatus').textContent =
-      `Profile resume updated successfully. User-confirmed on ${formatDate(saved.profileResumeUpdate.confirmedAt)}; MenixJobAI did not independently verify the upload.`;
-  }
-  populateGeneratedResumePicker();
-  updateProfileResumeCard();
+  renderResumeWorkflow();
   updateResumeCard();
   updateJobSummary();
-  await captureActiveJob();
+  const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const activeUrl = activeTabs[0]?.url || '';
+  if (/naukri\.com\/mnjuser\/(?:profile|login)/i.test(activeUrl) && saved.activeJobSnapshot) {
+    currentJobTabUrl = saved.activeJobSnapshot.url || activeResumeWorkflow?.jobUrl || '';
+    $('jobTitleInput').value = saved.activeJobSnapshot.title || '';
+    $('companyInput').value = saved.activeJobSnapshot.company || '';
+    $('locationInput').value = saved.activeJobSnapshot.location || '';
+    $('jobDescription').value = saved.activeJobSnapshot.description || '';
+    $('jobUrl').value = saved.activeJobSnapshot.url || activeResumeWorkflow?.jobUrl || '';
+    updateJobSummary();
+    updateJobApplicationButton();
+    if (lastAnalysis) renderAnalysis(lastAnalysis, 'ai');
+  } else {
+    await captureActiveJob();
+  }
+  if (activeResumeWorkflow) await loadWorkflowResumePreview();
+  renderResumeWorkflow();
   updateActionBar();
-}
-
-function populateGeneratedResumePicker() {
-  const select = $('generatedResumeSelect');
-  select.replaceChildren(new Option('Choose generated resume', ''));
-  generatedResumes.forEach(resume => {
-    const option = new Option(
-      `${resume.filename} · ${formatDate(resume.generatedAt)}`,
-      resume.id
-    );
-    select.add(option);
-  });
 }
 
 // ------------------------------
@@ -684,13 +840,31 @@ $('settingsToggle').addEventListener('click', () => {
   updateActionBar();
 });
 
-$('profileShortcut').addEventListener('click', () => {
-  $('settings').classList.add('hidden');
-  switchView('profileView');
-});
+function activateAnalysisTab(tabId) {
+  const tabs = [...document.querySelectorAll('.analysis-tab')];
+  const panels = [...document.querySelectorAll('.analysis-tab-panel')];
+  const selected = tabs.find(tab => tab.id === tabId);
+  if (!selected) return;
+  tabs.forEach(tab => {
+    const active = tab === selected;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  panels.forEach(panel => panel.classList.toggle('hidden', panel.getAttribute('aria-labelledby') !== tabId));
+  if (tabId === 'aiInsightsTab' && !suggestionData) void loadAiSuggestions();
+}
 
-$('aiSuggestionsDetails').addEventListener('toggle', () => {
-  if ($('aiSuggestionsDetails').open && !suggestionData) void loadAiSuggestions();
+document.querySelectorAll('.analysis-tab').forEach((tab, index, tabs) => {
+  tab.addEventListener('click', () => activateAnalysisTab(tab.id));
+  tab.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+      : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[nextIndex].focus();
+    activateAnalysisTab(tabs[nextIndex].id);
+  });
 });
 
 const embeddedPanelParams = new URLSearchParams(window.location.search);
@@ -703,10 +877,6 @@ if (embeddedPanelParams.get('embedded') === '1') {
     }, '*');
   });
 }
-
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => switchView(tab.dataset.view));
-});
 
 $('viewResumeBtn').addEventListener('click', () => {
   const details = $('resumeDetails');
@@ -721,46 +891,7 @@ $('jobDescription').addEventListener('input', () => {
 
 $('jobUrl').addEventListener('input', updateJobApplicationButton);
 $('openJobBtn').addEventListener('click', openJobApplication);
-$('retryPipelineBtn').addEventListener('click', () => {
-  if (!pipelineRetryContext || resumePipelineRunning) return;
-  runResumePipeline(pipelineRetryContext.job, pipelineRetryContext.startStep, pipelineRetryContext.file).catch(error => setStatus(error.message, 'error'));
-});
-$('restoreMasterBtn').addEventListener('click', async () => {
-  if (resumePipelineRunning) return;
-  const master = await readResumeFile('master');
-  if (!master?.file) return setStatus('Master resume file is not available. Upload it again to restore.', 'error');
-  await runResumePipeline(currentJobPayload(), 3, { id: 'master', filename: master.name || resumeFileName || 'MasterResume.docx', blob: master.file, restore: true });
-});
-$('autoUploadSetting').addEventListener('change', () => chrome.storage.local.set({ autoUploadToNaukri: $('autoUploadSetting').checked }));
-$('restoreMasterSetting').addEventListener('change', () => chrome.storage.local.set({ restoreMasterAfterApply: $('restoreMasterSetting').checked }));
-
-$('clearResumeBtn').addEventListener('click', async () => {
-  if (!confirm('Clear the saved resume text from this browser?')) return;
-  try {
-    await chrome.storage.local.remove([
-      'resumeText', 'resumeName', 'resumeSize',
-      'masterResumeText', 'masterResumeFileName', 'masterResumeSize'
-    ]);
-    await deleteResumeFile('master');
-    if (profileResume?.id === 'master') {
-      profileResume = null;
-      await chrome.storage.local.remove(['profileResume', 'profileResumeUpdate']);
-      $('profileUploadConfirmed').checked = false;
-      $('profileConfirmationStatus').textContent = 'Not confirmed';
-      updateProfileResumeCard();
-    }
-    $('resumeText').value = '';
-    $('resumeFile').value = '';
-    resumeFileSize = 0;
-    resumeIsSaved = false;
-    $('resumeStatus').textContent = 'Upload a PDF or DOCX to get started.';
-    updateResumeCard('');
-    invalidateAnalysis();
-    setStatus('Saved resume data cleared from this browser.', 'success');
-  } catch (error) {
-    setStatus(`Could not clear resume data: ${error.message}`, 'error');
-  }
-});
+$('downloadActiveResumeBtn').addEventListener('click', downloadActiveWorkflowResume);
 
 $('resumeText').addEventListener('input', () => {
   resumeTextEdited = true;
@@ -791,9 +922,7 @@ $('saveSettings').addEventListener('click', async () => {
 
     await chrome.storage.local.set({
       apiBase,
-      fullName: $('fullNameInput').value.trim(),
-      autoUploadToNaukri: $('autoUploadSetting').checked,
-      restoreMasterAfterApply: $('restoreMasterSetting').checked
+      fullName: $('fullNameInput').value.trim()
     });
 
     setStatus('Backend URL saved successfully.', 'success');
@@ -818,6 +947,13 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     if (!['http:', 'https:'].includes(url.protocol)) {
       throw new Error('This page does not allow job details to be read.');
     }
+    // Profile navigation is part of the upload flow; keep the selected job and
+    // resume visible while the user replaces the Naukri profile file.
+    if (url.hostname.endsWith('naukri.com') && /^\/mnjuser\/(?:profile|login)(?:\/|$)/i.test(url.pathname)) return;
+    // Returning from the profile is only for resume upload. Keep the saved job
+    // snapshot and its analysis instead of treating it as a newly detected job.
+    if (currentJobTabUrl === tab.url && activeResumeWorkflow?.jobUrl === tab.url
+      && $('jobDescription').value.trim().length >= 100) return;
     const pageChanged = currentJobTabUrl !== tab.url;
     currentJobTabUrl = tab.url;
     const isNaukriListing = url.hostname.endsWith('naukri.com') && /\/job-listings?-/i.test(url.pathname);
@@ -1008,6 +1144,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     updateJobSummary();
     updateJobApplicationButton();
     invalidateAnalysis();
+    await activateResumeWorkflow(currentJobPayload(), tab.id);
     setStatus(`Job detected from ${url.hostname}. Ready to analyze.`, 'success');
     scheduleAutomaticAnalysis();
   } catch (error) {
@@ -1084,6 +1221,7 @@ $('resumeFile').addEventListener('change', async (event) => {
     $('resumeStatus').textContent =
       `${Math.round(file.size / 1024)} KB · Text extracted. Review before use.`;
     updateResumeCard(file.name);
+    renderResumeWorkflow();
 
     setStatus(
       'Resume text extracted. Check it for accuracy.',
@@ -1099,163 +1237,675 @@ $('resumeFile').addEventListener('change', async (event) => {
   }
 });
 
-async function selectProfileResume(blob, name, text, id, type = '') {
-  await storeResumeFile(id, blob, name);
-  const selectedAt = new Date().toISOString();
-  profileResume = { id, name, text: text || '', type: type || 'Resume file', blob, selectedAt };
-  await chrome.storage.local.set({
-    profileResume: {
-      id,
-      name,
-      type: profileResume.type,
-      selectedAt
-    },
-    profileResumeUpdate: null
-  });
-  $('profileUploadConfirmed').checked = false;
-  $('profileConfirmationStatus').textContent = 'Not confirmed';
-  updateProfileResumeCard();
+async function detectNaukriSite(workflow = activeResumeWorkflow) {
+  if (workflow?.naukriSite && NAUKRI_CONFIG[workflow.naukriSite]) return workflow.naukriSite;
+  const jobTab = workflow?.jobTabId ? await chrome.tabs.get(workflow.jobTabId).catch(() => null) : null;
+  try { if (jobTab?.url && /campus/i.test(new URL(jobTab.url).hostname)) return 'campus'; } catch { /* Continue with page branding detection. */ }
+  if (jobTab?.id) {
+    try {
+      const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: jobTab.id }, func: () => {
+        const branding = `${document.title} ${[...document.querySelectorAll('img[alt],header a,header')].map(node => node.alt || node.innerText || '').join(' ')}`;
+        return /naukri\s*campus/i.test(branding);
+      } });
+      if (result) return 'campus';
+    } catch { /* Use the main profile route when the job tab cannot be inspected. */ }
+  }
+  return 'main';
 }
 
-$('chooseProfileResumeBtn').addEventListener('click', () => $('profileResumeFile').click());
-
-$('profileResumeFile').addEventListener('change', async (event) => {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  const id = `profile-${Date.now()}`;
-  let extractedText = '';
-  let extractionWarning = '';
-  try {
-    setStatus('Reading selected profile resume...');
-    const form = new FormData();
-    form.append('file', file);
-    const extracted = await api('/resumes/extract-text', { method: 'POST', body: form });
-    extractedText = extracted.text || '';
-  } catch (error) {
-    extractionWarning = ` Text preview unavailable: ${error.message}`;
+async function openNaukriProfile(site = 'main') {
+  const config = NAUKRI_CONFIG[site] || NAUKRI_CONFIG.main;
+  const profileUrl = config.profileUrl;
+  const tabs = await chrome.tabs.query({});
+  const existing = tabs.find(tab => {
+    if (!tab.id || !tab.url) return false;
+    try {
+      const url = new URL(tab.url);
+      const isNaukri = url.hostname === 'naukri.com' || url.hostname.endsWith('.naukri.com');
+      const expectedPath = new URL(config.profileUrl).pathname.toLowerCase().replace(/\/$/, '');
+      return isNaukri && url.pathname.toLowerCase().replace(/\/$/, '') === expectedPath;
+    } catch { return false; }
+  });
+  let profileTabId;
+  if (existing?.id) {
+    await chrome.tabs.update(existing.id, { active: true });
+    if (existing.windowId != null) await chrome.windows.update(existing.windowId, { focused: true });
+    profileTabId = existing.id;
+  } else {
+    const created = await chrome.tabs.create({ url: profileUrl, active: true });
+    profileTabId = created.id;
   }
-  try {
-    await selectProfileResume(
-      file,
-      file.name,
-      extractedText,
-      id,
-      file.name.split('.').pop()?.toUpperCase() || file.type
-    );
-    setStatus(
-      extractionWarning
-        ? `Profile resume selected.${extractionWarning}`
-        : 'Profile resume selected. Review the preview before uploading to Naukri.',
-      extractionWarning ? 'info' : 'success'
-    );
-  } catch (error) {
-    setStatus(`Could not save this profile resume locally: ${error.message}`, 'error');
+  if (profileTabId && activeResumeWorkflow) {
+    await persistResumeWorkflow({ ...activeResumeWorkflow, profileTabId, naukriSite: site });
+    void captureOriginalProfileResumeName(profileTabId);
   }
-});
+  return profileTabId;
+}
 
-$('downloadProfileResumeBtn').addEventListener('click', async () => {
-  if (!profileResume?.blob) return setStatus('Select a profile resume first.', 'error');
+function delay(milliseconds) { return new Promise(resolve => window.setTimeout(resolve, milliseconds)); }
+
+async function waitForTabComplete(tabId, timeoutMs = 20_000) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (tab?.status === 'complete') return;
+  await new Promise(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, timeoutMs);
+    const listener = (updatedTabId, info) => { if (updatedTabId === tabId && info.status === 'complete') finish(); };
+    chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.get(tabId).then(current => { if (current?.status === 'complete') finish(); }).catch(() => {});
+  });
+}
+
+function profileIsLoggedOut(url, config) {
+  return config.loginUrlPatterns.some(pattern => url.toLowerCase().includes(pattern.toLowerCase()));
+}
+
+async function captureOriginalProfileResumeName(tabId) {
+  if (!activeResumeWorkflow || activeResumeWorkflow.originalProfileResumeName) return;
   try {
-    const url = URL.createObjectURL(profileResume.blob);
-    await chrome.downloads.download({
-      url,
-      filename: `MenixJobAI/${safeFilenamePart(profileResume.name.replace(/\.[^.]+$/, ''))}${profileResume.name.match(/\.[^.]+$/)?.[0] || '.docx'}`,
-      saveAs: true
+    await new Promise(resolve => {
+      const timer = window.setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, 12_000);
+      const listener = (updatedId, info) => {
+        if (updatedId === tabId && info.status === 'complete') {
+          window.clearTimeout(timer); chrome.tabs.onUpdated.removeListener(listener); resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      chrome.tabs.get(tabId).then(tab => { if (tab.status === 'complete') { window.clearTimeout(timer); chrome.tabs.onUpdated.removeListener(listener); resolve(); } }).catch(() => {});
     });
-    setStatus('Resume copy downloaded. Select it in Naukri’s normal file picker.', 'success');
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-  } catch (error) {
-    setStatus(`Could not download the selected resume: ${error.message}`, 'error');
-  }
-});
+    const [{ result }] = await chrome.scripting.executeScript({ target: { tabId }, func: () => {
+      const visible = element => Boolean(element.getClientRects().length);
+      const area = [...document.querySelectorAll('section,article,[class*="resume" i],[id*="resume" i]')].filter(visible).map(element => element.innerText || '').filter(text => /resume/i.test(text)).sort((a, b) => a.length - b.length)[0] || document.body?.innerText || '';
+      return area.split(/\n+/).map(line => line.trim()).find(line => /\.(?:pdf|docx?)$/i.test(line)) || '';
+    } });
+    if (result) await persistResumeWorkflow({ ...activeResumeWorkflow, originalProfileResumeName: result });
+  } catch { /* Profile filename may be unavailable until the user signs in. */ }
+}
 
-$('useMasterResumeBtn').addEventListener('click', async () => {
+async function returnToJobApplication() {
+  const workflow = activeResumeWorkflow;
+  if (!workflow?.jobUrl) return setStatus('No saved job link is available for this workflow.', 'error');
   try {
-    const stored = await readResumeFile('master');
-    if (!stored?.file) {
-      return setStatus('The saved master resume has no local file copy. Select the original PDF or DOCX from your computer.', 'error');
+    if (workflow.jobTabId) {
+      const existing = await chrome.tabs.get(workflow.jobTabId).catch(() => null);
+      if (existing?.id) {
+        await chrome.tabs.update(existing.id, { active: true });
+        await chrome.windows.update(existing.windowId, { focused: true });
+        setStatus('Returned to your job application tab.', 'success');
+        return;
+      }
     }
-    await selectProfileResume(
-      stored.file,
-      stored.name || resumeFileName || 'Master resume',
-      $('resumeText').value,
-      'master',
-      stored.name?.split('.').pop()?.toUpperCase()
-    );
-    setStatus('Master resume selected for the Naukri profile. It has not been uploaded.', 'success');
+    const created = await chrome.tabs.create({ url: workflow.jobUrl, active: true });
+    if (created.id) await persistResumeWorkflow({ ...workflow, jobTabId: created.id });
+    setStatus('Reopened your saved job application.', 'success');
   } catch (error) {
-    setStatus(`Could not load the master resume file: ${error.message}`, 'error');
+    setStatus(`Could not return to the job application: ${error.message}`, 'error');
   }
-});
+}
 
-$('useGeneratedResumeBtn').addEventListener('click', async () => {
-  const id = $('generatedResumeSelect').value;
-  if (!id) return setStatus('Choose a previously generated resume first.', 'error');
+async function openNaukriProfileFromButton() {
+  const button = $('openNaukriProfileBtn');
+  button.disabled = true;
   try {
-    const metadata = generatedResumes.find(resume => resume.id === id);
-    const stored = await readResumeFile(id);
-    if (!metadata || !stored?.file) {
-      return setStatus('The generated resume file is unavailable. Generate it again or select it from your computer.', 'error');
-    }
-    await selectProfileResume(
-      stored.file,
-      metadata.filename,
-      '',
-      id,
-      'DOCX'
-    );
-    setStatus('Generated resume selected for the Naukri profile. It has not been uploaded.', 'success');
-  } catch (error) {
-    setStatus(`Could not load generated resume: ${error.message}`, 'error');
-  }
-});
-
-$('cancelProfileResumeBtn').addEventListener('click', async () => {
-  profileResume = null;
-  $('profileResumeFile').value = '';
-  $('profileUploadConfirmed').checked = false;
-  $('profileConfirmationStatus').textContent = 'Not confirmed';
-  await chrome.storage.local.remove(['profileResume', 'profileResumeUpdate']);
-  updateProfileResumeCard();
-  setStatus('Profile resume selection cancelled.', 'info');
-});
-
-$('openNaukriProfileBtn').addEventListener('click', async () => {
-  try {
-    const tabs = await chrome.tabs.query({ url: ['https://naukri.com/*', 'https://*.naukri.com/*'] });
-    const existing = tabs.find(tab => tab.id);
-    if (existing?.id) {
-      await chrome.tabs.update(existing.id, { url: 'https://www.naukri.com/', active: true });
-      await chrome.windows.update(existing.windowId, { focused: true });
-    } else {
-      await chrome.tabs.create({ url: 'https://www.naukri.com/', active: true });
-    }
-    setStatus('Naukri opened. Sign in if needed, then navigate to your profile resume section.', 'success');
+    setStatus('Opening your Naukri profile…', 'info');
+    const site = await detectNaukriSite();
+    const tabId = await openNaukriProfile(site);
+    if (!tabId) throw new Error('The browser did not open a Naukri tab.');
+    setStatus('Naukri profile opened.', 'success');
   } catch (error) {
     setStatus(`Could not open Naukri: ${error.message}`, 'error');
-  }
-});
-
-$('profileUploadConfirmed').addEventListener('change', updateProfileResumeCard);
-
-$('confirmProfileUploadBtn').addEventListener('click', async () => {
-  if (!profileResume || !$('profileUploadConfirmed').checked) return;
-  const confirmedAt = new Date().toISOString();
+  } finally { button.disabled = false; }
+}
+$('openNaukriProfileBtn').addEventListener('click', openNaukriProfileFromButton);
+$('returnToJobBtn').addEventListener('click', returnToJobApplication);
+async function generateTemporaryResumeForActiveJob() {
+  if (!activeResumeWorkflow || !lastAnalysis) return setStatus('Wait for job analysis before generating a tailored resume.', 'error');
+  tailorGenerationInProgress = true;
+  updatePrimaryAction();
   try {
-    await chrome.storage.local.set({
-      profileResumeUpdate: {
-        filename: profileResume.name,
-        confirmedAt,
-        verification: 'user-confirmed'
+    const job = currentJobPayload();
+    const generated = await generateResumeStep(job);
+    const saved = await chrome.storage.local.get(['fullName']);
+    const candidateName = (saved.fullName || $('fullNameInput').value || $('resumeText').value.split(/\r?\n/).find(line => line.trim()) || '').trim();
+    const firstNameRaw = candidateName.split(/\s+/)[0] || '';
+    const firstName = safeFilenamePart(firstNameRaw).replace(/_/g, '');
+    if (!firstNameRaw || !firstName || firstName === 'Job') throw new Error('Add your name in Settings before generating a tailored resume.');
+    const now = new Date();
+    const date = [String(now.getDate()).padStart(2, '0'), String(now.getMonth() + 1).padStart(2, '0'), now.getFullYear()].join('-');
+    const fileName = `${firstName}_${date}.docx`;
+    const id = `temporary-${activeResumeWorkflow.jobKey}`;
+    const previewStorageId = `preview-${activeResumeWorkflow.jobKey}`;
+    const previewText = tailoredWorkingCopy.trim() || $('resumeText').value.trim();
+    await storeResumeFile(id, generated.blob, fileName);
+    await storeResumeFile(previewStorageId, new Blob([previewText], { type: 'text/plain;charset=utf-8' }), `${firstName}_${date}_preview.txt`);
+    await persistResumeWorkflow({
+      ...activeResumeWorkflow, selectedType: 'tailored', temporaryResumeId: id,
+      temporaryResumeName: fileName, temporaryResumeSize: generated.blob.size, previewStorageId, generatedAt: new Date().toISOString(),
+      status: 'TAILORED_RESUME_GENERATED', pipelineStep: 1, lastDownloadedResumeName: '',
+      downloadedFileName: '', downloadedAt: '', lastDownloadId: null, manualUploadNeeded: false,
+      lastError: '', formatNote: generated.formatNote || ''
+    });
+    await loadWorkflowResumePreview();
+    setStatus('Tailored resume generated.', 'success');
+  } catch (error) {
+    await persistResumeWorkflow({ ...activeResumeWorkflow, lastError: `Tailored resume generation failed: ${error.message}` });
+    setStatus(`Could not generate tailored resume: ${error.message}`, 'error');
+  } finally {
+    tailorGenerationInProgress = false;
+    renderResumeWorkflow();
+    updatePrimaryAction();
+  }
+}
+
+async function loadWorkflowResumePreview() {
+  const workflow = activeResumeWorkflow;
+  activeResumePreviewText = '';
+  renderResumeWorkflow();
+  if (!workflow?.selectedType) return;
+  try {
+    const selected = await selectedWorkflowFile(workflow);
+    if (activeResumeWorkflow?.jobKey !== workflow.jobKey) return;
+    if (workflow.selectedType === 'master') activeResumePreviewText = $('resumeText').value.trim();
+    else if (workflow.previewStorageId) {
+      try {
+        const preview = await readResumeFile(workflow.previewStorageId);
+        activeResumePreviewText = preview?.file?.text ? await preview.file.text() : 'Resume text preview is unavailable for this saved file.';
+      } catch { activeResumePreviewText = 'Resume text preview is unavailable for this saved file.'; }
+    } else activeResumePreviewText = tailoredWorkingCopy || $('resumeText').value.trim() || 'Resume text preview is unavailable for this saved file.';
+  } catch {
+    if (activeResumeWorkflow?.jobKey === workflow.jobKey) {
+      activeResumePreviewText = 'Resume preview is unavailable. The saved file can still be downloaded.';
+    }
+  }
+  renderResumeWorkflow();
+}
+
+async function selectedWorkflowFile(workflow = activeResumeWorkflow) {
+  if (!workflow) throw new Error('No active job workflow.');
+  const master = workflow.selectedType === 'master';
+  const stored = await readResumeFile(master ? 'master' : workflow.temporaryResumeId);
+  if (!stored?.file) throw new Error(master ? 'The Master Resume file is unavailable. Replace it in Apply first.' : 'The temporary resume is missing. Retry generation.');
+  return { blob: stored.file, name: master ? (stored.name || resumeFileName || 'MasterResume.docx') : workflow.temporaryResumeName };
+}
+
+async function downloadActiveWorkflowResume() {
+  const button = $('downloadActiveResumeBtn');
+  button.disabled = true;
+  try {
+    const file = await selectedWorkflowFile();
+    const url = URL.createObjectURL(file.blob);
+    const extension = file.name.match(/\.[^.]+$/)?.[0] || '.docx';
+    const downloadName = `MenixJobAI/${safeFilenamePart(file.name.replace(/\.[^.]+$/, ''))}${extension}`;
+    let downloadId = null;
+    try {
+      downloadId = await chrome.downloads.download({ url, filename: downloadName, saveAs: false, conflictAction: 'uniquify' });
+    } catch (downloadError) {
+      // Some Chromium builds reject extension-created blob URLs in the
+      // downloads API. A regular download link supports the same local Blob.
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = file.name;
+      link.style.display = 'none';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      console.warn('Downloads API rejected the resume Blob; used the browser download link instead.', downloadError);
+    }
+    if (activeResumeWorkflow.status !== 'RESTORATION_PENDING' && activeResumeWorkflow.status !== 'RESTORATION_FAILED') {
+      await persistResumeWorkflow({
+        ...activeResumeWorkflow,
+        status: 'WAITING_FOR_PROFILE_UPLOAD',
+        lastDownloadedResumeName: file.name,
+        downloadedFileName: file.name,
+        lastDownloadId: downloadId,
+        lastDownloadFolder: downloadId ? 'MenixJobAI' : '',
+        downloadedAt: new Date().toISOString(),
+        lastError: ''
+      });
+    } else {
+      await persistResumeWorkflow({ ...activeResumeWorkflow, lastDownloadedResumeName: file.name, downloadedFileName: file.name, lastDownloadId: downloadId, lastDownloadFolder: downloadId ? 'MenixJobAI' : '', downloadedAt: new Date().toISOString(), lastError: '' });
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    setStatus(downloadId
+      ? `Saved ${file.name} to Downloads/MenixJobAI.`
+      : `Saved ${file.name} to Downloads.`, 'success');
+  } catch (error) {
+    if (activeResumeWorkflow) await persistResumeWorkflow({ ...activeResumeWorkflow, lastError: error.message });
+    setStatus(`Could not download the selected resume: ${error.message}`, 'error');
+  } finally { button.disabled = false; }
+}
+
+async function blobToBase64(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+async function injectResumeIntoNaukri(tabId, config, fileName, base64) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    args: [config, fileName, base64],
+    func: async (siteConfig, name, encoded) => {
+      const visible = element => Boolean(element?.getClientRects().length);
+      const findInput = () => {
+        for (const selector of siteConfig.inputSelectors || []) {
+          try {
+            const inputs = [...document.querySelectorAll(selector)].filter(element => element instanceof HTMLInputElement && element.type === 'file');
+            const input = selector === 'input[type="file"]'
+              ? inputs.find(element => /doc|pdf|resume|cv/i.test(`${element.accept} ${element.id} ${element.name}`)) || (inputs.length === 1 ? inputs[0] : null)
+              : inputs[0];
+            if (input) return input;
+          } catch { /* Ignore selectors unsupported by the current site markup. */ }
+        }
+        return null;
+      };
+      let input = findInput();
+      if (!input && window === window.top) {
+        const buttonPattern = new RegExp(siteConfig.buttonTextMatches || 'update\\s+resume', 'i');
+        const updateButton = [...document.querySelectorAll('button,a,[role="button"]')]
+          .find(element => visible(element) && buttonPattern.test((element.innerText || element.getAttribute('aria-label') || '').trim()));
+        if (updateButton) {
+          updateButton.click();
+          const startedAt = Date.now();
+          while (!input && Date.now() - startedAt < 1000) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            input = findInput();
+          }
+        }
+      }
+      try {
+        const binary = atob(encoded);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+        const file = new File([bytes], name, { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', lastModified: Date.now() });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        if (input) {
+          input.files = transfer.files;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return { ok: true, method: 'input', detail: `Selected ${name} in ${input.id ? `#${input.id}` : 'the resume file input'}.`, isTop: window === window.top };
+        }
+        for (const selector of siteConfig.dropZoneSelectors || []) {
+          let zone;
+          try { zone = [...document.querySelectorAll(selector)].find(visible); } catch { zone = null; }
+          if (!zone) continue;
+          for (const type of ['dragenter', 'dragover', 'drop']) {
+            zone.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer }));
+          }
+          return { ok: true, method: 'drop', detail: `Sent the selected file to ${selector}.`, isTop: window === window.top };
+        }
+        return { ok: false, method: 'none', detail: 'No resume file input or drop zone was found.', isTop: window === window.top };
+      } catch (error) {
+        return { ok: false, method: 'none', detail: error?.message || 'The page rejected the file selection.', isTop: window === window.top };
+      }
+    }
+  });
+  const frameResults = results.map(entry => entry.result).filter(Boolean);
+  return frameResults.find(result => result.ok) || frameResults.find(result => result.isTop) || frameResults[0] || { ok: false, method: 'none', detail: 'Naukri did not expose an upload frame.' };
+}
+
+async function inspectNaukriResume(tabId, config, expectedFileName) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    args: [config, expectedFileName],
+    func: (siteConfig, expected) => {
+      const visible = element => Boolean(element?.getClientRects().length);
+      const selectedText = (siteConfig.fileNameSelectors || []).flatMap(selector => {
+        try { return [...document.querySelectorAll(selector)].filter(visible).map(element => element.innerText || element.textContent || ''); }
+        catch { return []; }
+      }).join('\n');
+      const bodyText = document.body?.innerText || '';
+      const text = `${selectedText}\n${bodyText}`;
+      const hasName = text.toLowerCase().includes(expected.toLowerCase());
+      const successTexts = (siteConfig.successSelectors || []).flatMap(selector => {
+        try { return [...document.querySelectorAll(selector)].filter(visible).map(element => element.innerText || element.textContent || ''); }
+        catch { return []; }
+      }).join('\n');
+      const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toLowerCase();
+      const successSignal = /(?:uploaded\s+successfully|successfully\s+(?:uploaded|updated)|resume\s+(?:uploaded|updated)|upload\s+complete)/i.test(successTexts)
+        || /uploaded\s+on\s+today/i.test(text)
+        || text.toLowerCase().includes(`uploaded on ${today}`)
+        || /(?:resume\s+(?:uploaded|updated)\s+successfully|successfully\s+(?:uploaded|updated))/i.test(bodyText);
+      const fileNames = [...new Set((text.match(/[A-Z0-9][A-Z0-9 _().-]*\.(?:docx?|pdf)/gi) || []).map(value => value.trim()))].slice(0, 6);
+      const relevantLines = text.split(/\n+/).map(line => line.trim()).filter(line => /resume|upload|\.(?:docx?|pdf)/i.test(line)).slice(0, 8);
+      return {
+        ok: hasName && successSignal,
+        hasName,
+        successSignal,
+        fileNames,
+        foundText: relevantLines.join(' | ').slice(0, 500) || 'No resume filename or upload confirmation was visible.',
+        isTop: window === window.top
+      };
+    }
+  });
+  const frameResults = results.map(entry => entry.result).filter(Boolean);
+  return frameResults.find(result => result.ok) || frameResults.find(result => result.isTop) || frameResults[0] || {
+    ok: false, hasName: false, successSignal: false, fileNames: [], foundText: 'No readable Naukri page frame was found.'
+  };
+}
+
+async function verifyNaukriResume(tabId, config, expectedFileName, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let result = null;
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab?.url) throw new Error('Naukri profile tab is no longer available.');
+    if (profileIsLoggedOut(tab.url, config)) throw new Error('Log in to Naukri first.');
+    result = await inspectNaukriResume(tabId, config, expectedFileName).catch(error => ({
+      ok: false, hasName: false, successSignal: false, fileNames: [], foundText: error.message
+    }));
+    if (result.ok) return result;
+    await delay(500);
+  }
+  return result || { ok: false, hasName: false, successSignal: false, fileNames: [], foundText: 'No upload status was found.' };
+}
+
+async function highlightNaukriResumeButton(tabId, config) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      args: [config.buttonTextMatches],
+      func: pattern => {
+        const matcher = new RegExp(pattern || 'update\\s+resume', 'i');
+        const button = [...document.querySelectorAll('button,a,[role="button"]')]
+          .find(element => element.getClientRects().length && matcher.test((element.innerText || element.getAttribute('aria-label') || '').trim()));
+        if (!button) return { found: false };
+        button.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const oldOutline = button.style.getPropertyValue('outline');
+        const oldOffset = button.style.getPropertyValue('outline-offset');
+        button.style.setProperty('outline', '3px solid #1769e0', 'important');
+        button.style.setProperty('outline-offset', '3px', 'important');
+        let animation;
+        try {
+          animation = button.animate([
+            { boxShadow: '0 0 0 0 rgba(23,105,224,0.8)' },
+            { boxShadow: '0 0 0 8px rgba(23,105,224,0)' }
+          ], { duration: 900, iterations: 33 });
+        } catch { /* The solid outline still identifies the upload button. */ }
+        window.setTimeout(() => {
+          animation?.cancel();
+          if (oldOutline) button.style.setProperty('outline', oldOutline); else button.style.removeProperty('outline');
+          if (oldOffset) button.style.setProperty('outline-offset', oldOffset); else button.style.removeProperty('outline-offset');
+        }, 30_000);
+        return { found: true };
       }
     });
-    $('profileConfirmationStatus').textContent =
-      `Profile resume updated successfully. User-confirmed on ${formatDate(confirmedAt)}; MenixJobAI did not independently verify the upload.`;
-    setStatus('Profile resume update recorded as user-confirmed.', 'success');
-  } catch (error) {
-    setStatus(`Could not save confirmation: ${error.message}`, 'error');
+    return results.some(entry => entry.result?.found);
+  } catch { return false; }
+}
+
+async function logResumeUploadAttempt(method, verified, fileName, detail = '') {
+  const saved = await chrome.storage.local.get([RESUME_UPLOAD_HISTORY_KEY]);
+  const history = Array.isArray(saved[RESUME_UPLOAD_HISTORY_KEY]) ? saved[RESUME_UPLOAD_HISTORY_KEY] : [];
+  history.unshift({
+    jobUrl: activeResumeWorkflow?.jobUrl || $('jobUrl').value,
+    fileName,
+    method,
+    verified: Boolean(verified),
+    timestamp: new Date().toISOString(),
+    detail: String(detail || '').slice(0, 500)
+  });
+  await chrome.storage.local.set({ [RESUME_UPLOAD_HISTORY_KEY]: history.slice(0, 100) });
+}
+
+async function showManualUploadGuide(tabId, config, fileName, detail) {
+  await highlightNaukriResumeButton(tabId, config);
+  try { await navigator.clipboard.writeText(fileName); } catch { /* Manual guide still displays the exact filename. */ }
+  await logResumeUploadAttempt('manual', false, fileName, detail || 'Automatic upload could not be verified; manual upload required.');
+  await persistResumeWorkflow({
+    ...activeResumeWorkflow,
+    profileTabId: tabId,
+    pipelineStep: 3,
+    status: 'WAITING_FOR_PROFILE_UPLOAD',
+    lastDownloadFolder: activeResumeWorkflow?.lastDownloadFolder || 'MenixJobAI',
+    manualUploadNeeded: true,
+    uploadMethod: 'manual',
+    lastError: detail || `Expected: ${fileName}; found: ${fileName ? 'no verified upload confirmation' : 'no filename'}.`
+  });
+  setStatus('Manual upload needed.', 'info');
+}
+
+async function chooseResumeForThisJob() {
+  if (resumeUploadPipelinePromise) return resumeUploadPipelinePromise;
+  resumeUploadPipelinePromise = (async () => {
+    if (!activeResumeWorkflow) throw new Error('Open a job listing first.');
+    if (!lastAnalysis && activeResumeWorkflow.selectedType !== 'tailored') throw new Error('Wait for job analysis before choosing this resume.');
+    let workflow = activeResumeWorkflow;
+    const stored = workflow.selectedType === 'tailored' && workflow.temporaryResumeId
+      ? await readResumeFile(workflow.temporaryResumeId).catch(() => null) : null;
+    const expectedNamePattern = /^.+_\d{2}-\d{2}-\d{4}\.docx$/i;
+    if (!stored?.file || !expectedNamePattern.test(workflow.temporaryResumeName || '')) {
+      await generateTemporaryResumeForActiveJob();
+      workflow = activeResumeWorkflow;
+      if (workflow?.selectedType !== 'tailored' || !workflow.temporaryResumeId) throw new Error(workflow?.lastError || 'Could not generate the tailored resume.');
+    }
+    const file = await selectedWorkflowFile(workflow);
+    if (workflow.downloadedFileName !== file.name || !workflow.downloadedAt) {
+      await downloadActiveWorkflowResume();
+      workflow = activeResumeWorkflow;
+      if (!workflow?.downloadedAt) throw new Error(workflow?.lastError || 'Resume download did not start.');
+    }
+    await persistResumeWorkflow({ ...activeResumeWorkflow, pipelineStep: 1, lastError: '' });
+    await delay(RESUME_UPLOAD_DELAY_MS);
+    const site = await detectNaukriSite(activeResumeWorkflow);
+    const config = NAUKRI_CONFIG[site];
+    let jobTab = activeResumeWorkflow.jobTabId ? await chrome.tabs.get(activeResumeWorkflow.jobTabId).catch(() => null) : null;
+    if (!jobTab?.id) {
+      const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const candidate = activeTabs[0];
+      if (candidate?.id && candidate.url && !/mnjuser\/(?:profile|login)/i.test(candidate.url)) jobTab = candidate;
+    }
+    if (!activeResumeWorkflow.jobTabId && jobTab?.id) {
+      await persistResumeWorkflow({ ...activeResumeWorkflow, jobTabId: jobTab.id, naukriSite: site });
+    }
+    const profileTabId = await openNaukriProfile(site);
+    if (!profileTabId) throw new Error('Could not open the Naukri profile.');
+    await persistResumeWorkflow({ ...activeResumeWorkflow, profileTabId, naukriSite: site, pipelineStep: 2, lastError: '' });
+    await waitForTabComplete(profileTabId);
+    await delay(RESUME_UPLOAD_DELAY_MS);
+    const profileTab = await chrome.tabs.get(profileTabId);
+    if (profileIsLoggedOut(profileTab.url || '', config)) {
+      const message = 'Log in to Naukri first.';
+      await persistResumeWorkflow({ ...activeResumeWorkflow, profileTabId, naukriSite: site, lastError: message });
+      setStatus(message, 'error');
+      return;
+    }
+    await persistResumeWorkflow({ ...activeResumeWorkflow, pipelineStep: 3, status: 'UPLOADING_RESUME', manualUploadNeeded: false, lastError: '' });
+    const fileBase64 = await blobToBase64(file.blob);
+    const injection = await injectResumeIntoNaukri(profileTabId, config, file.name, fileBase64);
+    const verification = await verifyNaukriResume(profileTabId, config, file.name);
+    const method = injection.method;
+    const verified = method !== 'none' && verification.ok;
+    if (method !== 'none') await logResumeUploadAttempt(method, verified, file.name, `${injection.detail} ${verification.foundText}`);
+    if (verified) {
+      await persistResumeWorkflow({
+        ...activeResumeWorkflow,
+        status: 'TEMPORARY_RESUME_UPLOADED', pipelineStep: 4,
+        manualUploadNeeded: false, uploadMethod: method,
+        uploadedAt: new Date().toISOString(), lastError: ''
+      });
+      setStatus(`Resume updated on Naukri: ${file.name}`, 'success');
+      return;
+    }
+    const detail = `Expected: ${file.name}; found: ${verification.fileNames.join(', ') || verification.foundText}.`;
+    await showManualUploadGuide(profileTabId, config, file.name, detail);
+  })().catch(async error => {
+    if (activeResumeWorkflow) await persistResumeWorkflow({ ...activeResumeWorkflow, lastError: error.message });
+    setStatus(error.message, 'error');
+  }).finally(() => {
+    resumeUploadPipelinePromise = null;
+    renderResumeWorkflow();
+    updatePrimaryAction();
+  });
+  updatePrimaryAction();
+  return resumeUploadPipelinePromise;
+}
+
+async function getNaukriProfileContext() {
+  const site = activeResumeWorkflow?.naukriSite || await detectNaukriSite();
+  const config = NAUKRI_CONFIG[site] || NAUKRI_CONFIG.main;
+  let tab = activeResumeWorkflow?.profileTabId ? await chrome.tabs.get(activeResumeWorkflow.profileTabId).catch(() => null) : null;
+  const isProfilePage = candidate => {
+    if (!candidate?.url) return false;
+    try {
+      const current = new URL(candidate.url);
+      const expected = new URL(config.profileUrl);
+      return current.hostname === expected.hostname || current.hostname.endsWith(`.${expected.hostname}`)
+        ? current.pathname.toLowerCase().includes('profile')
+        : false;
+    } catch { return false; }
+  };
+  if (!tab?.id || !isProfilePage(tab)) {
+    const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const active = activeTabs[0];
+    if (active?.id && isProfilePage(active)) tab = active;
   }
-});
+  if (!tab?.id) {
+    const tabId = await openNaukriProfile(site);
+    if (!tabId) throw new Error('Open your Naukri profile first.');
+    await waitForTabComplete(tabId);
+    await delay(RESUME_UPLOAD_DELAY_MS);
+    tab = await chrome.tabs.get(tabId);
+  }
+  return { tab, site, config };
+}
+
+async function verifyActiveResumeUpload() {
+  if (resumeUploadPipelinePromise) return resumeUploadPipelinePromise;
+  resumeUploadPipelinePromise = (async () => {
+    const file = await selectedWorkflowFile();
+    const { tab, site, config } = await getNaukriProfileContext();
+    if (profileIsLoggedOut(tab.url || '', config)) throw new Error('Log in to Naukri first.');
+    const verification = await verifyNaukriResume(tab.id, config, file.name);
+    await logResumeUploadAttempt('manual', verification.ok, file.name, verification.foundText);
+    if (!verification.ok) {
+      const detail = `Expected: ${file.name}; found: ${verification.fileNames.join(', ') || verification.foundText}.`;
+      await persistResumeWorkflow({ ...activeResumeWorkflow, profileTabId: tab.id, naukriSite: site, manualUploadNeeded: true, status: 'WAITING_FOR_PROFILE_UPLOAD', pipelineStep: 3, lastError: detail });
+      setStatus(detail, 'error');
+      return;
+    }
+    await persistResumeWorkflow({
+      ...activeResumeWorkflow,
+      profileTabId: tab.id,
+      naukriSite: site,
+      status: 'TEMPORARY_RESUME_UPLOADED', pipelineStep: 4,
+      manualUploadNeeded: false, uploadMethod: 'manual', uploadedAt: new Date().toISOString(), lastError: ''
+    });
+    setStatus(`Resume updated on Naukri: ${file.name}`, 'success');
+  })().catch(error => setStatus(error.message, 'error')).finally(() => {
+    resumeUploadPipelinePromise = null;
+    renderResumeWorkflow();
+    updatePrimaryAction();
+  });
+  updatePrimaryAction();
+  return resumeUploadPipelinePromise;
+}
+
+async function requestMasterResumeRestore() {
+  if (!activeResumeWorkflow) return setStatus('No active job resume.', 'error');
+  if (!activeResumeWorkflow.restoreConfirmed) {
+    $('restoreConfirmDialog').showModal();
+    return;
+  }
+  await runMasterRestorePipeline();
+}
+
+async function runMasterRestorePipeline() {
+  if (resumeUploadPipelinePromise) return resumeUploadPipelinePromise;
+  resumeUploadPipelinePromise = downloadMasterForRestoration().finally(() => {
+    resumeUploadPipelinePromise = null;
+    renderResumeWorkflow();
+    updatePrimaryAction();
+  });
+  updatePrimaryAction();
+  return resumeUploadPipelinePromise;
+}
+
+async function confirmApplicationEnded(status) {
+  if (!activeResumeWorkflow || !confirm(status === 'APPLICATION_SUBMITTED' ? 'Confirm that you submitted this application? This will start the Master Resume restoration steps.' : 'Confirm that you cancelled this application? This will start the Master Resume restoration steps.')) return;
+  await persistResumeWorkflow({ ...activeResumeWorkflow, status, applicationStatus: status, applicationConfirmedAt: new Date().toISOString(), lastError: '' });
+  await persistResumeWorkflow({ ...activeResumeWorkflow, status: 'RESTORATION_PENDING', lastError: '' });
+  try { await openNaukriProfile(await detectNaukriSite()); setStatus('Application state saved. Upload the original Master Resume on Naukri, then verify its filename here.', 'info'); }
+  catch (error) { await persistResumeWorkflow({ ...activeResumeWorkflow, lastError: error.message }); }
+}
+
+async function downloadMasterForRestoration() {
+  try {
+    if (!activeResumeWorkflow) throw new Error('No active job workflow.');
+    const master = await readResumeFile('master');
+    if (!master?.file) throw new Error('Original Master Resume file is unavailable. Replace it in Apply before continuing.');
+    const site = await detectNaukriSite();
+    const profileTabId = await openNaukriProfile(site);
+    if (!profileTabId) throw new Error('Could not open the Naukri profile.');
+    await waitForTabComplete(profileTabId);
+    await delay(RESUME_UPLOAD_DELAY_MS);
+    const url = URL.createObjectURL(master.file);
+    const fileName = master.name || resumeFileName || 'MasterResume.docx';
+    let downloadId = null;
+    try {
+      downloadId = await chrome.downloads.download({ url, filename: `MenixJobAI/${safeFilenamePart(fileName)}`, saveAs: false, conflictAction: 'uniquify' });
+    } catch {
+      const link = document.createElement('a'); link.href = url; link.download = fileName; link.style.display = 'none';
+      document.body.append(link); link.click(); link.remove();
+    }
+    await persistResumeWorkflow({
+      ...activeResumeWorkflow, status: 'RESTORATION_PENDING', profileTabId, naukriSite: site,
+      lastDownloadedResumeName: fileName, downloadedFileName: fileName, lastDownloadId: downloadId,
+      lastDownloadFolder: downloadId ? 'MenixJobAI' : '', downloadedAt: new Date().toISOString(), lastError: ''
+    });
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    setStatus('Master resume downloaded. Upload it on Naukri and verify.', 'success');
+  } catch (error) { await persistResumeWorkflow({ ...activeResumeWorkflow, status: 'RESTORATION_FAILED', lastError: error.message }); setStatus(error.message, 'error'); }
+}
+
+async function verifyMasterRestored() {
+  if (resumeUploadPipelinePromise) return resumeUploadPipelinePromise;
+  resumeUploadPipelinePromise = (async () => {
+    try {
+      const master = await readResumeFile('master');
+      const expected = master?.name || resumeFileName;
+      if (!expected) throw new Error('The original Master Resume filename is unavailable.');
+      const { tab, site, config } = await getNaukriProfileContext();
+      if (profileIsLoggedOut(tab.url || '', config)) throw new Error('Log in to Naukri first.');
+      const verification = await verifyNaukriResume(tab.id, config, expected);
+      await logResumeUploadAttempt('manual', verification.ok, expected, verification.foundText);
+      if (!verification.ok) throw new Error(`Expected: ${expected}; found: ${verification.fileNames.join(', ') || verification.foundText}.`);
+      if (activeResumeWorkflow?.temporaryResumeId) await deleteResumeFile(activeResumeWorkflow.temporaryResumeId);
+      if (activeResumeWorkflow?.previewStorageId) await deleteResumeFile(activeResumeWorkflow.previewStorageId);
+      await persistResumeWorkflow({ ...activeResumeWorkflow, status: 'MASTER_RESUME_RESTORED', pipelineStep: 4, naukriSite: site, profileTabId: tab.id, restoredAt: new Date().toISOString(), temporaryResumeId: '', previewStorageId: '', lastError: '' });
+      setStatus(`Master resume restored: ${expected}`, 'success');
+    } catch (error) {
+      await persistResumeWorkflow({ ...activeResumeWorkflow, status: 'RESTORATION_FAILED', lastError: error.message });
+      setStatus(error.message, 'error');
+    }
+  })().finally(() => {
+    resumeUploadPipelinePromise = null;
+    renderResumeWorkflow();
+    updatePrimaryAction();
+  });
+  updatePrimaryAction();
+  return resumeUploadPipelinePromise;
+}
+
+async function retryActiveWorkflow() {
+  if (!activeResumeWorkflow) return;
+  const workflow = activeResumeWorkflow;
+  await persistResumeWorkflow({ ...workflow, lastError: '' });
+  if (['RESTORATION_PENDING', 'RESTORATION_FAILED', 'APPLICATION_CANCELLED', 'APPLICATION_SUBMITTED'].includes(workflow.status)) return runMasterRestorePipeline();
+  if (workflow.manualUploadNeeded || workflow.selectedType === 'tailored' || lastAnalysis) return chooseResumeForThisJob();
+}
 
 // ------------------------------
 // SAVE MASTER RESUME
@@ -1276,34 +1926,26 @@ $('saveResumeBtn').addEventListener('click', async () => {
   try {
     if (uploadedMaster) {
       await storeResumeFile('master', uploadedMaster, uploadedMaster.name);
-    } else {
-      await deleteResumeFile('master');
-      if (profileResume?.id === 'master') {
-        profileResume = null;
-        await chrome.storage.local.remove(['profileResume', 'profileResumeUpdate']);
-        $('profileUploadConfirmed').checked = false;
-        $('profileConfirmationStatus').textContent = 'Not confirmed';
-        updateProfileResumeCard();
-      }
     }
     await chrome.storage.local.set({
       resumeText: text,
-      resumeName: uploadedMaster?.name || 'Pasted master resume',
-      resumeSize: uploadedMaster?.size || 0,
+      resumeName: uploadedMaster?.name || resumeFileName || 'Pasted master resume',
+      resumeSize: uploadedMaster?.size || resumeFileSize || 0,
       masterResumeText: text,
-      masterResumeFileName: uploadedMaster?.name || 'Pasted master resume',
-      masterResumeSize: uploadedMaster?.size || 0
+      masterResumeFileName: uploadedMaster?.name || resumeFileName || 'Pasted master resume',
+      masterResumeSize: uploadedMaster?.size || resumeFileSize || 0
     });
     void lookupResumeProfile(text);
 
     resumeIsSaved = true;
     resumeTextEdited = false;
     if (!resumeFileMatchesText) $('resumeFile').value = '';
-    resumeFileSize = uploadedMaster?.size || 0;
-    resumeFileName = uploadedMaster?.name || 'Pasted master resume';
+    resumeFileSize = uploadedMaster?.size || resumeFileSize || 0;
+    resumeFileName = uploadedMaster?.name || resumeFileName || 'Pasted master resume';
     $('resumeStatus').textContent =
       'Saved in this browser profile.';
     updateResumeCard(resumeFileName);
+    renderResumeWorkflow();
 
     setStatus(
       'Master resume saved locally.',
@@ -1493,12 +2135,10 @@ async function analyzeCurrentMatch(automatic) {
       lastAnalysis = normalizeOverviewResult(data);
       aiRefinementFailed = false;
       renderAnalysis(lastAnalysis, 'ai');
-      await chrome.storage.local.set({ [cacheKey]: { overview: lastAnalysis, savedAt: Date.now() } });
-      try {
-        await saveAnalysisHistory({ overview: lastAnalysis, review: lastAnalysis, model: lastAnalysis.model, notice: '' });
-      } catch (error) {
-        console.warn('The analysis result could not be added to history:', error.message);
-      }
+      await chrome.storage.local.set({
+        [cacheKey]: { overview: lastAnalysis, savedAt: Date.now() },
+        activeJobAnalysis: lastAnalysis
+      });
       setStatus(lastAnalysis.cached ? 'Refined by AI · backend cache' : 'Refined by AI', 'success');
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -1530,7 +2170,11 @@ async function analyzeCurrentMatch(automatic) {
 function normalizeOverviewResult(data) {
   if (data?.overview) data = data.overview;
   if (data?.scores && typeof data.scores === 'object') {
-    const normalized = { ...data, scores: { ...data.scores } };
+    const normalized = {
+      ...data,
+      scores: Object.fromEntries(['skills', 'experience', 'keywords', 'education']
+        .map(key => [key, normalizeScore(data.scores[key])]))
+    };
     normalized.matchScore = matchScoreFromComponents(normalized.scores);
     normalized.matchLevel = normalized.matchScore === null ? 'Not scored' : normalized.matchScore >= 80 ? 'Strong Match' : normalized.matchScore >= 65 ? 'Good Match' : normalized.matchScore >= 40 ? 'Partial Match' : 'Low Match';
     return normalized;
@@ -1554,42 +2198,47 @@ function normalizeOverviewResult(data) {
 
 function renderAnalysis(data, source = 'ai') {
   const result = normalizeOverviewResult(data);
-  const score = result.matchScore;
+  const totalScore = result?.matchScore ?? null;
   const quick = source === 'quick';
   const overview = $('matchOverview');
   overview.replaceChildren();
 
   const header = document.createElement('div');
   header.className = 'match-heading';
-  const heading = document.createElement('h3'); heading.textContent = 'Match Overview';
+  const titleStack = document.createElement('div'); titleStack.className = 'match-title-stack';
+  const heading = document.createElement('h2'); heading.textContent = 'Match Analysis';
+  titleStack.append(heading);
   const state = document.createElement('span'); state.className = `overview-state ${quick ? 'quick' : 'refined'}`;
   state.textContent = quick ? 'Quick estimate' : 'Refined by AI';
-  header.append(heading, state);
+  header.append(titleStack, state);
   overview.append(header);
 
   const layout = document.createElement('div'); layout.className = 'overview-layout';
-  const ring = document.createElement('div'); ring.className = `score-ring-wrap ${quick ? 'quick-score' : ''}`;
-  ring.setAttribute('role', 'img'); ring.setAttribute('aria-label', score === null ? 'Match score unavailable' : `Match score ${score} percent`);
-  ring.innerHTML = '<svg class="score-ring-svg" viewBox="0 0 92 92" aria-hidden="true"><circle class="score-ring-track" cx="46" cy="46" r="41"/><circle class="score-ring-progress" cx="46" cy="46" r="41"/></svg>';
-  const ringValue = document.createElement('strong'); ringValue.className = 'score-ring-value'; ringValue.textContent = score === null ? 'N/A' : `${score}%`;
-  const circumference = 2 * Math.PI * 41;
+  const scoreColumn = document.createElement('section'); scoreColumn.className = 'overview-score-side';
+  const ring = document.createElement('div'); ring.className = `score-ring-wrap ${quick ? 'quick-score' : ''} ${scoreBand(totalScore)}`;
+  ring.setAttribute('role', 'img'); ring.setAttribute('aria-label', totalScore === null ? 'Match score unavailable' : `Match score ${totalScore} percent`);
+  ring.innerHTML = '<svg class="score-ring-svg" viewBox="0 0 76 76" aria-hidden="true"><defs><linearGradient id="matchScoreGradient" x1="100%" y1="100%" x2="0%" y2="0%"><stop offset="0%" stop-color="#f15a59"/><stop offset="35%" stop-color="#ff9a45"/><stop offset="65%" stop-color="#f4df62"/><stop offset="100%" stop-color="#9de7e8"/></linearGradient></defs><circle class="score-ring-track" cx="38" cy="38" r="33"/><circle class="score-ring-progress" cx="38" cy="38" r="33"/></svg>';
+  const ringValue = document.createElement('strong'); ringValue.className = 'score-ring-value'; ringValue.textContent = totalScore === null ? 'N/A' : `${totalScore}%`;
+  const circumference = 2 * Math.PI * 33;
   const ringProgress = ring.querySelector('.score-ring-progress');
   const startingScore = source === 'ai' ? quickOverview?.matchScore || 0 : 0;
-  if (ringProgress) ringProgress.style.strokeDashoffset = String(circumference * (1 - startingScore / 100));
-  window.requestAnimationFrame(() => { if (ringProgress) ringProgress.style.strokeDashoffset = String(circumference * (1 - (score ?? 0) / 100)); });
+  if (ringProgress) {
+    ringProgress.style.strokeDasharray = String(circumference);
+    ringProgress.style.strokeDashoffset = String(circumference * (1 - startingScore / 100));
+  }
+  window.requestAnimationFrame(() => { if (ringProgress) ringProgress.style.strokeDashoffset = String(circumference * (1 - ((totalScore ?? 0) / 100))); });
   ring.append(ringValue);
+  scoreColumn.append(ring);
 
-  const right = document.createElement('div'); right.className = 'overview-details';
-  const level = document.createElement('div'); level.className = `overview-level ${score !== null && score >= 65 ? 'good' : 'caution'}`; level.textContent = result.matchLevel || 'Not scored'; right.append(level);
+  const breakdown = document.createElement('section'); breakdown.className = 'overview-column breakdown-column';
+  const breakdownTitle = document.createElement('h3'); breakdownTitle.textContent = 'Match Breakdown'; breakdown.append(breakdownTitle);
   const rows = [
     ['Skills', result.scores?.skills, 'Explicit technical requirements supported by the resume.'],
-    ['Experience', result.scores?.experience, result.experience?.note || 'The job description does not provide enough experience information.'],
-    ['Keywords', result.scores?.keywords, 'Required job terms found in the resume.'],
-    ['Education', result.scores?.education, 'The job description does not specify an education requirement.']
+    ['Keywords', result.scores?.keywords, 'Required job terms found in the resume.']
   ];
   const metrics = document.createElement('div'); metrics.className = 'component-scores';
   rows.forEach(([label, value, reason]) => {
-    const row = document.createElement('div'); row.className = 'component-score'; row.title = value === null || value === undefined ? reason : `${label}: ${value}%`;
+    const row = document.createElement('div'); row.className = `component-score ${scoreBand(value)}`; row.title = value === null || value === undefined ? reason : `${label}: ${value}%`;
     const top = document.createElement('div'); top.className = 'component-score-label';
     const name = document.createElement('span'); name.textContent = label;
     const amount = document.createElement('strong'); amount.textContent = value === null || value === undefined ? 'N/A' : `${value}%`;
@@ -1600,59 +2249,134 @@ function renderAnalysis(data, source = 'ai') {
     else { track.setAttribute('role', 'progressbar'); track.setAttribute('aria-valuemin', '0'); track.setAttribute('aria-valuemax', '100'); track.setAttribute('aria-valuenow', String(value)); track.setAttribute('aria-label', `${label} ${value}%`); }
     track.append(bar); row.append(top, track); metrics.append(row);
   });
-  right.append(metrics);
-  layout.append(ring, right); overview.append(layout);
+  breakdown.append(metrics);
 
-  if (result.verdict) { const verdict = document.createElement('p'); verdict.className = 'overview-verdict'; verdict.textContent = result.verdict; overview.append(verdict); }
-  if (Array.isArray(result.reasons) && result.reasons.length) {
-    const reasons = document.createElement('ul'); reasons.className = 'overview-reasons';
-    result.reasons.slice(0, 3).forEach(item => { const li = document.createElement('li'); li.textContent = item; reasons.append(li); });
-    overview.append(reasons);
-  }
-  if (result.confidence) { const confidence = document.createElement('p'); confidence.className = 'confidence-note'; confidence.textContent = `Confidence: ${result.confidence}`; overview.append(confidence); }
+  layout.append(scoreColumn, breakdown);
+  overview.append(layout);
+
+  $('aiAssessment').textContent = result.verdict || 'No overall assessment was returned.';
+  renderImprovementAreas(result);
   renderFitChecks(result.fitChecks || []);
   renderSkillBreakdown(result);
   updateActionBar();
+  if (!quick && activeResumeWorkflow && !['MASTER_RESUME_SELECTED', 'TAILORED_RESUME_GENERATED', 'WAITING_FOR_PROFILE_UPLOAD', 'TEMPORARY_RESUME_UPLOADED', 'APPLICATION_IN_PROGRESS', 'APPLICATION_SUBMITTED', 'RESTORATION_PENDING', 'MASTER_RESUME_RESTORED', 'RESTORATION_FAILED', 'APPLICATION_CANCELLED'].includes(activeResumeWorkflow.status)) {
+    void persistResumeWorkflow({ ...activeResumeWorkflow, status: 'JD_ANALYZED', matchScore: result.matchScore, analysisAt: new Date().toISOString() });
+  } else {
+    renderResumeWorkflow();
+  }
+}
+
+function scoreBand(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'score-neutral';
+  const numericScore = Number(value);
+  if (numericScore < 40) return 'score-low';
+  if (numericScore < 65) return 'score-partial';
+  if (numericScore < 80) return 'score-good';
+  return 'score-strong';
 }
 
 function renderFitChecks(items) {
-  const card = $('fitChecksCard'); const list = $('fitChecksList');
+  const list = $('fitChecksList');
   list.replaceChildren();
-  if (!items.length) { card.classList.add('hidden'); return; }
-  card.classList.remove('hidden');
+  items = Array.isArray(items) ? items.filter(item => item && typeof item === 'object') : [];
+  if (!items.length) {
+    const empty = document.createElement('p'); empty.className = 'fit-check-empty';
+    empty.textContent = 'Fit checks will appear when the analysis includes eligibility details.';
+    list.append(empty);
+    return;
+  }
   items.forEach(item => {
-    const row = document.createElement('div'); row.className = 'fit-check-row';
-    row.setAttribute('role', 'group'); row.setAttribute('aria-label', `${item.type || 'Requirement'} ${item.status || 'warn'}`);
-    const dot = document.createElement('span'); dot.className = `fit-dot ${['ok', 'warn', 'gap'].includes(item.status) ? item.status : 'warn'}`; dot.setAttribute('aria-hidden', 'true');
+    const candidate = item.candidate || '';
+    const required = item.required || '';
+    const hasCandidate = hasFitValue(candidate);
+    const hasRequired = hasFitValue(required);
+    const rawStatus = ['ok', 'warn', 'gap'].includes(item.status) ? item.status : 'warn';
+    const status = !hasCandidate || !hasRequired ? 'unspecified' : rawStatus;
+    const row = document.createElement('article'); row.className = `fit-check-row ${status}`;
+    const icon = document.createElement('span'); icon.className = 'fit-status-icon'; icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = status === 'ok' ? '✓' : status === 'gap' ? '×' : status === 'warn' ? '!' : '–';
     const body = document.createElement('div'); body.className = 'fit-check-copy';
-    const title = document.createElement('strong'); title.textContent = item.type || 'Requirement';
-    const detail = document.createElement('span'); detail.textContent = [item.note, item.required && `Required: ${item.required}`, item.candidate && `Resume: ${item.candidate}`].filter(Boolean).join(' · ');
-    body.append(title, detail); row.append(dot, body); list.append(row);
+    const title = document.createElement('h3');
+    title.textContent = ({ location: 'Location', workMode: 'Work Mode', education: 'Education', experience: 'Experience', noticePeriod: 'Notice Period' })[item.type] || item.type || 'Eligibility';
+    const candidateLine = document.createElement('p');
+    const candidateLabel = document.createElement('strong'); candidateLabel.textContent = 'Resume: ';
+    candidateLine.append(candidateLabel, document.createTextNode(hasCandidate ? candidate : 'Not specified'));
+    const requiredLine = document.createElement('p');
+    const requiredLabel = document.createElement('strong'); requiredLabel.textContent = 'Job requirement: ';
+    requiredLine.append(requiredLabel, document.createTextNode(hasRequired ? required : 'Not specified'));
+    const note = document.createElement('p'); note.className = 'fit-result-note';
+    note.textContent = !hasCandidate || !hasRequired ? 'Insufficient information'
+      : item.note || ({ ok: 'Match', gap: 'Does not match', warn: 'Review required' })[rawStatus];
+    body.append(title, candidateLine, requiredLine, note); row.append(icon, body); list.append(row);
+  });
+}
+
+function hasFitValue(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return Boolean(normalized) && !['not specified', 'n/a', 'na', 'unknown', 'none', 'null'].includes(normalized);
+}
+
+function renderImprovementAreas(result) {
+  const list = $('areasToImproveList'); list.replaceChildren();
+  const missing = normalizeAnalysisItems(result.missingSkills);
+  const keywords = meaningfulMissingKeywords(result.missingKeywords, missing);
+  const items = [...new Set([...missing, ...keywords])].slice(0, 5);
+  if (!items.length) {
+    const empty = document.createElement('li'); empty.className = 'insight-empty';
+    empty.textContent = 'No specific improvement areas were returned.';
+    list.append(empty);
+    return;
+  }
+  items.forEach(value => {
+    const item = document.createElement('li');
+    item.textContent = `Consider highlighting evidence of ${value} if it reflects your experience.`;
+    list.append(item);
   });
 }
 
 function renderSkillBreakdown(result) {
   const matched = result.matchedSkills || {};
-  const tech = Array.isArray(matched.technical) ? matched.technical : [];
-  const soft = Array.isArray(matched.soft) ? matched.soft : [];
-  renderChipList($('matchedSkillsList'), tech, 'matched');
+  const tech = normalizeAnalysisItems(matched.technical);
+  const soft = normalizeAnalysisItems(matched.soft);
+  $('matchedSkillsHeading').textContent = `Matched Skills (${tech.length})`;
+  renderChipList($('matchedSkillsList'), tech, 'matched', 'No direct technical skills matched.');
   renderChipList($('softSkillsList'), soft, 'soft');
   $('softSkillSummary').textContent = `+${soft.length} soft skill${soft.length === 1 ? '' : 's'}`;
   $('softSkillsDetails').classList.toggle('hidden', !soft.length);
-  renderChipList($('equivalentSkillsList'), (result.equivalentSkills || []).map(item => `${item.required} → ${item.evidence}`), 'equivalent');
-  const missing = result.missingSkills || [];
-  $('missingSkillsHeading').textContent = `Missing technical skills (${missing.length})`;
-  renderChipList($('missingSkillsList'), missing, missing.length ? 'missing' : 'none', 'None found');
-  renderChipList($('missingKeywordsList'), result.missingKeywords || [], 'keyword', 'None found');
-  $('matchedSkillsHeading').textContent = `Matched technical skills (${tech.length})`;
+  const equivalents = (Array.isArray(result.equivalentSkills) ? result.equivalentSkills : [])
+    .filter(item => item && typeof item === 'object')
+    .map(item => [item.required, item.evidence].filter(Boolean).join(' — '))
+    .filter(Boolean);
+  $('equivalentSkillsGroup').classList.toggle('hidden', !equivalents.length);
+  renderChipList($('equivalentSkillsList'), equivalents, 'equivalent');
+  const missing = normalizeAnalysisItems(result.missingSkills);
+  $('missingSkillsHeading').textContent = `Missing Skills (${missing.length})`;
+  if (missing.length) renderChipList($('missingSkillsList'), missing, 'missing');
+  else renderChipList($('missingSkillsList'), [], 'empty', 'No important missing technical skills identified.');
+  const keywords = meaningfulMissingKeywords(result.missingKeywords, missing);
+  $('relatedKeywordsGroup').classList.toggle('hidden', !keywords.length);
+  $('relatedKeywordsHeading').textContent = `Related Keywords (${keywords.length})`;
+  renderChipList($('missingKeywordsList'), keywords, 'keyword');
 }
 
 function renderChipList(list, values, tone, emptyText = 'None found') {
   list.replaceChildren();
   if (!values.length) {
-    const item = document.createElement('li'); item.className = `skill-chip ${tone === 'none' ? 'none' : 'empty'}`; item.textContent = emptyText; list.append(item); return;
+    if (!emptyText) return;
+    const item = document.createElement('li'); item.className = `skill-empty ${tone === 'matched' ? 'matched-empty' : ''}`; item.textContent = emptyText; list.append(item); return;
   }
   values.forEach(value => { const item = document.createElement('li'); item.className = `skill-chip ${tone}`; item.textContent = value; list.append(item); });
+}
+
+function meaningfulMissingKeywords(values, missingSkills = []) {
+  const excluded = new Set(['leading', 'digital', 'agency', 'quality', 'lucrative', 'result', 'results', 'experience', 'required', 'preferred', 'candidate', 'candidates', 'years', 'year', 'ability', 'strong', 'excellent', 'including', 'working', 'knowledge', 'skills', 'responsibilities', 'qualification', 'qualifications']);
+  const normalize = value => String(value || '').toLowerCase().replace(/[^a-z0-9+#.]+/g, ' ').trim();
+  const includesPhrase = (text, phrase) => (` ${text} `).includes(` ${phrase} `);
+  const missing = missingSkills.map(normalize).filter(Boolean);
+  return [...new Set(normalizeAnalysisItems(values).filter(value => {
+    const keyword = normalize(value);
+    return keyword && !excluded.has(keyword) && !missing.some(skill => includesPhrase(skill, keyword) || includesPhrase(keyword, skill));
+  }))].slice(0, 8);
 }
 
 function normalizeScore(value) {
@@ -1661,27 +2385,29 @@ function normalizeScore(value) {
   return Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : null;
 }
 
-function formatScore(value) {
-  return value === null ? 'N/A' : `${value}%`;
-}
-
 function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') {
   const overview = $('matchOverview');
   overview.replaceChildren();
   const header = document.createElement('div');
   header.className = 'match-heading';
-  const heading = document.createElement('h3');
-  heading.textContent = 'Match Overview';
+  const titleStack = document.createElement('div'); titleStack.className = 'match-title-stack';
+  const heading = document.createElement('h2');
+  heading.textContent = 'Match Analysis';
+  titleStack.append(heading);
   const state = document.createElement('span'); state.className = 'overview-state quick';
   state.textContent = stateLabel;
-  header.append(heading, state);
-  const hint = document.createElement('p'); hint.className = 'overview-verdict';
-  hint.textContent = 'A quick estimate appears when a job and resume are available.';
-  overview.append(header, hint);
-  $('fitChecksCard').classList.add('hidden');
+  header.append(titleStack, state);
+  overview.append(header);
+  $('aiAssessment').textContent = '';
+  renderFitChecks([]);
+  renderImprovementAreas({ missingSkills: [], missingKeywords: [] });
   ['matchedSkillsList', 'softSkillsList', 'equivalentSkillsList', 'missingSkillsList', 'missingKeywordsList'].forEach(id => $(id).replaceChildren());
-  $('matchedSkillsHeading').textContent = 'Matched technical skills';
-  $('missingSkillsHeading').textContent = 'Missing technical skills';
+  $('matchedSkillsHeading').textContent = 'Matched Skills (0)';
+  $('missingSkillsHeading').textContent = 'Missing Skills (0)';
+  $('relatedKeywordsGroup').classList.add('hidden');
+  $('equivalentSkillsGroup').classList.add('hidden');
+  $('softSkillsDetails').classList.add('hidden');
+  $('suggestionsSummaryHint').textContent = 'Open to load';
 }
 
 function normalizeAnalysisItems(values) {
@@ -1695,249 +2421,13 @@ function normalizeAnalysisItems(values) {
   }).filter(Boolean);
 }
 
-function appendMatchMetric(parent, label, value) {
-  const row = document.createElement('div');
-  row.className = 'match-metric';
-  const name = document.createElement('span');
-  name.textContent = label;
-  const result = document.createElement('strong');
-  result.textContent = value;
-  row.append(name, result);
-  parent.append(row);
-}
-
-function populateSkillItems(list, values, tone) {
-  values.forEach(value => {
-    const item = document.createElement('li');
-    item.className = `skill-${tone}`;
-    const icon = document.createElement('span');
-    icon.className = 'skill-icon';
-    icon.textContent = tone === 'matched' ? '✓' : '○';
-    const label = document.createElement('span');
-    label.textContent = value;
-    item.append(icon, label);
-    list.append(item);
-  });
-}
-
-function appendEmptySkillState(list, message) {
-  const item = document.createElement('li');
-  item.className = 'skill-empty';
-  item.textContent = message;
-  list.append(item);
-}
-
-function appendReviewText(parent, title, value) {
-  if (typeof value !== 'string' || !value.trim()) return;
-  const section = document.createElement('section');
-  section.className = 'analysis-result';
-  const heading = document.createElement('h4');
-  heading.textContent = title;
-  const text = document.createElement('p');
-  text.textContent = value.trim();
-  section.append(heading, text);
-  parent.append(section);
-}
-
-function appendReviewList(parent, title, values, tone = '') {
-  if (!Array.isArray(values) || !values.length) return;
-  const section = document.createElement('section');
-  section.className = `analysis-result ${tone}`.trim();
-  const heading = document.createElement('h4');
-  heading.textContent = title;
-  const list = document.createElement('ul');
-  values.filter(value => typeof value === 'string' && value.trim()).forEach((value, index) => {
-    const item = document.createElement('li');
-    item.textContent = value.trim();
-    if (index >= 3) item.classList.add('suggestion-extra');
-    list.append(item);
-  });
-  if (!list.children.length) return;
-  section.append(heading, list);
-  if (list.children.length > 3) {
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'suggestion-toggle';
-    toggle.textContent = `Show ${list.children.length - 3} more`;
-    toggle.setAttribute('aria-expanded', 'false');
-    toggle.addEventListener('click', () => {
-      const expanded = toggle.getAttribute('aria-expanded') === 'true';
-      toggle.setAttribute('aria-expanded', String(!expanded));
-      section.classList.toggle('suggestions-expanded', !expanded);
-      toggle.textContent = expanded ? `Show ${list.children.length - 3} more` : 'Show less';
-    });
-    section.append(toggle);
-  }
-  parent.append(section);
-}
-
-async function saveAnalysisHistory(data) {
-  const stored = await chrome.storage.local.get(['analysisHistory', 'analyzedJobs']);
-  const entry = {
-    id: `${Date.now()}`,
-    title: cleanText($('jobTitleInput').value) || 'Untitled job',
-    company: cleanText($('companyInput').value),
-    location: cleanText($('locationInput').value),
-    url: cleanText($('jobUrl').value),
-    analyzedAt: new Date().toISOString(),
-    jobDescription: $('jobDescription').value.trim(),
-    jobMetadata: { ...jobMetadata },
-    analysis: data
-  };
-  const history = [entry, ...(stored.analyzedJobs || stored.analysisHistory || [])].slice(0, 20);
-  await chrome.storage.local.set({ analysisHistory: history, analyzedJobs: history });
-}
-
-function formatDate(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? 'Date unavailable'
-    : date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-}
-
-function appendEmptyState(parent, message) {
-  const empty = document.createElement('p');
-  empty.className = 'empty-state';
-  empty.textContent = message;
-  parent.append(empty);
-}
-
-async function loadHistory() {
-  const stored = await chrome.storage.local.get(['analysisHistory', 'analyzedJobs']);
-  const analysisHistory = stored.analyzedJobs || stored.analysisHistory || [];
-  const list = $('historyList');
-  list.replaceChildren();
-  if (!analysisHistory.length) {
-    appendEmptyState(list, 'Your completed resume reviews will appear here.');
-    return;
-  }
-
-  analysisHistory.forEach(entry => {
-    const card = document.createElement('article');
-    card.className = 'list-card';
-    const title = document.createElement('h2');
-    title.textContent = entry.title || 'Untitled job';
-    const meta = document.createElement('p');
-    meta.textContent = [
-      entry.company,
-      entry.location,
-      `Analyzed ${formatDate(entry.analyzedAt)}`,
-      entry.generatedResumeFilename ? `Resume: ${entry.generatedResumeFilename}` : ''
-    ].filter(Boolean).join(' · ');
-    const open = document.createElement('button');
-    open.className = 'btn secondary';
-    open.type = 'button';
-    open.textContent = 'View analysis';
-    open.addEventListener('click', () => {
-      $('jobTitleInput').value = entry.title || '';
-      $('companyInput').value = entry.company || '';
-      $('locationInput').value = entry.location || '';
-      $('jobUrl').value = entry.url || '';
-      $('jobDescription').value = entry.jobDescription || '';
-      jobMetadata = entry.jobMetadata || {
-        location: entry.location || '',
-        experience: extractExperienceTags(entry.jobDescription || '')[0] || ''
-      };
-      updateJobSummary();
-      lastAnalysis = entry.analysis;
-      renderAnalysis(entry.analysis);
-      switchView('applyView');
-      setStatus('Previous analysis reopened. Review it before downloading.', 'success');
-    });
-    card.append(title, meta, open);
-    list.append(card);
-  });
-}
-
-async function loadSavedJobs() {
-  const list = $('savedList');
-  list.replaceChildren();
-  const jobs = await api('/jobs');
-  if (!Array.isArray(jobs)) throw new Error('Backend returned an invalid saved-jobs list.');
-  const savedJobs = jobs.filter(job => String(job.status).toUpperCase() === 'SAVED');
-  if (!savedJobs.length) {
-    appendEmptyState(list, 'Jobs you save will appear here.');
-    return;
-  }
-
-  savedJobs.forEach(job => {
-    const card = document.createElement('article');
-    card.className = 'list-card';
-    const title = document.createElement('h2');
-    title.textContent = job.title || 'Untitled job';
-    const meta = document.createElement('p');
-    meta.textContent = [job.company, job.location, `Saved ${formatDate(job.createdAt)}`].filter(Boolean).join(' · ');
-    const actions = document.createElement('div');
-    actions.className = 'job-actions';
-    const open = document.createElement('button');
-    open.className = 'btn secondary';
-    open.type = 'button';
-    open.textContent = 'Open job';
-    open.addEventListener('click', () => {
-      $('jobTitleInput').value = job.title || '';
-      $('companyInput').value = job.company || '';
-      $('locationInput').value = job.location || '';
-      $('jobUrl').value = job.originalUrl || job.applicationUrl || '';
-      $('jobDescription').value = job.description || '';
-      jobMetadata = {
-        location: job.location || '',
-        experience: extractExperienceTags(job.description || '')[0] || ''
-      };
-      invalidateAnalysis();
-      updateJobSummary();
-      switchView('applyView');
-      setStatus('Saved job opened. Review its details before analysis.', 'success');
-    });
-    const remove = document.createElement('button');
-    remove.className = 'btn text-button';
-    remove.type = 'button';
-    remove.textContent = 'Remove';
-    remove.addEventListener('click', async () => {
-      if (!confirm(`Remove "${job.title || 'this job'}" from saved jobs?`)) return;
-      try {
-        await api(`/jobs/${job.id}`, { method: 'DELETE' });
-        await loadSavedJobs();
-        setStatus('Saved job removed.', 'success');
-      } catch (error) {
-        setStatus(`Could not remove saved job: ${error.message}`, 'error');
-      }
-    });
-    actions.append(open, remove);
-    card.append(title, meta, actions);
-    list.append(card);
-  });
-}
-
 // ------------------------------
-// One-job resume pipeline. Uploading only populates Naukri's resume file input;
-// this extension never submits an application or presses an upload/save button.
-function setPipelineStep(step, state) {
-  const row = document.querySelector(`[data-pipeline-step="${step}"]`);
-  if (row) { row.dataset.state = state; row.setAttribute('aria-current', state === 'running' ? 'step' : 'false'); }
-  pipelineLastState = { step, state };
-  $('generateBtn').textContent = state === 'running' ? `Working… (${step}/5)` : state === 'done' && step === 5 ? 'Done. Download again' : `Working… (${step}/5)`;
-}
-
-function resetPipelineStepper() {
-  $('pipelineStepper').classList.remove('hidden');
-  document.querySelectorAll('[data-pipeline-step]').forEach(row => { delete row.dataset.state; row.removeAttribute('aria-current'); });
-}
-
-function delay(ms) { return new Promise(resolve => window.setTimeout(resolve, ms)); }
-
 function localPipelineFilename(fullName, masterText) {
   const source = fullName?.trim() || masterText.split(/\r?\n/).find(line => line.trim()) || 'Candidate';
   const firstPart = safeFilenamePart(source.split(/\s+/)[0]).replace(/_/g, '') || 'Candidate';
   const today = new Date();
   const date = [String(today.getDate()).padStart(2, '0'), String(today.getMonth() + 1).padStart(2, '0'), today.getFullYear()].join('-');
   return `${firstPart}_${date}.docx`;
-}
-
-async function downloadResumeBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  try {
-    return await chrome.downloads.download({ url, filename: `MenixJobAI/${filename}`, saveAs: false, conflictAction: 'uniquify' });
-  } finally { window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
 }
 
 async function generateResumeStep(job) {
@@ -1962,224 +2452,12 @@ async function generateResumeStep(job) {
   return { blob, filename: localPipelineFilename(fullName, masterText), formatNote: response.headers.get('X-Resume-Format-Note') || '' };
 }
 
-async function saveResumeStep(file, job) {
-  const generatedId = file.id || `generated-${Date.now()}`;
-  const downloadId = file.downloadId || await downloadResumeBlob(file.blob, file.filename);
-  const [downloadItem] = await chrome.downloads.search({ id: downloadId }).catch(() => []);
-  if (downloadItem?.filename) file.filename = downloadItem.filename.split(/[\\/]/).pop();
-  await storeResumeFile(generatedId, file.blob, file.filename);
-  generatedBlobUrl = URL.createObjectURL(file.blob);
-  generatedFilename = file.filename;
-  file.id = generatedId;
-  file.downloadId = downloadId;
-  const generatedAt = new Date().toISOString();
-  generatedResumes = [{ id: generatedId, filename: file.filename, title: job.title, company: job.company, url: job.url, generatedAt, downloadId }, ...generatedResumes.filter(entry => entry.id !== generatedId)].slice(0, 10);
-  await chrome.storage.local.set({ generatedResumes });
-  populateGeneratedResumePicker();
-  return { generatedAt, downloadId };
-}
-
-function isNaukriJob(url) {
-  try { const parsed = new URL(url); return /(^|\.)naukri\.com$/i.test(parsed.hostname) && !/\/mnjuser\/(profile|login)/i.test(parsed.pathname); } catch { return false; }
-}
-
-async function getOrOpenNaukriProfile() {
-  const matches = await chrome.tabs.query({ url: ['https://www.naukri.com/mnjuser/profile*', 'https://naukri.com/mnjuser/profile*'] });
-  const existing = matches.find(tab => tab.id);
-  if (existing) return { tabId: existing.id, opened: false };
-  const tab = await chrome.tabs.create({ url: 'https://www.naukri.com/mnjuser/profile', active: false });
-  if (!tab.id) throw new Error('Could not open the Naukri profile tab.');
-  try { await new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => { cleanup(); reject(new Error('Naukri profile did not finish loading in time.')); }, 25_000);
-    const listener = (tabId, info) => { if (tabId === tab.id && info.status === 'complete') { cleanup(); resolve(); } };
-    const cleanup = () => { clearTimeout(timer); chrome.tabs.onUpdated.removeListener(listener); };
-    chrome.tabs.onUpdated.addListener(listener);
-    chrome.tabs.get(tab.id).then(current => { if (current.status === 'complete') { cleanup(); resolve(); } }).catch(error => { cleanup(); reject(error); });
-  }); } catch (error) { await chrome.tabs.remove(tab.id).catch(() => {}); throw error; }
-  return { tabId: tab.id, opened: true };
-}
-
-async function uploadToNaukri(profile, file) {
-  const tab = await chrome.tabs.get(profile.tabId);
-  if (!tab.url || /naukri\.com\/(login|mnjuser\/login)/i.test(tab.url)) throw new Error('Log in to Naukri first');
-  if (!/(^|\.)naukri\.com$/i.test(new URL(tab.url).hostname)) throw new Error('Naukri profile tab is no longer available.');
-  const digest = await crypto.subtle.digest('SHA-256', await file.blob.arrayBuffer());
-  const hash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
-  const sessionState = chrome.storage.session ? await chrome.storage.session.get(['lastNaukriUploadedResumeHash']) : {};
-  lastUploadedResumeHash = sessionState.lastNaukriUploadedResumeHash || lastUploadedResumeHash;
-  if (lastUploadedResumeHash === hash) return { skippedDuplicate: true };
-  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file.blob); });
-  const result = await chrome.scripting.executeScript({ target: { tabId: profile.tabId }, args: [dataUrl, file.filename, NAUKRI_SELECTORS], func: async (base64, filename, selectors) => {
-    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-    const visible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
-    let input = null;
-    for (const selector of selectors.resumeInputs) { try { input = [...document.querySelectorAll(selector)].find(visible) || null; } catch {} if (input) break; }
-    if (!input) {
-      const resumeArea = [...document.querySelectorAll('section,article,[class*="resume" i],[id*="resume" i]')].find(el => visible(el) && /resume/i.test(el.innerText || ''));
-      input = resumeArea ? [...resumeArea.querySelectorAll('input[type="file"]')].find(visible) || resumeArea.querySelector('input[type="file"]') : null;
-    }
-    if (!input) return { ok: false, error: 'Resume upload input was not found. Open the Resume section on Naukri and try again.' };
-    const resumeArea = [...document.querySelectorAll('section,article,[class*="resume" i],[id*="resume" i]')].find(el => /resume/i.test(el.innerText || ''));
-    const oldResumeName = (resumeArea?.innerText || '').split('\n').map(line => line.trim()).find(line => /\.docx$|\.pdf$/i.test(line)) || '';
-    const binary = atob(base64); const bytes = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const file = new File([bytes], filename, { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-    const transfer = new DataTransfer(); transfer.items.add(file); input.files = transfer.files;
-    input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
-    const baselineText = (document.body?.innerText || '').toLowerCase();
-    const started = Date.now();
-    while (Date.now() - started < 15000) {
-      const text = (document.body?.innerText || '').toLowerCase();
-      if (text !== baselineText && selectors.successText.some(phrase => text.includes(phrase))) return { ok: true, previousResumeName: oldResumeName };
-      await sleep(300);
-    }
-    return { ok: false, error: 'Naukri did not confirm the resume update within 15 seconds. Check the profile and retry.' };
-  }});
-  const outcome = result?.[0]?.result;
-  if (!outcome?.ok) throw new Error(outcome?.error || 'Naukri upload could not be verified.');
-  lastUploadedResumeHash = hash;
-  if (chrome.storage.session) await chrome.storage.session.set({ lastNaukriUploadedResumeHash: hash });
-  return outcome;
-}
-
-async function confirmNaukriReplacement() {
-  const saved = await chrome.storage.local.get(['naukriUploadConfirmedOnce']);
-  if (saved.naukriUploadConfirmedOnce) return true;
-  const dialog = $('uploadConfirmDialog');
-  $('dontAskUploadAgain').checked = false;
-  dialog.showModal();
-  const confirmed = await new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true }));
-  if (confirmed && $('dontAskUploadAgain').checked) await chrome.storage.local.set({ naukriUploadConfirmedOnce: true });
-  return confirmed;
-}
-
-async function updatePipelineHistory(job, file, uploaded, failedStep = null) {
-  const stored = await chrome.storage.local.get(['resumePipelineHistory']);
-  const history = Array.isArray(stored.resumePipelineHistory) ? stored.resumePipelineHistory : [];
-  history.unshift({ jobUrl: job.url, filename: file?.filename || '', previousResumeName: file?.previousResumeName || '', uploaded: Boolean(uploaded), timestamp: new Date().toISOString(), failedStep });
-  await chrome.storage.local.set({ resumePipelineHistory: history.slice(0, 50) });
-}
-
-function watchForApplicationConfirmation(job) {
-  if (restoreMonitorTimer) window.clearInterval(restoreMonitorTimer);
-  restoreMonitorTimer = window.setInterval(async () => {
-    if (resumePipelineRunning) return;
-    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
-    const tab = tabs[0];
-    if (!tab?.id || !tab.url || !isNaukriJob(tab.url)) return;
-    const signals = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => {
-      const text = (document.body?.innerText || '').toLowerCase();
-      return ['application submitted successfully', 'successfully applied', 'application sent successfully', 'thank you for applying', 'your application has been submitted'].some(signal => text.includes(signal));
-    }}).catch(() => []);
-    if (!signals[0]?.result) return;
-    window.clearInterval(restoreMonitorTimer); restoreMonitorTimer = null;
-    const master = await readResumeFile('master');
-    if (!master?.file) return setStatus('Application confirmed. Master resume file is unavailable, so automatic restore could not run.', 'error');
-    setStatus('Naukri confirmed the application. Restoring your master resume…', 'success');
-    await runResumePipeline(job, 3, { id: 'master', filename: master.name || resumeFileName || 'MasterResume.docx', blob: master.file, restore: true });
-  }, 5000);
-}
-
-async function runResumePipeline(job, startStep = 1, existingFile = null) {
-  if (resumePipelineRunning) return setStatus('A resume update is already running.', 'error');
-  resumePipelineRunning = true;
-  let file = existingFile;
-  let profile = null;
-  let originalTabId = null;
-  let uploaded = Boolean(existingFile?.uploaded);
-  let currentStep = startStep;
-  let failure = null;
-  $('generateBtn').disabled = true;
-  $('fileResult').classList.add('hidden');
-  $('retryPipelineBtn').classList.add('hidden');
-  resetPipelineStepper();
-  try {
-    const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    originalTabId = active[0]?.id || null;
-    const autoUpload = !existingFile?.restore && $('autoUploadSetting').checked;
-    const uploadEligible = autoUpload && isNaukriJob(job.url);
-    if (startStep <= 1) {
-      currentStep = 1; setPipelineStep(1, 'running');
-      file = await generateResumeStep(job); setPipelineStep(1, 'done'); await delay(3000);
-    }
-    if (startStep <= 2) {
-      currentStep = 2; setPipelineStep(2, 'running');
-      const saved = await saveResumeStep(file, job); file.generatedAt = saved.generatedAt; setPipelineStep(2, 'done');
-      if ($('autoUploadSetting').checked && isNaukriJob(job.url)) await delay(3000);
-    }
-    if (existingFile?.restore) {
-      if (!await confirmNaukriReplacement()) throw new Error('Restore cancelled.');
-      if (startStep <= 3) { currentStep = 3; setPipelineStep(3, 'running'); profile = await getOrOpenNaukriProfile(); setPipelineStep(3, 'done'); await delay(3000); }
-      else profile = await getOrOpenNaukriProfile();
-      if (startStep <= 4) { currentStep = 4; setPipelineStep(4, 'running'); const result = await uploadToNaukri(profile, file); file.previousResumeName = result.previousResumeName || file.previousResumeName; uploaded = true; setPipelineStep(4, 'done'); await delay(3000); }
-      if (startStep <= 5) { currentStep = 5; setPipelineStep(5, 'running'); await finishReturnStep(profile, originalTabId); profile = null; setPipelineStep(5, 'done'); }
-    } else if (uploadEligible) {
-      if (!await confirmNaukriReplacement()) throw new Error('Upload cancelled. The tailored resume is saved in Downloads/MenixJobAI.');
-      if (startStep <= 3) { currentStep = 3; setPipelineStep(3, 'running'); profile = await getOrOpenNaukriProfile(); setPipelineStep(3, 'done'); await delay(3000); }
-      else profile = await getOrOpenNaukriProfile();
-      if (startStep <= 4) { currentStep = 4; setPipelineStep(4, 'running'); const result = await uploadToNaukri(profile, file); file.previousResumeName = result.previousResumeName || file.previousResumeName; uploaded = true; setPipelineStep(4, 'done'); await delay(3000); }
-      if (startStep <= 5) { currentStep = 5; setPipelineStep(5, 'running'); await finishReturnStep(profile, originalTabId); profile = null; setPipelineStep(5, 'done'); }
-    } else {
-      [3,4,5].forEach(step => setPipelineStep(step, 'pending'));
-      $('fileResultText').textContent = $('autoUploadSetting').checked ? 'Saved to Downloads/MenixJobAI. Auto-upload is available on a Naukri job page.' : 'Saved to Downloads/MenixJobAI. Auto-upload is off.';
-    }
-    await updatePipelineHistory(job, file, uploaded);
-    $('fileResult').classList.remove('hidden');
-    $('openJobBtn').classList.toggle('hidden', !/^https?:\/\//i.test(job.url));
-    $('restoreMasterBtn').classList.toggle('hidden', !uploaded || !await readResumeFile('master'));
-    $('retryPipelineBtn').classList.add('hidden');
-    const formatNote = file?.formatNote ? ` ${file.formatNote}` : '';
-    $('fileResultText').textContent = uploaded ? `✓ ${file.filename} · Saved to Downloads/MenixJobAI · Uploaded to Naukri profile. Resume updated. Review it, then click Apply.${formatNote}` : `${$('fileResultText').textContent || `✓ ${file?.filename} · Saved to Downloads/MenixJobAI.`}${formatNote}`;
-    setStatus(uploaded ? 'Resume updated. Review it, then click Apply.' : 'Tailored resume saved. Review it before applying.', 'success');
-    if (uploaded && $('restoreMasterSetting').checked) watchForApplicationConfirmation(job);
-  } catch (error) {
-    failure = error;
-    if (file && currentStep >= 5) { file.uploaded = true; uploaded = true; }
-    const cancelled = /cancelled/i.test(error.message);
-    if (!cancelled && currentStep >= 1 && currentStep <= 5) setPipelineStep(currentStep, 'failed');
-    await updatePipelineHistory(job, file, uploaded, cancelled ? null : currentStep).catch(() => {});
-    $('fileResult').classList.remove('hidden');
-    $('fileResultText').textContent = cancelled ? `Upload cancelled. ${file ? `${file.filename} is saved to Downloads/MenixJobAI. ` : ''}Your Naukri profile was not changed.` : `${currentStep === 3 ? 'Open Naukri profile' : currentStep === 4 ? 'Upload resume' : currentStep === 5 ? 'Return to job' : currentStep === 2 ? 'Save resume' : 'Generate resume'} failed: ${error.message}. ${file ? `Your file is saved in Downloads/MenixJobAI (${file.filename}). ` : ''}${error.message.includes('Log in to Naukri first') ? 'Log in to Naukri first, then retry.' : 'You can upload it manually from Downloads/MenixJobAI.'}`;
-    $('retryPipelineBtn').classList.toggle('hidden', cancelled || !file || currentStep < 3 || currentStep > 5);
-    pipelineRetryContext = cancelled ? null : { job, startStep: currentStep, file };
-    setStatus(cancelled ? 'Upload cancelled. Your Naukri profile was not changed.' : error.message, cancelled ? 'success' : 'error');
-  } finally {
-    if (profile?.opened && profile.tabId) await chrome.tabs.remove(profile.tabId).catch(() => {});
-    if (originalTabId) await chrome.tabs.update(originalTabId, { active: true }).catch(() => {});
-    resumePipelineRunning = false;
-    $('generateBtn').disabled = false;
-    if (failure && !/cancelled/i.test(failure.message)) $('generateBtn').textContent = `Retry step ${currentStep}`;
-    else if (pipelineLastState?.step === 5) $('generateBtn').textContent = 'Done. Download again';
-    updatePrimaryAction();
-  }
-}
-
-async function finishReturnStep(profile, originalTabId) {
-  if (profile?.opened) await chrome.tabs.remove(profile.tabId);
-  if (originalTabId) {
-    await chrome.tabs.update(originalTabId, { active: true });
-    await chrome.scripting.executeScript({ target: { tabId: originalTabId }, func: () => {
-      const old = document.getElementById('__menix_resume_updated_notice'); old?.remove();
-      const note = document.createElement('div'); note.id = '__menix_resume_updated_notice'; note.textContent = 'Resume updated. Review it, then click Apply.';
-      note.style.cssText = 'position:fixed;right:400px;top:16px;z-index:2147483646;padding:12px 16px;border-radius:10px;background:#123b27;color:#c5f7d5;font:600 14px system-ui;box-shadow:0 4px 18px #0005';
-      document.documentElement.append(note); setTimeout(() => note.remove(), 10000);
-    }}).catch(() => {});
-  }
-}
-
 $('generateBtn').addEventListener('click', async () => {
   if (!lastAnalysis) { await analyzeCurrentMatch(false); return; }
-  if (resumePipelineRunning) return;
-  const job = currentJobPayload();
-  if (generatedBlobUrl && generatedFilename) {
-    try { await downloadResumeBlob(await (await fetch(generatedBlobUrl)).blob(), generatedFilename); setStatus(`Downloading ${generatedFilename}.`, 'success'); }
-    catch (error) { setStatus(`Could not download the tailored resume: ${error.message}`, 'error'); }
-    return;
-  }
-  if (!$('resumeText').value.trim()) return setStatus('Add your master resume before generating a tailored resume.', 'error');
-  if (!$('jobDescription').value.trim()) return setStatus('Add the job description before generating a tailored resume.', 'error');
-  await runResumePipeline(job);
+  renderResumeWorkflow();
+  $('applyResumePreview').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  await chooseResumeForThisJob();
 });
-
 function scheduleActiveJobCapture(tabId, delay = 250) {
   if (captureDebounceTimer) window.clearTimeout(captureDebounceTimer);
   captureDebounceTimer = window.setTimeout(() => {

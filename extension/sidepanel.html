@@ -11,30 +11,17 @@
     <header class="topbar">
       <div class="brand-mark"><img src="icons/icon48.png" alt="" /></div>
       <div class="brand"><strong>MenixJobAI</strong></div>
-      <button id="profileShortcut" class="icon-btn profile-shortcut" title="Profile resume" aria-label="Profile resume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.75h8l4 4v12.5H6z"/><path d="M14 3.75v4h4M9 12h6M9 15h4"/><circle cx="16.5" cy="17" r="2.5"/><path d="M13 20c.6-1.1 1.7-1.7 3.5-1.7s2.9.6 3.5 1.7"/></svg></button>
       <button id="settingsToggle" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
       <button id="closeEmbeddedPanel" class="icon-btn embedded-close hidden" type="button" title="Close panel" aria-label="Close MenixJobAI">×</button>
     </header>
-
-    <nav class="tabs" aria-label="Main navigation">
-      <button class="tab active" id="applyTab" data-view="applyView">Apply</button>
-      <button class="tab" id="historyTab" data-view="historyView">History</button>
-      <button class="tab" id="savedTab" data-view="savedView">Saved</button>
-    </nav>
 
     <section id="settings" class="settings hidden">
       <div class="section-heading"><h2>Settings</h2><span class="step">MENIXJOBAI</span></div>
       <label for="apiBase">Backend API URL<input id="apiBase" value="https://menixjobai-api.onrender.com/api" /></label>
       <label for="fullNameInput">Your name<input id="fullNameInput" autocomplete="name" placeholder="Used on generated resumes" /></label>
-      <label class="pipeline-setting"><input id="autoUploadSetting" type="checkbox" checked /> Auto-upload to Naukri profile after generating</label>
-      <label class="pipeline-setting"><input id="restoreMasterSetting" type="checkbox" /> Restore my master resume on Naukri after applying</label>
-      <p class="hint">Auto-restore watches for Naukri’s application confirmation while this panel is open.</p>
-      <p>Keep your Gemini key on the backend. Never put API keys in this extension.</p>
       <div class="job-actions">
         <button id="saveSettings" class="btn secondary">Save settings</button>
-        <button id="clearResumeBtn" class="btn secondary">Clear saved resume</button>
       </div>
-      <p class="hint">Resume text is stored in this browser only · Version 1.0.0</p>
     </section>
 
     <div id="applyView" class="view">
@@ -45,7 +32,7 @@
           <div class="job-title-content">
             <h1 id="jobTitle">Open a job listing</h1>
             <p id="jobMeta" class="muted">
-              <span id="jobCompanyName">Job details will appear here</span>
+              <span id="jobCompanyName"></span>
               <span id="jobRating" class="job-rating hidden"></span>
             </p>
           </div>
@@ -66,41 +53,57 @@
 
       <section id="analysisSection" class="section analysis-section">
         <div id="matchOverview" class="match-overview"></div>
-        <section id="fitChecksCard" class="fit-checks-card hidden" aria-labelledby="fitChecksHeading">
-          <h3 id="fitChecksHeading">Fit checks</h3>
-          <div id="fitChecksList" class="fit-checks-list"></div>
-        </section>
-        <details id="skillsAnalysis" class="skills-analysis" open>
-          <summary><span>Skills</span><span class="skills-toggle">⌃</span></summary>
-          <div class="skills-columns">
-            <section class="skill-group">
-              <h4 id="matchedSkillsHeading">Matched technical skills</h4>
-              <ul id="matchedSkillsList"></ul>
-              <details id="softSkillsDetails" class="soft-skills-details hidden">
-                <summary id="softSkillSummary">+0 soft skills</summary>
-                <ul id="softSkillsList"></ul>
-              </details>
-            </section>
-            <section class="skill-group">
-              <h4>Equivalent qualifications</h4>
-              <ul id="equivalentSkillsList"></ul>
-              <h4 id="missingSkillsHeading">Missing technical skills</h4>
-              <ul id="missingSkillsList"></ul>
-              <h4>Missing keywords</h4>
-              <ul id="missingKeywordsList"></ul>
-            </section>
+        <div class="analysis-tabs">
+          <div class="analysis-tablist" role="tablist" aria-label="Match analysis details">
+            <button id="skillsTab" class="analysis-tab active" type="button" role="tab" aria-selected="true" aria-controls="skillsTabPanel">Skills</button>
+            <button id="fitChecksTab" class="analysis-tab" type="button" role="tab" aria-selected="false" aria-controls="fitChecksTabPanel" tabindex="-1">Fit Checks</button>
+            <button id="aiInsightsTab" class="analysis-tab" type="button" role="tab" aria-selected="false" aria-controls="aiInsightsTabPanel" tabindex="-1">AI Insights</button>
           </div>
-        </details>
-        <details id="aiSuggestionsDetails" class="ai-suggestions">
-          <summary><span>AI Suggestions</span><span id="suggestionsSummaryHint" class="suggestions-summary-hint">Open to load</span></summary>
-          <div id="analysis" class="analysis"></div>
-        </details>
-        <div id="fileResult" class="file-result hidden">
-          <div id="fileResultText"></div>
-          <button id="openJobBtn" class="btn secondary full hidden" type="button">Open Job Application</button>
-          <button id="restoreMasterBtn" class="btn secondary full hidden" type="button">Restore master resume</button>
-          <button id="retryPipelineBtn" class="btn secondary full hidden" type="button">Retry from this step</button>
+          <section id="skillsTabPanel" class="analysis-tab-panel" role="tabpanel" aria-labelledby="skillsTab" tabindex="0">
+            <div class="skills-columns">
+              <section class="skills-card skill-results-card">
+                <div class="skill-group-block">
+                  <h3 id="matchedSkillsHeading">Matched Skills (0)</h3>
+                  <ul id="matchedSkillsList" class="skill-chip-list"></ul>
+                  <details id="softSkillsDetails" class="soft-skills-details hidden">
+                    <summary id="softSkillSummary">+0 soft skills</summary>
+                    <ul id="softSkillsList" class="skill-chip-list"></ul>
+                  </details>
+                  <div id="equivalentSkillsGroup" class="skills-subgroup hidden">
+                    <h4>Equivalent Skills</h4>
+                    <ul id="equivalentSkillsList" class="skill-chip-list"></ul>
+                  </div>
+                </div>
+                <div class="skill-group-block missing-skill-group">
+                  <h3 id="missingSkillsHeading">Missing Skills (0)</h3>
+                  <ul id="missingSkillsList" class="skill-chip-list"></ul>
+                  <div id="relatedKeywordsGroup" class="skills-subgroup hidden">
+                    <h4 id="relatedKeywordsHeading">Related Keywords (0)</h4>
+                    <ul id="missingKeywordsList" class="skill-chip-list"></ul>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </section>
+          <section id="fitChecksTabPanel" class="analysis-tab-panel hidden" role="tabpanel" aria-labelledby="fitChecksTab" tabindex="0">
+            <div id="fitChecksList" class="fit-checks-list"></div>
+          </section>
+          <section id="aiInsightsTabPanel" class="analysis-tab-panel hidden" role="tabpanel" aria-labelledby="aiInsightsTab" tabindex="0">
+            <section class="insights-card">
+              <h3>Overall Assessment</h3>
+              <p id="aiAssessment" class="insight-assessment"></p>
+            </section>
+            <section class="insights-card">
+              <h3>Areas to Improve</h3>
+              <ul id="areasToImproveList" class="improvement-list"></ul>
+            </section>
+            <details id="aiSuggestionsDetails" class="ai-suggestions" open>
+              <summary><span>Resume Improvement Suggestions</span><span id="suggestionsSummaryHint" class="suggestions-summary-hint">Open to load</span></summary>
+              <div id="analysis" class="analysis"></div>
+            </details>
+          </section>
         </div>
+        <button id="openJobBtn" class="btn secondary full hidden" type="button">Open Job Application</button>
       </section>
 
       <section class="section resume-section">
@@ -117,76 +120,45 @@
           <button id="viewResumeBtn" class="btn secondary" type="button">◉ &nbsp;View</button>
           <label class="btn secondary replace-resume" for="resumeFile">↻ &nbsp;Replace</label>
         </div>
+        <div class="master-profile-action">
+          <button id="openNaukriProfileBtn" class="btn secondary full" type="button">Naukri Profile</button>
+        </div>
         <details id="resumeDetails" class="resume-details">
+          <summary class="sr-only">Master resume details</summary>
           <label class="sr-only" for="resumeText">Resume text</label>
           <textarea id="resumeText" rows="8" placeholder="Resume text will appear here after upload."></textarea>
           <button id="saveResumeBtn" class="btn secondary full" type="button">Save changes</button>
         </details>
       </section>
 
+      <section id="tailoredResumeSection" class="section tailored-resume-section hidden" aria-label="Tailored Resume">
+        <div class="card-heading"><h2>Tailored Resume</h2></div>
+        <section id="applyResumePreview" class="tailored-workflow" aria-label="Tailored resume for this job">
+          <p id="activeWorkflowStatus" class="sr-only" role="status"></p>
+          <ol id="manualUploadGuide" class="manual-upload-guide hidden"></ol>
+          <p id="workflowError" class="workflow-error hidden" role="alert"></p>
+          <section id="activeResumePreview" class="workflow-resume-preview" aria-label="Selected resume preview">
+            <div class="resume-row tailored-file-row">
+              <div id="tailoredResumeIcon" class="resume-icon doc-file-icon" aria-hidden="true"></div>
+              <div class="resume-info"><strong id="applyResumePreviewFilename"></strong><span id="tailoredResumeStatus">Saved in this browser</span></div>
+            </div>
+            <div class="workflow-preview-actions">
+              <button id="viewTailoredResumeBtn" class="btn secondary" type="button">View</button>
+              <button id="downloadActiveResumeBtn" class="btn secondary" type="button">Download</button>
+              <button id="returnToJobBtn" class="btn secondary hidden" type="button">Back to job</button>
+            </div>
+            <div id="applyResumePreviewContent" class="workflow-preview-content hidden" aria-label="Resume document preview"></div>
+          </section>
+        </section>
+      </section>
+
     </div>
 
-    <section id="profileView" class="view hidden">
-      <div class="page-heading"><div class="eyebrow">PROFILE RESUME</div><h1>Naukri profile</h1></div>
-      <section class="section profile-card">
-        <h2>Resume to upload</h2>
-        <p id="profileResumeName" class="profile-file-name">No profile resume selected</p>
-        <p id="profileResumeStatus" class="muted">Choose a PDF or DOCX. Your master resume stays separate.</p>
-        <div class="job-actions">
-          <button id="chooseProfileResumeBtn" class="btn secondary" type="button">Select / Replace</button>
-          <input id="profileResumeFile" class="file-input" type="file" accept=".pdf,.docx" />
-          <button id="useMasterResumeBtn" class="btn secondary" type="button">Use master</button>
-        </div>
-        <button id="downloadProfileResumeBtn" class="btn text-button full hidden" type="button">Download selected file for upload</button>
-        <label for="generatedResumeSelect">Previously generated resume</label>
-        <div class="job-actions generated-picker">
-          <select id="generatedResumeSelect"><option value="">Choose generated resume</option></select>
-          <button id="useGeneratedResumeBtn" class="btn secondary" type="button">Use</button>
-        </div>
-        <details id="profilePreview" class="resume-details profile-preview hidden">
-          <summary>Preview selected resume</summary>
-          <p id="profilePreviewMeta" class="muted"></p>
-          <p id="profilePreviewText" class="preview-text"></p>
-          <button id="cancelProfileResumeBtn" class="btn text-button" type="button">Cancel selection</button>
-        </details>
-      </section>
-      <section class="section profile-card">
-        <h2>Upload to Naukri</h2>
-        <p class="muted">MenixJobAI will not replace your profile resume automatically. Upload the selected file on Naukri and save the profile yourself.</p>
-        <button id="openNaukriProfileBtn" class="btn primary full" type="button">Open Naukri Profile</button>
-        <ol class="upload-steps">
-          <li>On Naukri, open your profile and find the Resume section.</li>
-          <li>Choose the selected file from your computer and save the change.</li>
-          <li>Return here and confirm only after the upload is complete.</li>
-        </ol>
-        <label class="confirm-row"><input id="profileUploadConfirmed" type="checkbox" /> I uploaded this resume and saved my Naukri profile.</label>
-        <button id="confirmProfileUploadBtn" class="btn accent full" type="button" disabled>Confirm profile resume updated</button>
-        <p id="profileConfirmationStatus" class="muted" role="status">Not confirmed</p>
-      </section>
-    </section>
-
-    <section id="historyView" class="view hidden">
-      <div class="page-heading"><div class="eyebrow">YOUR RECENT REVIEWS</div><h1>History</h1></div>
-      <div id="historyList" class="list-view"></div>
-    </section>
-
-    <section id="savedView" class="view hidden">
-      <div class="page-heading"><div class="eyebrow">BOOKMARKED OPPORTUNITIES</div><h1>Saved jobs</h1></div>
-      <div id="savedList" class="list-view"></div>
-    </section>
-
-    <div id="status" class="status" role="status">Ready</div>
+    <div id="status" class="status sr-only" role="status">Ready</div>
     <div id="actionBar" class="action-bar hidden">
       <button id="generateBtn" class="btn generate-btn" disabled>✦ &nbsp;Analyze &amp; Tailor Resume</button>
-      <ol id="pipelineStepper" class="pipeline-stepper hidden" aria-live="polite" aria-label="Resume generation progress">
-        <li data-pipeline-step="1">Generate tailored resume</li><li data-pipeline-step="2">Save to Downloads</li>
-        <li data-pipeline-step="3">Open Naukri profile</li><li data-pipeline-step="4">Upload resume</li><li data-pipeline-step="5">Return to job</li>
-      </ol>
     </div>
   </main>
-  <dialog id="uploadConfirmDialog" class="upload-confirm-dialog">
-    <form method="dialog"><h2>Replace your Naukri resume?</h2><p>This will replace the resume on your Naukri profile with the tailored version. Recruiters will see it until you restore your master resume.</p><label class="pipeline-setting"><input id="dontAskUploadAgain" type="checkbox" /> Don’t ask again</label><div class="job-actions"><button id="cancelUploadConfirm" class="btn secondary" value="cancel">Cancel</button><button id="acceptUploadConfirm" class="btn primary" value="confirm">Continue</button></div></form>
-  </dialog>
   <script src="sidepanel.js"></script>
 </body>
 </html>
