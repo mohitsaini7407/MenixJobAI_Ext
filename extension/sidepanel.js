@@ -886,6 +886,142 @@ function extractVerifiedResumeAnswer(fieldKey, resumeText) {
   return '';
 }
 
+async function resolveApplicationQuestionAnswer(questionText, options = []) {
+  const normQ = normalizeAnswerKey(questionText);
+  const resumeText = $('resumeText')?.value?.trim() || '';
+  const confirmed = await readConfirmedApplicationAnswers();
+  const reqFacts = candidateRequirementConfirmations || {};
+
+  // 1. Exact normalized question from saved memory
+  if (confirmed[`question:${normQ}`]?.value) {
+    return { answer: confirmed[`question:${normQ}`].value, source: 'user_confirmed' };
+  }
+
+  // 2. Standard fieldKey mapping
+  const fieldKey = mapApplicationQuestionField(questionText);
+  if (fieldKey && confirmed[fieldKey]?.value) {
+    return { answer: confirmed[fieldKey].value, source: 'user_confirmed' };
+  }
+
+  // 3. Specific skill experience question (e.g. "How many years of experience do you have in Laravel?")
+  const skillMatch = questionText.match(/(?:years?(?:\s+of)?(?:\s+experience)?\s+(?:in|with|on)\s+|experience\s+(?:in|with|on)\s+|knowledge\s+of\s+|hands[- ]on\s+with\s+|worked\s+with\s+|proficiency\s+in\s+)([A-Za-z0-9#+.\s-]{2,30}?)(?:\?|\s+for|\s+at|\s+to|\s*$)/i);
+  if (skillMatch) {
+    const rawSkill = skillMatch[1].trim();
+    const skillNorm = normalizeAnswerKey(rawSkill);
+
+    // Check confirmed candidate facts
+    const fact = reqFacts[skillNorm];
+    if (fact) {
+      if (fact.status === 'no') return { answer: '0', source: 'candidate_confirmed_no' };
+      if (fact.status === 'basic') return { answer: '1', source: 'candidate_confirmed_basic' };
+      if (fact.status === 'practical') return { answer: '2', source: 'candidate_confirmed_practical' };
+    }
+
+    // Check if skill is mentioned anywhere in resume text
+    const escaped = rawSkill.replace(/[.+*?^${}()|[\]\\]/g, '\\$&');
+    const hasSkill = new RegExp(`\\b${escaped}\\b`, 'i').test(resumeText);
+
+    if (!hasSkill) {
+      // Skill NOT in resume -> 0 years / No
+      if (options.length && options.some(o => /^(?:no|0|0\s*years?|none)$/i.test(o.label || o.value))) {
+        const matching = options.find(o => /^(?:no|0|0\s*years?|none)$/i.test(o.label || o.value));
+        return { answer: matching.label || matching.value, source: 'resume_skill_missing' };
+      }
+      return { answer: '0', source: 'resume_skill_missing' };
+    } else {
+      // Skill IS in resume! Check for explicit years
+      const durationMatch = resumeText.match(new RegExp(`${escaped}[^\\n]{0,35}?\\b(\\d+(?:\\.\\d+)?)\\+?\\s*(?:years?|yrs?)\\b`, 'i'))
+        || resumeText.match(new RegExp(`\\b(\\d+(?:\\.\\d+)?)\\+?\\s*(?:years?|yrs?)[^\\n]{0,35}?${escaped}`, 'i'));
+      let years = durationMatch ? Math.round(Number(durationMatch[1])) : null;
+      if (!years || years <= 0) {
+        const totalExp = extractVerifiedResumeAnswer('totalExperience', resumeText);
+        const totalNum = parseInt(totalExp, 10);
+        years = Number.isFinite(totalNum) && totalNum > 0 ? Math.min(totalNum, 3) : 1;
+      }
+      if (/^(?:do you have|are you|have you)/i.test(questionText) || (options.length === 2 && options.some(o => /^yes$/i.test(o.label || o.value)))) {
+        return { answer: 'Yes', source: 'resume_skill_found' };
+      }
+      if (options.length) {
+        const numOpt = options.find(o => new RegExp(`^${years}(?:\\+?\\s*years?)?$`, 'i').test(o.label || o.value));
+        if (numOpt) return { answer: numOpt.label || numOpt.value, source: 'resume_skill_found' };
+      }
+      return { answer: String(years), source: 'resume_skill_found' };
+    }
+  }
+
+  // 4. Standard fields from resumeProfile & verified resume text
+  const resumeHash = resumeText ? await sha256Hex(cleanText(resumeText)) : '';
+  const profileKey = resumeHash ? `resumeProfile:${resumeHash}` : '';
+  const profileStorage = profileKey ? await chrome.storage.local.get([profileKey, 'fullName']) : await chrome.storage.local.get(['fullName']);
+  const resumeProfile = profileStorage[profileKey]?.profile || {};
+  const savedFullName = cleanText(profileStorage.fullName || $('fullNameInput')?.value);
+
+  if (fieldKey === 'totalExperience') {
+    const years = resumeProfile.yearsExperience !== null && resumeProfile.yearsExperience !== undefined && Number.isFinite(Number(resumeProfile.yearsExperience))
+      ? `${Number(resumeProfile.yearsExperience)}`
+      : parseInt(extractVerifiedResumeAnswer('totalExperience', resumeText) || '1', 10) || '1';
+    if (options.length) {
+      const matchOpt = options.find(o => new RegExp(`^${years}(?:\\+?\\s*years?)?$`, 'i').test(o.label || o.value));
+      if (matchOpt) return { answer: matchOpt.label || matchOpt.value, source: 'resume_profile' };
+    }
+    return { answer: String(years), source: 'resume_profile' };
+  }
+
+  if (fieldKey === 'availability') {
+    if (options.length) {
+      const pref = options.find(o => /15\s*days?|immediate|30\s*days?|1\s*month/i.test(o.label || o.value));
+      if (pref) return { answer: pref.label || pref.value, source: 'default_notice' };
+    }
+    return { answer: '15 Days', source: 'default_notice' };
+  }
+
+  if (fieldKey === 'currentSalary' || fieldKey === 'expectedSalary') {
+    return { answer: '0', source: 'default_salary' };
+  }
+
+  if (fieldKey === 'currentLocation') {
+    const loc = cleanText(resumeProfile.location) || extractVerifiedResumeAnswer('currentLocation', resumeText);
+    if (loc) return { answer: loc, source: 'resume_location' };
+  }
+
+  if (fieldKey === 'willingToRelocate') {
+    return { answer: 'Yes', source: 'default_relocate' };
+  }
+
+  if (fieldKey === 'qualification') {
+    const deg = cleanText(resumeProfile.degree) || extractVerifiedResumeAnswer('qualification', resumeText);
+    if (deg) return { answer: deg, source: 'resume_degree' };
+  }
+
+  if (fieldKey === 'fullName' && savedFullName) {
+    return { answer: savedFullName, source: 'resume_name' };
+  }
+
+  // 5. Backend AI draft fallback
+  if (resumeText) {
+    try {
+      const response = await api('/ai/application-answers', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resumeText,
+          jobDescription: $('jobDescription')?.value?.trim() || '',
+          resumeHash,
+          questions: [{ id: 'q-chat', question: questionText, options: options.map(o => o.label || o.value) }]
+        })
+      });
+      const draft = response?.answers?.[0];
+      if (draft?.answer) return { answer: draft.answer, source: 'ai_draft' };
+    } catch { /* best effort */ }
+  }
+
+  // 6. Generic yes/no or number fallback
+  if (/^(?:do you|are you|will you|can you|have you|is your)\b/i.test(questionText)) {
+    return { answer: 'Yes', source: 'generic_yes' };
+  }
+
+  return { answer: '0', source: 'default' };
+}
+
 async function readConfirmedApplicationAnswers() {
   const stored = await chrome.storage.local.get([CONFIRMED_ANSWER_PROFILE_KEY]);
   return stored[CONFIRMED_ANSWER_PROFILE_KEY] || {};
@@ -995,6 +1131,55 @@ async function findApplicationQuestions(tabId) {
     });
     const found = Array.isArray(result?.result) ? result.result : [];
     if (found.length) return found;
+
+    // Check for Naukri application chatbot if standard inputs weren't found
+    const [{ result: chatResult }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const visible = el => Boolean(el?.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const chatInput = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [contenteditable="true"][placeholder*="message" i]');
+        const chatContainer = chatInput
+          ? chatInput.closest('[class*="drawer" i], [class*="chat" i], [class*="modal" i], [class*="container" i], body')
+          : document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot-container" i], [class*="chat-container" i], [class*="apply-message" i], [data-testid*="chatbot" i]');
+
+        if (!chatContainer && !chatInput) return null;
+
+        const container = chatContainer || document.body;
+        // Find latest bot question
+        const botMsgs = [...container.querySelectorAll('[class*="bot-msg" i], [class*="bot_msg" i], [class*="bot-message" i], [class*="msg-text" i], [class*="message-text" i], [class*="bubble" i], [class*="bot" i], p, div')]
+          .filter(visible)
+          .filter(el => !el.closest('[class*="user" i], [class*="sent" i], [class*="right" i]'))
+          .map(el => (el.innerText || '').trim())
+          .filter(t => t.length > 4 && !/^(?:hi\b|hello\b|welcome\b|kindly answer the following)/i.test(t));
+
+        const activeQuestion = botMsgs[botMsgs.length - 1]
+          || [...container.querySelectorAll('p, div, span')].filter(visible).map(el => (el.innerText || '').trim()).filter(t => /\?/.test(t) || /\b(?:experience|years|notice|salary|ctc|location|laravel|react|python|vue|java)\b/i.test(t)).pop();
+
+        if (!activeQuestion) return null;
+
+        const chips = [...container.querySelectorAll('[class*="chip" i], [class*="pill" i], [class*="option" i], [class*="quick-reply" i], button')]
+          .filter(visible)
+          .filter(el => !el.disabled && !/^(?:close|back|cancel|help|send|submit)$/i.test((el.innerText || '').trim()))
+          .map(el => ({ label: el.innerText.trim(), value: el.innerText.trim() }));
+
+        const id = 'menix-naukri-chat-question';
+        if (chatInput) chatInput.dataset.menixAnswerId = id;
+
+        return [{
+          id,
+          question: activeQuestion,
+          kind: chips.length ? 'select' : 'text',
+          options: chips,
+          currentValue: chatInput ? chatInput.value : '',
+          currentLabel: '',
+          isNaukriChat: true
+        }];
+      }
+    }).catch(() => [{ result: null }]);
+
+    if (Array.isArray(chatResult) && chatResult.length) return chatResult;
+
     if (attempt < 5) await delay(400);
   }
   return [];
@@ -1530,7 +1715,19 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           } else if (first.isContentEditable) first.innerText = item.answer;
           else first.textContent = item.answer;
           first.dispatchEvent(new Event('input', { bubbles: true })); first.dispatchEvent(new Event('change', { bubbles: true }));
-          if (String(first.value || first.innerText || first.textContent || '').trim() === item.answer) { filled++; filledIds.push(item.id); } else skipped++;
+          if (String(first.value || first.innerText || first.textContent || '').trim() === item.answer) {
+            filled++; filledIds.push(item.id);
+            // If this is a chatbot input, also dispatch Enter / click send button
+            if (first.placeholder && /message|chat/i.test(first.placeholder)) {
+              const chatParent = first.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], body');
+              const sendBtn = chatParent ? chatParent.querySelector('button[class*="send" i], [class*="send" i], [aria-label*="send" i], button[type="submit"]') : null;
+              if (sendBtn && !sendBtn.disabled) sendBtn.click();
+              else {
+                first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                first.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+              }
+            }
+          } else skipped++;
         }
         return { filled, skipped, filledIds };
       }
@@ -2712,18 +2909,19 @@ async function returnToJobAndClickApply(profileTabId = activeResumeWorkflow?.pro
 }
 
 async function handleNaukriDirectApply(tabId) {
-  setStatus('Monitoring Naukri application submission...', 'info');
-  // Extended deadline: Naukri questionnaires can have multiple radio questions.
-  // Give 45 seconds total — the loop auto-fills each question and re-checks until success.
-  const deadline = Date.now() + 45_000;
+  setStatus('Monitoring Naukri application screener & questionnaire…', 'info');
+  const deadline = Date.now() + 60_000;
   let applicationConfirmed = false;
+  let lastProcessedQuestion = '';
+  let questionStuckCount = 0;
 
   while (Date.now() < deadline) {
-    await delay(800);
+    await delay(1000);
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (!tab?.url) break;
 
     try {
+      // 1. Inspect tab state
       const [{ result }] = await chrome.scripting.executeScript({
         target: { tabId },
         func: () => {
@@ -2732,105 +2930,233 @@ async function handleNaukriDirectApply(tabId) {
             && getComputedStyle(el).visibility !== 'hidden'
             && getComputedStyle(el).display !== 'none';
 
-          // 1. Check for success indicators
+          // A. Success checks
           const bodyText = (document.body?.innerText || '').toLowerCase();
-          const successPattern = /successfully applied|application (?:has been |was )?(?:sent|submitted|received)|already applied|applied successfully/i;
+          const successPattern = /successfully applied|application (?:has been |was )?(?:sent|submitted|received)|already applied|applied successfully|application successful/i;
           if (successPattern.test(bodyText)) {
-            return { status: 'submitted', detail: 'Application success text found.' };
+            return { state: 'submitted', detail: 'Success text found on page.' };
           }
 
-          // Check if any apply button now says "Applied"
           const buttons = [...document.querySelectorAll('main button, main a, button, a, [role="button"]')].filter(visible);
-          const hasAppliedButton = buttons.some(el => {
+          const hasAppliedBtn = buttons.some(el => {
             const label = normalize(el.innerText || el.getAttribute('aria-label'));
             return /^(?:applied|already applied|applied on \d+.*)$/i.test(label)
               && (el.classList.contains('apply-button') || /applied/i.test(el.className));
           });
-          if (hasAppliedButton) {
-            return { status: 'submitted', detail: 'Apply button changed to Applied.' };
+          if (hasAppliedBtn) return { state: 'submitted', detail: 'Button changed to Applied.' };
+
+          // B. Check for Naukri Chatbot
+          const chatInput = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [contenteditable="true"][placeholder*="message" i]');
+          const chatContainer = chatInput
+            ? chatInput.closest('[class*="drawer" i], [class*="chat" i], [class*="modal" i], [class*="container" i], body')
+            : document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot-container" i], [class*="chat-container" i], [class*="apply-message" i], [data-testid*="chatbot" i]');
+
+          if (chatContainer || chatInput) {
+            const container = chatContainer || document.body;
+            // Bot messages
+            const botMsgs = [...container.querySelectorAll('[class*="bot-msg" i], [class*="bot_msg" i], [class*="bot-message" i], [class*="msg-text" i], [class*="message-text" i], [class*="bubble" i], [class*="bot" i], p, div')]
+              .filter(visible)
+              .filter(el => !el.closest('[class*="user" i], [class*="sent" i], [class*="right" i]'))
+              .map(el => (el.innerText || '').trim())
+              .filter(t => t.length > 4 && !/^(?:hi\b|hello\b|welcome\b|kindly answer the following)/i.test(t));
+
+            const activeQuestion = botMsgs[botMsgs.length - 1]
+              || [...container.querySelectorAll('p, div, span')].filter(visible).map(el => (el.innerText || '').trim()).filter(t => /\?/.test(t) || /\b(?:experience|years|notice|salary|ctc|location|degree|laravel|vue|react|python|php)\b/i.test(t)).pop();
+
+            const chips = [...container.querySelectorAll('[class*="chip" i], [class*="pill" i], [class*="option" i], [class*="quick-reply" i], button')]
+              .filter(visible)
+              .filter(el => !el.disabled && !/^(?:close|back|cancel|help|send|submit)$/i.test((el.innerText || '').trim()))
+              .map(el => ({ label: el.innerText.trim(), value: el.innerText.trim() }));
+
+            // Check if final apply/submit button appeared in chat
+            const submitBtn = [...container.querySelectorAll('button, [role="button"]')].filter(visible).find(el => {
+              const lbl = normalize(el.innerText || el.getAttribute('aria-label'));
+              return /^(?:apply(?: now)?|submit(?: application)?|confirm|send application)$/i.test(lbl);
+            });
+            if (submitBtn && !submitBtn.disabled) {
+              submitBtn.click();
+              return { state: 'chat_submitted' };
+            }
+
+            if (activeQuestion) {
+              return {
+                state: 'chatbot_question',
+                question: activeQuestion,
+                chips,
+                hasInput: Boolean(chatInput)
+              };
+            }
           }
 
-          // 2. Check for questionnaire modal / drawer
-          // Extended selector list: covers Naukri chatbot, apply-popup, apply-message,
-          // specific Naukri 2024 class patterns ([class*="chatbot-container"], [data-testid="apply-popup"])
+          // C. Standard Questionnaire Dialog/Modal (non-chat)
           const drawerSelectors = [
-            '[class*="chatbot-container" i]', '[data-testid="apply-popup"]', '[data-testid="apply-popup-container"]',
-            '[class*="apply-pop-up" i]', '[class*="apply-popup" i]', '[class*="chatbot" i]',
-            '[class*="drawer" i]', '[class*="apply-message" i]', '[class*="apply-dialog" i]',
-            '[class*="modal" i]', 'form[name*="apply" i]', '[class*="apply-container" i]',
-            '[class*="questionnaire" i]', '[class*="screener" i]'
+            '[class*="apply-pop-up" i]', '[class*="apply-popup" i]', '[class*="drawer" i]',
+            '[class*="apply-dialog" i]', '[class*="modal" i]', 'form[name*="apply" i]',
+            '[class*="apply-container" i]', '[class*="questionnaire" i]', '[class*="screener" i]'
           ];
           const drawer = drawerSelectors.flatMap(sel => {
             try { return [...document.querySelectorAll(sel)]; } catch { return []; }
           }).find(visible);
 
           if (drawer) {
-            // --- Handle radio button questions (e.g. Notice period) ---
+            const questionTitle = drawer.querySelector('h1, h2, h3, h4, [class*="title" i], [class*="heading" i], legend')?.innerText?.trim() || '';
             const radios = [...drawer.querySelectorAll('input[type="radio"]')].filter(visible);
-            if (radios.length > 0 && !radios.some(r => r.checked)) {
-              const preferredRadio = radios.find(r => {
-                const lbl = (r.closest('label')?.innerText || r.value || '').toLowerCase();
-                return /15\s*days?|30\s*days?|1\s*month|immediate|serving/i.test(lbl);
-              }) || radios[0];
-              if (preferredRadio) preferredRadio.click();
-            }
-
-            // --- Handle select dropdowns (e.g. Notice period as <select>) ---
             const selects = [...drawer.querySelectorAll('select')].filter(visible);
-            for (const sel of selects) {
-              if (sel.value) continue; // already selected
-              const opts = [...sel.options];
-              const preferred = opts.find(o => /15\s*days?|30\s*days?|1\s*month|immediate|serving/i.test(o.text))
-                || opts.find(o => o.value && o.value !== '' && o.value !== '0');
-              if (preferred) {
-                sel.value = preferred.value;
-                sel.dispatchEvent(new Event('change', { bubbles: true }));
-                sel.dispatchEvent(new Event('input', { bubbles: true }));
-              }
-            }
+            const textFields = [...drawer.querySelectorAll('input[type="text"], input[type="number"], input:not([type]), textarea')].filter(visible);
 
-            // --- Handle text inputs / textareas left blank ---
-            const textFields = [...drawer.querySelectorAll('input[type="text"],input[type="number"],input:not([type]),textarea')].filter(visible);
-            for (const field of textFields) {
-              if (field.value.trim()) continue;
-              // Try to auto-fill common Naukri fields: current CTC, expected CTC, experience
-              const lbl = (field.closest('label')?.innerText || field.placeholder || field.name || field.id || '').toLowerCase();
-              if (/current\s*ctc|current\s*salary/i.test(lbl)) field.value = '0';
-              else if (/expected\s*ctc|expected\s*salary/i.test(lbl)) field.value = '0';
-              else if (/experience/i.test(lbl)) field.value = '1';
-              if (field.value) {
-                field.dispatchEvent(new Event('input', { bubbles: true }));
-                field.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-            }
-
-            // Check if there is an Apply / Submit button inside the modal
-            const submitCandidates = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
-            const submitBtn = submitCandidates.find(el => {
-              const lbl = normalize(el.innerText || el.value || el.getAttribute('aria-label'));
-              return /^(?:apply(?: now)?|apply without update|apply without updating|submit(?: application)?|save(?: &|&) apply|continue to apply|confirm(?: application)?|send application|next)$/i.test(lbl);
-            });
-            if (submitBtn && !submitBtn.disabled) {
-              submitBtn.click();
-              return { status: 'modal_submitted', detail: 'Submitted questionnaire in modal.' };
-            }
-            return { status: 'modal_waiting', detail: 'Modal questionnaire requires user response.' };
+            return {
+              state: 'modal_form',
+              question: questionTitle || 'Naukri Application Form',
+              radios: radios.map(r => ({ label: (r.closest('label')?.innerText || r.value || '').trim(), value: r.value, checked: r.checked })),
+              selects: selects.map(s => ({ options: [...s.options].map(o => ({ label: o.text.trim(), value: o.value })), value: s.value })),
+              textFieldsCount: textFields.length
+            };
           }
 
-          return { status: 'waiting' };
+          return { state: 'waiting' };
         }
       });
 
-      if (result?.status === 'submitted') {
+      if (result?.state === 'submitted') {
         applicationConfirmed = true;
         break;
       }
-      if (result?.status === 'modal_submitted') {
+
+      if (result?.state === 'chatbot_question') {
+        const question = result.question;
+        if (question === lastProcessedQuestion) {
+          questionStuckCount++;
+          if (questionStuckCount > 3) {
+            // If stuck on same question, try pressing Enter on input or clicking first chip
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              func: () => {
+                const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i]');
+                if (input) {
+                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                }
+              }
+            });
+            questionStuckCount = 0;
+          }
+          continue;
+        }
+
+        lastProcessedQuestion = question;
+        questionStuckCount = 0;
+
+        // Resolve answer from confirmed background answers, candidate facts, or resume
+        const resolved = await resolveApplicationQuestionAnswer(question, result.chips || []);
+        const answerText = resolved.answer;
+
+        setStatus(`Answering: "${question.slice(0, 35)}…" ➔ "${answerText}"`, 'info');
+
+        // Deliver answer to page
+        const [{ result: answered }] = await chrome.scripting.executeScript({
+          target: { tabId },
+          args: [answerText, result.chips || []],
+          func: (ans, chips) => {
+            const normalize = val => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const visible = el => Boolean(el?.getClientRects().length)
+              && getComputedStyle(el).visibility !== 'hidden'
+              && getComputedStyle(el).display !== 'none';
+
+            // 1. Try clicking a matching chip/pill
+            if (chips.length) {
+              const normAns = normalize(ans);
+              const allChips = [...document.querySelectorAll('[class*="chip" i], [class*="pill" i], [class*="option" i], [class*="quick-reply" i], button')].filter(visible);
+              const targetChip = allChips.find(el => {
+                const lbl = normalize(el.innerText || el.value || '');
+                return lbl === normAns || (normAns === '0' && /^(?:0|no|none)\b/i.test(lbl)) || (normAns === '1' && /^1\b/i.test(lbl));
+              });
+              if (targetChip) {
+                targetChip.click();
+                return { success: true, method: 'chip' };
+              }
+            }
+
+            // 2. Set native value in chat input
+            const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [contenteditable="true"][placeholder*="message" i]');
+            if (input) {
+              const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+              if (setter) setter.call(input, ans);
+              else input.value = ans;
+
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+
+              // Find and click send button or press Enter
+              const container = input.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], body');
+              const sendBtn = container ? container.querySelector('button[class*="send" i], [class*="send" i], [aria-label*="send" i], button[type="submit"]') : null;
+              if (sendBtn && !sendBtn.disabled) {
+                sendBtn.click();
+              } else {
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+              }
+              return { success: true, method: 'input' };
+            }
+
+            return { success: false };
+          }
+        });
+
+        // Remember answered question in background memory
+        if (answered?.success) {
+          await rememberConfirmedApplicationAnswer(question, '', answerText);
+          await delay(1200);
+          continue;
+        }
+      }
+
+      if (result?.state === 'modal_form') {
+        // Modal with standard form elements
+        const resolved = await resolveApplicationQuestionAnswer(result.question || 'notice period');
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          args: [resolved.answer],
+          func: ans => {
+            const visible = el => Boolean(el?.getClientRects().length)
+              && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+            const normalize = val => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+            // Radios
+            const radios = [...document.querySelectorAll('input[type="radio"]')].filter(visible);
+            if (radios.length && !radios.some(r => r.checked)) {
+              const pref = radios.find(r => {
+                const lbl = normalize(r.closest('label')?.innerText || r.value || '');
+                return /15\s*days?|30\s*days?|1\s*month|immediate|serving/i.test(lbl);
+              }) || radios[0];
+              if (pref) pref.click();
+            }
+
+            // Selects
+            const selects = [...document.querySelectorAll('select')].filter(visible);
+            for (const s of selects) {
+              if (s.value) continue;
+              const opts = [...s.options];
+              const match = opts.find(o => /15\s*days?|30\s*days?|1\s*month|immediate/i.test(o.text)) || opts.find(o => o.value);
+              if (match) {
+                s.value = match.value;
+                s.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            }
+
+            // Submit
+            const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
+            const submitBtn = btns.find(b => {
+              const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label'));
+              return /^(?:apply(?: now)?|apply without update|submit(?: application)?|save(?: &|&) apply|continue to apply|confirm|next)$/i.test(lbl);
+            });
+            if (submitBtn && !submitBtn.disabled) submitBtn.click();
+          }
+        });
         await delay(1500);
         continue;
       }
     } catch {
-      // ignore transient execution error
+      // transient execution error, retry next tick
     }
   }
 
@@ -2848,7 +3174,31 @@ async function handleNaukriDirectApply(tabId) {
     await autoRestoreMasterResume();
     return true;
   } else {
-    setStatus('Applied on Naukri. Please complete any remaining questions in the Naukri tab, then restore your Master Resume.', 'info');
+    // Check one final time if applied
+    const [{ result: finalCheck }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const text = (document.body?.innerText || '').toLowerCase();
+        return /successfully applied|application (?:has been |was )?(?:sent|submitted)|applied/i.test(text);
+      }
+    }).catch(() => [{ result: false }]);
+
+    if (finalCheck) {
+      await persistResumeWorkflow({
+        ...activeResumeWorkflow,
+        status: 'APPLICATION_SUBMITTED',
+        applicationStatus: 'APPLICATION_SUBMITTED',
+        applicationConfirmedAt: new Date().toISOString(),
+        lastError: ''
+      });
+      setStatus('✓ Application submitted on Naukri! Restoring Master Resume…', 'success');
+      renderResumeWorkflow();
+      updatePrimaryAction();
+      await autoRestoreMasterResume();
+      return true;
+    }
+
+    setStatus('Applied on Naukri. If any questionnaire remains, answer it and restore your Master Resume.', 'info');
     return false;
   }
 }
