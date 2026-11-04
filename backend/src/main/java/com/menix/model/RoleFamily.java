@@ -45,11 +45,16 @@ public enum RoleFamily {
         }
         if (resumeFamily == jobFamily) return Fit.SAME;
 
-        // Full stack web is adjacent to frontend, backend java, php lamp, and ecommerce
-        if (resumeFamily == FULL_STACK_WEB && (jobFamily == FRONTEND || jobFamily == BACKEND_JAVA || jobFamily == PHP_LAMP || jobFamily == ECOMMERCE_PLATFORM || jobFamily == DATA_AI_ML)) {
+        // PHP/LAMP stack is a DIFFERENT career track from modern JS/TS/Python full-stack web
+        if ((resumeFamily == FULL_STACK_WEB && jobFamily == PHP_LAMP) || (resumeFamily == PHP_LAMP && jobFamily == FULL_STACK_WEB)) {
+            return Fit.DIFFERENT;
+        }
+
+        // Full stack web is adjacent to frontend, backend java, and ecommerce
+        if (resumeFamily == FULL_STACK_WEB && (jobFamily == FRONTEND || jobFamily == BACKEND_JAVA || jobFamily == ECOMMERCE_PLATFORM || jobFamily == DATA_AI_ML)) {
             return Fit.ADJACENT;
         }
-        if (jobFamily == FULL_STACK_WEB && (resumeFamily == FRONTEND || resumeFamily == BACKEND_JAVA || resumeFamily == PHP_LAMP || resumeFamily == ECOMMERCE_PLATFORM || resumeFamily == DATA_AI_ML)) {
+        if (jobFamily == FULL_STACK_WEB && (resumeFamily == FRONTEND || resumeFamily == BACKEND_JAVA || resumeFamily == ECOMMERCE_PLATFORM || resumeFamily == DATA_AI_ML)) {
             return Fit.ADJACENT;
         }
         // Frontend and Ecommerce are adjacent
@@ -64,4 +69,3 @@ public enum RoleFamily {
         return Fit.DIFFERENT;
     }
 }
-

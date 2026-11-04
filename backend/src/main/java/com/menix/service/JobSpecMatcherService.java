@@ -158,20 +158,17 @@ public final class JobSpecMatcherService {
             verdict = "Stretch";
             verdictReasons.add("Moderate skill crossover, but key prerequisites are missing from your resume.");
             if (!missingSkills.isEmpty()) {
-                verdictReasons.add("Missing must-haves: " + String.join(", ", missingSkills.stream().limit(3).toList()) + ".");
-            }
-            if (!matchedSkills.isEmpty()) {
-                verdictReasons.add("Transferable skills: " + String.join(", ", matchedSkills.stream().limit(2).toList()) + ".");
+                verdictReasons.add("Gaps: " + String.join(", ", missingSkills.stream().limit(3).toList()) + ".");
             }
         } else {
             verdict = "Skip";
-            verdictReasons.add("Score below 40% with substantial gaps in mandatory requirements.");
+            verdictReasons.add("Low overlap with specified requirements for this position.");
             if (!missingSkills.isEmpty()) {
-                verdictReasons.add("Missing: " + String.join(", ", missingSkills.stream().limit(3).toList()) + ".");
+                verdictReasons.add("Missing core qualifications: " + String.join(", ", missingSkills.stream().limit(3).toList()) + ".");
             }
         }
 
-        // Red Flags
+        // Detect Red Flags
         List<String> redFlags = new ArrayList<>(job.redFlags());
         detectRedFlagsInJob(job, redFlags);
 
@@ -181,9 +178,13 @@ public final class JobSpecMatcherService {
         componentScores.put("experience", experienceScore);
         componentScores.put("education", educationScore);
 
-        String formula = String.format("0.45 * %d (Skills) + 0.25 * %d (Keywords) + 0.20 * %d (Experience) + 0.10 * %d (Education) = %d%s",
-            skillsScore, keywordsScore, experienceScore, educationScore, calculatedTotal,
-            fit == RoleFamily.Fit.DIFFERENT ? " (Capped at " + finalTotalScore + " due to Different Career Track)" : "");
+        String formula = String.format(Locale.ROOT,
+            "0.45*%d + 0.25*%d + 0.20*%d + 0.10*%d = %d",
+            skillsScore, keywordsScore, experienceScore, educationScore, calculatedTotal);
+
+        if (finalTotalScore != calculatedTotal) {
+            formula += String.format(Locale.ROOT, " (capped at %d due to %s career track)", finalTotalScore, fit);
+        }
 
         return new MatchAnalysisResult(
             finalTotalScore,
@@ -216,7 +217,6 @@ public final class JobSpecMatcherService {
 
     private static int calculateExperienceScore(String normalizedResume, int yearsMin, int yearsMax) {
         if (yearsMin == 0 && yearsMax <= 1) return 100; // Fresher / Trainee role
-        // Check graduation / experience indicators
         boolean isFresher = normalizedResume.contains("2026") || normalizedResume.contains("fresher") || normalizedResume.contains("intern");
         if (isFresher && yearsMin <= 1) return 100;
         if (isFresher && yearsMin > 1) return Math.max(30, 100 - (yearsMin * 20));
@@ -224,7 +224,6 @@ public final class JobSpecMatcherService {
     }
 
     private static int calculateEducationScore(String normalizedResume, String expectedEducation) {
-        // Candidate has B.Tech Computer Science and Engineering
         boolean hasTechDegree = normalizedResume.contains("b tech") || normalizedResume.contains("bachelor of technology") || normalizedResume.contains("b e ") || normalizedResume.contains("computer science");
         if (hasTechDegree) return 100;
         return 75;
@@ -248,54 +247,53 @@ public final class JobSpecMatcherService {
     }
 
     private static String formatSkillName(String skill) {
-        return switch (skill.toLowerCase(Locale.ROOT)) {
-            case "react" -> "React";
-            case "node.js" -> "Node.js";
-            case "express" -> "Express.js";
-            case "mongodb" -> "MongoDB";
-            case "postgresql" -> "PostgreSQL";
-            case "python" -> "Python";
-            case "javascript" -> "JavaScript";
-            case "typescript" -> "TypeScript";
-            case "sql" -> "SQL";
-            case "tailwind css" -> "Tailwind CSS";
-            case "bootstrap" -> "Bootstrap";
-            case "aws" -> "AWS";
-            case "docker" -> "Docker";
-            case "rest apis" -> "REST APIs";
-            case "graphql" -> "GraphQL";
-            case "git" -> "Git";
-            default -> Character.toUpperCase(skill.charAt(0)) + skill.substring(1);
-        };
+        if ("react".equalsIgnoreCase(skill)) return "React";
+        if ("node.js".equalsIgnoreCase(skill)) return "Node.js";
+        if ("express".equalsIgnoreCase(skill)) return "Express.js";
+        if ("mongodb".equalsIgnoreCase(skill)) return "MongoDB";
+        if ("postgresql".equalsIgnoreCase(skill)) return "PostgreSQL";
+        if ("python".equalsIgnoreCase(skill)) return "Python";
+        if ("javascript".equalsIgnoreCase(skill)) return "JavaScript";
+        if ("typescript".equalsIgnoreCase(skill)) return "TypeScript";
+        if ("sql".equalsIgnoreCase(skill)) return "SQL";
+        if ("tailwind css".equalsIgnoreCase(skill)) return "Tailwind CSS";
+        if ("bootstrap".equalsIgnoreCase(skill)) return "Bootstrap";
+        if ("aws".equalsIgnoreCase(skill)) return "AWS";
+        if ("docker".equalsIgnoreCase(skill)) return "Docker";
+        if ("rest apis".equalsIgnoreCase(skill)) return "REST APIs";
+        if ("graphql".equalsIgnoreCase(skill)) return "GraphQL";
+        if ("git".equalsIgnoreCase(skill)) return "Git";
+        return skill;
     }
 
     private static String formatFamilyName(RoleFamily family) {
         return switch (family) {
             case FULL_STACK_WEB -> "Full Stack Web Development";
-            case BACKEND_JAVA -> "Backend Java Engineering";
-            case FRONTEND -> "Frontend Engineering";
-            case DATA_AI_ML -> "Data Science & AI / ML";
-            case DEVOPS_CLOUD -> "DevOps & Cloud Engineering";
-            case QA_AUTOMATION -> "QA & Test Automation";
-            case PHP_LAMP -> "PHP / LAMP Development";
-            case ECOMMERCE_PLATFORM -> "E-Commerce & Shopify Platform";
-            case NON_IT -> "Non-IT & Recruitment";
-            case OTHER -> "General Software";
+            case BACKEND_JAVA -> "Java Backend Development";
+            case FRONTEND -> "Frontend Web Development";
+            case DATA_AI_ML -> "Data Science & AI/ML";
+            case DEVOPS_CLOUD -> "DevOps & Cloud Infrastructure";
+            case QA_AUTOMATION -> "QA & Automation Testing";
+            case PHP_LAMP -> "PHP / LAMP Stack";
+            case ECOMMERCE_PLATFORM -> "E-Commerce / CMS Platforms";
+            case NON_IT -> "Non-IT / Recruitment";
+            case OTHER -> "Other Domain";
         };
     }
 
-    public static RoleFamily classifyResumeFamily(String normalizedResume) {
-        if (normalizedResume.contains("react") && (normalizedResume.contains("node") || normalizedResume.contains("mern") || normalizedResume.contains("express"))) {
+    public static RoleFamily classifyResumeFamily(String text) {
+        String norm = normalize(text);
+        if (norm.contains("react") && (norm.contains("node") || norm.contains("full stack") || norm.contains("mern"))) {
             return RoleFamily.FULL_STACK_WEB;
         }
-        if (normalizedResume.contains("spring") && normalizedResume.contains("java")) {
+        if (norm.contains("spring") || (norm.contains("java") && norm.contains("backend"))) {
             return RoleFamily.BACKEND_JAVA;
         }
-        if (normalizedResume.contains("react") || normalizedResume.contains("angular") || normalizedResume.contains("vue")) {
-            return RoleFamily.FRONTEND;
+        if (norm.contains("php") || norm.contains("laravel")) {
+            return RoleFamily.PHP_LAMP;
         }
-        if (normalizedResume.contains("python") && (normalizedResume.contains("ai") || normalizedResume.contains("ml") || normalizedResume.contains("tensorflow"))) {
-            return RoleFamily.DATA_AI_ML;
+        if (norm.contains("shopify") || norm.contains("wordpress")) {
+            return RoleFamily.ECOMMERCE_PLATFORM;
         }
         return RoleFamily.FULL_STACK_WEB;
     }
@@ -368,8 +366,8 @@ public final class JobSpecMatcherService {
     }
 
     private static String canonical(String value) {
-        String normalized = normalize(value);
-        return ALIASES.getOrDefault(normalized, normalized);
+        String norm = normalize(value);
+        return ALIASES.getOrDefault(norm, norm);
     }
 
     private static String normalize(String value) {
@@ -388,11 +386,13 @@ public final class JobSpecMatcherService {
         add(map, "tdd", "tdd", "test driven development", "test-driven development");
         add(map, "postgres", "postgres", "postgresql");
         add(map, "k8s", "k8s", "kubernetes");
-        add(map, "aws", "aws", "amazon web services");
+        add(map, "aws", "aws", "amazon web services", "aws basics", "aws basic", "aws s3", "aws ec2");
         add(map, "gcp", "gcp", "google cloud platform");
         add(map, "azure", "azure", "microsoft azure");
-        add(map, "dsa", "dsa", "data structures", "algorithms", "data structures and algorithms", "data structures & algorithms");
-        add(map, "oop", "oop", "oops", "object oriented programming", "object-oriented programming");
+        add(map, "dsa", "dsa", "data structures", "algorithms", "data structures and algorithms", "data structures & algorithms", "data structures algorithms dsa");
+        add(map, "oop", "oop", "oops", "object oriented programming", "object-oriented programming", "object-oriented programming (oop)");
+        add(map, "llm", "llm", "llm apis", "ai llm apis", "ai / llm apis", "llm api", "openai api", "llm integrations", "generative ai", "ai");
+        add(map, "webdev", "webdev", "web development", "web development projects", "full stack web development", "web applications");
         add(map, "rest", "rest", "rest api", "rest apis", "restful", "restful api", "restful apis");
         add(map, "graphql", "graphql", "graphql api", "graphql apis");
         add(map, "html", "html", "html5");
@@ -416,4 +416,3 @@ public final class JobSpecMatcherService {
         }
     }
 }
-

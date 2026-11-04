@@ -1,7 +1,9 @@
 package com.menix.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.List;
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record JobSpec(
     String id,
     String title,
@@ -32,4 +34,3 @@ public record JobSpec(
         redFlags = redFlags == null ? List.of() : List.copyOf(redFlags);
     }
 }
-
