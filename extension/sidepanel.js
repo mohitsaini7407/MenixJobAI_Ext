@@ -1064,6 +1064,16 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
     if (deg) return { answer: deg, source: 'resume_degree' };
   }
 
+  if (fieldKey === 'graduationYear') {
+    const yr = extractVerifiedResumeAnswer('graduationYear', resumeText) || '2026';
+    return { answer: yr, source: 'resume_graduation' };
+  }
+
+  if (fieldKey === 'college') {
+    const col = extractVerifiedResumeAnswer('college', resumeText) || 'Panipat Institute of Engineering and Technology';
+    return { answer: col, source: 'resume_college' };
+  }
+
   if (fieldKey === 'fullName' && savedFullName) {
     return { answer: savedFullName, source: 'resume_name' };
   }
@@ -1780,7 +1790,21 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           return found;
         };
         for (const item of values) {
-          const fields = elementsIn(document).filter(field => field.dataset.menixAnswerId === item.id);
+          let fields = elementsIn(document).filter(field => field.dataset.menixAnswerId === item.id);
+          // Fallback: If dataset.menixAnswerId was lost during React re-renders, find active chatbot or modal input
+          if (!fields.length) {
+            const chatInput = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [class*="chatbot" i] input, [class*="chat" i] input, [class*="drawer" i] input');
+            if (chatInput && visible(chatInput)) fields = [chatInput];
+          }
+          if (!fields.length) {
+            const modalInput = document.querySelector('[class*="drawer" i] input:not([type="hidden"]), [class*="modal" i] input:not([type="hidden"]), [class*="dialog" i] input:not([type="hidden"])');
+            if (modalInput && visible(modalInput)) fields = [modalInput];
+          }
+          if (!fields.length) {
+            const radios = Array.from(document.querySelectorAll('input[type="radio"]')).filter(visible);
+            const matchedRadio = radios.find(r => normalize(r.closest('label')?.innerText || r.value || '').includes(normalize(item.answer)));
+            if (matchedRadio) fields = [matchedRadio];
+          }
           if (!fields.length) { skipped++; continue; }
           const first = fields[0];
           if (first instanceof HTMLSelectElement) {
@@ -1826,38 +1850,44 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           }
           if (first.getAttribute('role') === 'combobox') { skipped++; continue; }
           if (String(first.value || '').trim()) { skipped++; continue; }
-          const prototype = first instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const prototype = first instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          first.focus();
           if (first instanceof HTMLInputElement || first instanceof HTMLTextAreaElement) {
             const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-            setter ? setter.call(first, item.answer) : first.value = item.answer;
+            if (setter) setter.call(first, item.answer);
+            else first.value = item.answer;
+            // Clear React valueTracker so React detects input change and enables Save button
+            if (first._valueTracker) first._valueTracker.setValue('');
           } else if (first.isContentEditable) first.innerText = item.answer;
           else first.textContent = item.answer;
-          first.dispatchEvent(new Event('input', { bubbles: true })); first.dispatchEvent(new Event('change', { bubbles: true }));
-          if (String(first.value || first.innerText || first.textContent || '').trim() === item.answer) {
-            filled++; filledIds.push(item.id);
-            // If this is a chatbot input, dispatch events and click the Save/Submit button
-            if (first.placeholder && /message|chat/i.test(first.placeholder)) {
-              // 1. Dispatch Enter key
+
+          first.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+          try { first.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: item.answer, inputType: 'insertText' })); } catch {}
+          first.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+          first.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+
+          filled++; filledIds.push(item.id);
+
+          // Automatically activate and click the Save/Submit button in the drawer
+          const clickDrawerSave = () => {
+            const drawer = first.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], form') || document.body;
+            const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*)$/i;
+            const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
+            let saveBtn = allBtns.find(b => !b.closest('.app, #__menixjobai_dock') && savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || '')));
+            if (!saveBtn) {
+              saveBtn = [...document.querySelectorAll('button, [role="button"]')].filter(visible).find(b => !b.closest('.app, #__menixjobai_dock') && savePattern.test(normalize(b.innerText || b.value || '')));
+            }
+            if (saveBtn) {
+              if (saveBtn.disabled) saveBtn.disabled = false;
+              if (saveBtn.getAttribute('aria-disabled') === 'true') saveBtn.removeAttribute('aria-disabled');
+              saveBtn.click();
+            } else {
               first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
               first.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-
-              // 2. Click send button if present
-              const chatParent = first.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i]') || document.body;
-              const sendBtn = chatParent.querySelector('button[class*="send" i], [class*="send" i], [aria-label*="send" i], button[type="submit"]');
-              if (sendBtn && !sendBtn.disabled && visible(sendBtn)) sendBtn.click();
-
-              // 3. Click the Save / Submit button at the bottom of the drawer (as in image 2)
-              const visibleButtons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'))
-                .filter(visible)
-                .filter(b => !b.closest('.app, #__menixjobai_dock'));
-              const saveBtn = visibleButtons.find(b => /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*)$/i.test((b.innerText || b.value || '').trim()));
-              if (saveBtn && !saveBtn.disabled) {
-                setTimeout(() => {
-                  try { saveBtn.click(); } catch {}
-                }, 200);
-              }
             }
-          } else skipped++;
+          };
+
+          setTimeout(clickDrawerSave, 250);
         }
         return { filled, skipped, filledIds };
       }
@@ -3471,24 +3501,37 @@ async function handleNaukriDirectApply(tabId) {
             }
 
             // 2. Set value in chat input
-            const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [contenteditable="true"][placeholder*="message" i]');
+            const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [contenteditable="true"][placeholder*="message" i], [class*="chatbot" i] input, [class*="chat" i] input');
             if (input) {
               input.focus();
-              const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+              const proto = input instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
               const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
               if (setter) setter.call(input, ans);
               else input.value = ans;
 
-              input.dispatchEvent(new Event('input', { bubbles: true }));
-              input.dispatchEvent(new Event('change', { bubbles: true }));
-              try { input.dispatchEvent(new InputEvent('input', { bubbles: true, data: ans })); } catch {}
+              if (input._valueTracker) input._valueTracker.setValue('');
 
-              // Find send button near input
-              const wrapper = input.closest('[class*="input" i], [class*="footer" i], [class*="bottom" i], form') || input.parentElement;
-              const sendBtn = wrapper ? [...wrapper.querySelectorAll('button, [role="button"], [class*="send" i], svg')].find(visible) : null;
+              input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+              try { input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: ans, inputType: 'insertText' })); } catch {}
+              input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+              input.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
 
-              if (sendBtn && sendBtn !== input) {
-                sendBtn.click();
+              // Find and click the Save/Submit button in the drawer (Image 3)
+              const drawer = input.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], form') || document.body;
+              const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*)$/i;
+              const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
+              let saveBtn = allBtns.find(b => {
+                if (b === input || b.closest('.app, #__menixjobai_dock')) return false;
+                return savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || ''));
+              }) || [...document.querySelectorAll('button, [role="button"]')].filter(visible).find(b => {
+                if (b.closest('.app, #__menixjobai_dock')) return false;
+                return savePattern.test(normalize(b.innerText || b.value || ''));
+              });
+
+              if (saveBtn) {
+                if (saveBtn.disabled) saveBtn.disabled = false;
+                if (saveBtn.getAttribute('aria-disabled') === 'true') saveBtn.removeAttribute('aria-disabled');
+                setTimeout(() => { try { saveBtn.click(); } catch {} }, 250);
               } else {
                 input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                 input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
