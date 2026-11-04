@@ -58,6 +58,7 @@
             <button id="skillsTab" class="analysis-tab active" type="button" role="tab" aria-selected="true" aria-controls="skillsTabPanel">Skills</button>
             <button id="fitChecksTab" class="analysis-tab" type="button" role="tab" aria-selected="false" aria-controls="fitChecksTabPanel" tabindex="-1">Fit Checks</button>
             <button id="aiInsightsTab" class="analysis-tab" type="button" role="tab" aria-selected="false" aria-controls="aiInsightsTabPanel" tabindex="-1">AI Insights</button>
+            <button id="naukriVisibilityTab" class="analysis-tab" type="button" role="tab" aria-selected="false" aria-controls="naukriVisibilityTabPanel" tabindex="-1">Naukri Boost 🚀</button>
           </div>
           <section id="skillsTabPanel" class="analysis-tab-panel" role="tabpanel" aria-labelledby="skillsTab" tabindex="0">
             <div class="skills-columns">
@@ -106,6 +107,38 @@
             <details id="aiSuggestionsDetails" class="ai-suggestions" open>
               <summary><span>Resume Improvement Suggestions</span><span id="suggestionsSummaryHint" class="suggestions-summary-hint">Open to load</span></summary>
               <div id="analysis" class="analysis"></div>
+            </details>
+          </section>
+          <section id="naukriVisibilityTabPanel" class="analysis-tab-panel hidden" role="tabpanel" aria-labelledby="naukriVisibilityTab" tabindex="0">
+            <section class="insights-card visibility-card">
+              <div class="card-heading">
+                <h3>Naukri Recruiter Visibility Booster</h3>
+                <span class="status-badge" style="background:#1e3a8a;color:#93c5fd;">Resdex Match</span>
+              </div>
+              <p class="muted small" style="margin:4px 0 10px 0;line-height:1.4;">
+                Naukri recruiters search candidates primarily through <strong>Key Skills</strong> and <strong>Resume Headline</strong>. Add these exact keywords to your Naukri profile to rank higher in recruiter searches:
+              </p>
+
+              <div class="visibility-field" style="margin-top:8px;">
+                <label for="naukriHeadlineInput" class="field-label" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                  <span>🎯 Target Resume Headline:</span>
+                  <button id="copyHeadlineBtn" class="btn secondary" style="padding:3px 8px;font-size:10px;" type="button">📋 Copy</button>
+                </label>
+                <input id="naukriHeadlineInput" readonly style="font-size:11px;cursor:pointer;background:#f8fafc;color:#1e293b;" title="Click to copy" />
+              </div>
+
+              <div class="visibility-field" style="margin-top:10px;">
+                <label for="naukriSkillsTextarea" class="field-label" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                  <span>⚡ Key Skills (Comma separated):</span>
+                  <button id="copySkillsBtn" class="btn secondary" style="padding:3px 8px;font-size:10px;" type="button">📋 Copy All</button>
+                </label>
+                <textarea id="naukriSkillsTextarea" readonly rows="3" style="font-size:11px;cursor:pointer;background:#f8fafc;color:#1e293b;" title="Click to copy"></textarea>
+              </div>
+
+              <div style="margin-top:12px;">
+                <button id="openNaukriSkillsEditBtn" class="btn primary full" type="button" style="font-size:11px;padding:8px 10px;">Open Naukri Profile to Update Skills</button>
+              </div>
+            </section>
             </details>
           </section>
         </div>

@@ -391,8 +391,8 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0}
 #analysisSection .component-track{height:6px;margin-top:4px;background:#e8edf5}
 #analysisSection .component-fill{background:var(--analysis-blue);transition:width .5s ease}
 #analysisSection .analysis-tabs{overflow:hidden;border:1px solid var(--analysis-border);border-radius:12px;background:#fff}
-#analysisSection .analysis-tablist{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:5px;border-bottom:1px solid var(--analysis-border);background:#fff}
-#analysisSection .analysis-tab{min-width:0;min-height:40px;padding:7px 5px;border:0;border-radius:8px;background:transparent;color:#475569;font:inherit;font-size:12px;font-weight:650;cursor:pointer;transition:background-color .16s ease,color .16s ease}
+#analysisSection .analysis-tablist{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;padding:5px;border-bottom:1px solid var(--analysis-border);background:#fff}
+#analysisSection .analysis-tab{min-width:0;min-height:38px;padding:6px 2px;border:0;border-radius:8px;background:transparent;color:#475569;font:inherit;font-size:11px;font-weight:650;cursor:pointer;text-align:center;transition:background-color .16s ease,color .16s ease}
 #analysisSection .analysis-tab:hover{background:var(--analysis-blue-light);color:var(--analysis-blue-dark)}
 #analysisSection .analysis-tab.active{background:var(--analysis-blue);color:#fff}
 #analysisSection .analysis-tab:focus-visible{outline:2px solid var(--analysis-blue);outline-offset:2px}
@@ -699,3 +699,9 @@ input[type="checkbox"]{accent-color:var(--analysis-blue)}
 .ats-assessment-row{padding:8px;border:1px solid var(--analysis-border);border-radius:9px;background:#fff}
 .ats-assessment-row strong{display:block;color:var(--analysis-text);font-size:14px}
 .ats-assessment-row span{display:block;color:var(--analysis-muted);font-size:10px;line-height:1.3}
+
+/* Naukri Recruiter Visibility Booster & Applied Tag */
+.job-tag.applied-tag{background:#065f46!important;color:#a7f3d0!important;border:1px solid #10b981!important;font-weight:700!important}
+#analysisSection .visibility-card{background:#fff;border:1px solid var(--analysis-border);border-radius:10px;padding:12px}
+#analysisSection .visibility-field input,#analysisSection .visibility-field textarea{background:#f8fafc;color:#1e293b;border:1px solid var(--analysis-border);border-radius:8px;font-family:inherit;font-size:11px;width:100%;padding:8px}
+#analysisSection .visibility-field input:focus,#analysisSection .visibility-field textarea:focus{border-color:var(--analysis-blue);background:#fff}
