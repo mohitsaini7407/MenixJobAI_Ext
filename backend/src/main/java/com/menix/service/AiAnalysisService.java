@@ -241,14 +241,12 @@ public class AiAnalysisService {
         if (cached != null) { cached.put("cached", true); return cached; }
 
         String prompt = """
-            Draft concise answers to these job application questions using only facts explicitly present in the resume.
-            Do not invent employment, dates, skills, credentials, work authorization, salary, availability, metrics,
-            personal preferences, or motivations. For a question whose answer is not supported by the resume, return
-            an empty answer and set needsUserInput=true. Never infer a yes/no answer about legal eligibility or personal
-            characteristics. For open-ended job-interest questions, mention only concrete overlap between the resume
-            and the job requirements; do not claim personal motives that are not stated. Return one result per question
-            with its exact id, answer, confidence (low|medium|high), and needsUserInput boolean. When a question has
-            choices, return the exact text of one choice only if resume facts clearly support it; otherwise return blank.
+            Draft concise, professional, candidate-aligned answers to these job application questions based on the candidate's resume and the job description.
+            For factual questions (experience years, specific tools, degrees, graduation year, location, salary), use only facts present in the resume.
+            For open-ended questions (e.g. why pursue this career, interest in web development / software engineering, why join this company, strengths, work style, career goals):
+            ALWAYS generate a high-quality, articulate, professional answer (2-4 concise sentences) tailored to the candidate's actual skills, projects, and the target role from the job description. Do NOT leave open-ended or career interest questions blank!
+            For sensitive legal or demographic questions (criminal record, disability, caste, race, religion), return empty with needsUserInput=true.
+            Return one result per question with its exact id, answer, confidence (low|medium|high), and needsUserInput boolean. When a question has choices, return the exact text of one choice only if resume facts clearly support it; otherwise return blank.
             RESUME FACTS:\n%s\nJOB DESCRIPTION:\n%s\nQUESTIONS:\n%s
             """.formatted(resume, jd, json(normalizedQuestions));
         Map<String, Object> raw = callGemini(prompt, applicationAnswersSchema(), 800, false);
