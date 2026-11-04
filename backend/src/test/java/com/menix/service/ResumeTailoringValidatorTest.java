@@ -51,9 +51,10 @@ class ResumeTailoringValidatorTest {
         String after = "Built WordPress project dashboards for a student team.";
         String confirmed = "Candidate explicitly confirmed practical experience with WordPress. Details: Built WordPress project dashboards for a student team.";
 
-        var withoutConfirmation = ResumeTailoringValidator.validate(MASTER, MASTER, "WordPress developer", before, after,
+        String master = MASTER + "\nBuilt project dashboards.";
+        var withoutConfirmation = ResumeTailoringValidator.validate(master, master, "WordPress developer", before, after,
             List.of(confirmed));
-        var withConfirmation = ResumeTailoringValidator.validate(MASTER, MASTER, "WordPress developer", before, after,
+        var withConfirmation = ResumeTailoringValidator.validate(master, master, "WordPress developer", before, after,
             List.of(confirmed), List.of(confirmed));
 
         assertFalse(withoutConfirmation.valid());

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
 import java.util.Set;
@@ -15,14 +16,16 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
-import static org.mockito.Mockito.mock;
 
 class GeminiRequestSchemaTest {
+    private static RestClient createTestRestClient() {
+        return RestClient.builder().requestFactory(new SimpleClientHttpRequestFactory()).build();
+    }
+
     @Test
     void serializedGeminiSchemaContainsNoForbiddenJsonSchemaConstructs() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
-        AiAnalysisService service = new AiAnalysisService(RestClient.create(), mapper,
-            mock(AnalysisCacheRepository.class), mock(ResumeProfileRepository.class));
+        AiAnalysisService service = new AiAnalysisService(createTestRestClient(), mapper, null, null);
         ReflectionTestUtils.setField(service, "model", "gemini-2.5-flash");
         JsonNode request = mapper.valueToTree(service.buildGeminiRequest("tiny prompt",
             service.generationConfig(service.overviewSchema(), 700, true, true, true)));
@@ -34,8 +37,7 @@ class GeminiRequestSchemaTest {
 
     @Test
     void gemini35FlashLiteOmitsDeprecatedSamplingAndThinkingBudgetOptions() {
-        AiAnalysisService service = new AiAnalysisService(RestClient.create(), new ObjectMapper(),
-            mock(AnalysisCacheRepository.class), mock(ResumeProfileRepository.class));
+        AiAnalysisService service = new AiAnalysisService(createTestRestClient(), new ObjectMapper(), null, null);
         ReflectionTestUtils.setField(service, "model", "gemini-3.5-flash-lite");
 
         var generation = service.generationConfig(service.overviewSchema(), 700, true, true, true);
@@ -48,10 +50,9 @@ class GeminiRequestSchemaTest {
 
     @Test
     void parsesJsonGeminiEnvelopeWhenProviderLabelsResponseAsOctetStream() {
-        RestClient.Builder builder = RestClient.builder();
+        RestClient.Builder builder = RestClient.builder().requestFactory(new SimpleClientHttpRequestFactory());
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        AiAnalysisService service = new AiAnalysisService(builder.build(), new ObjectMapper(),
-            mock(AnalysisCacheRepository.class), mock(ResumeProfileRepository.class));
+        AiAnalysisService service = new AiAnalysisService(builder.build(), new ObjectMapper(), null, null);
         ReflectionTestUtils.setField(service, "model", "gemini-3.5-flash-lite");
         ReflectionTestUtils.setField(service, "apiKey", "test-key");
         server.expect(requestTo("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=test-key"))

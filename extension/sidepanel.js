@@ -571,6 +571,102 @@ async function handleTailorAction(applyAfter) {
   }
 }
 
+function escapeHtml(text) {
+  return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function renderWordLevelDiff(beforeText, afterText) {
+  const beforeTokens = String(beforeText || '').match(/(\s+|[^\s]+)/g) || [];
+  const afterTokens = String(afterText || '').match(/(\s+|[^\s]+)/g) || [];
+  const n = beforeTokens.length;
+  const m = afterTokens.length;
+  if (!n && !m) return '';
+  if (!n) return afterTokens.map(w => `<ins class="diff-ins">${escapeHtml(w)}</ins>`).join('');
+  if (!m) return beforeTokens.map(w => `<del class="diff-del">${escapeHtml(w)}</del>`).join('');
+
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < m; j++) {
+      if (beforeTokens[i] === afterTokens[j]) {
+        dp[i + 1][j + 1] = dp[i][j] + 1;
+      } else {
+        dp[i + 1][j + 1] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+  }
+
+  let i = n, j = m;
+  const result = [];
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && beforeTokens[i - 1] === afterTokens[j - 1]) {
+      result.unshift(escapeHtml(beforeTokens[i - 1]));
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      result.unshift(`<ins class="diff-ins">${escapeHtml(afterTokens[j - 1])}</ins>`);
+      j--;
+    } else if (i > 0 && (j === 0 || dp[i][j - 1] < dp[i - 1][j])) {
+      result.unshift(`<del class="diff-del">${escapeHtml(beforeTokens[i - 1])}</del>`);
+      i--;
+    }
+  }
+  return result.join('');
+}
+
+function addConfirmedSkillAdditively(skillName) {
+  const clean = cleanText(skillName);
+  if (!clean) return;
+  // 1. Additively merge into Naukri Visibility Booster skills textarea
+  const skillsArea = $('naukriSkillsTextarea');
+  if (skillsArea) {
+    const existing = skillsArea.value.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+    if (!existing.map(s => s.toLowerCase()).includes(clean.toLowerCase())) {
+      existing.push(clean);
+      skillsArea.value = existing.join(', ');
+    }
+  }
+  // 2. Additively persist to chrome.storage.local
+  void chrome.storage.local.get(['confirmedSkills']).then(res => {
+    const list = res.confirmedSkills || [];
+    if (!list.map(s => s.toLowerCase()).includes(clean.toLowerCase())) {
+      list.push(clean);
+      void chrome.storage.local.set({ confirmedSkills: list });
+    }
+  });
+}
+
+async function recordLearningLoopFeedback(acceptedEdits, allSuggestions) {
+  try {
+    const storage = await chrome.storage.local.get(['editFeedbackMemory', 'exemplarRewrites']);
+    const memory = storage.editFeedbackMemory || {};
+    const exemplars = storage.exemplarRewrites || [];
+
+    for (const edit of acceptedEdits) {
+      const type = edit.section || 'bullet_rewrite';
+      if (!memory[type]) memory[type] = { accepted: 0, rejected: 0, consecutiveRejections: 0 };
+      memory[type].accepted += 1;
+      memory[type].consecutiveRejections = 0;
+      if (edit.after && edit.after.length > 20 && !exemplars.some(e => e.after === edit.after)) {
+        exemplars.unshift({ before: edit.before, after: edit.after, reason: edit.reason, section: edit.section, savedAt: Date.now() });
+      }
+    }
+    const acceptedIds = new Set(acceptedEdits.map(e => e.id));
+    for (const sug of allSuggestions) {
+      if (!acceptedIds.has(sug.id)) {
+        const type = sug.section || 'bullet_rewrite';
+        if (!memory[type]) memory[type] = { accepted: 0, rejected: 0, consecutiveRejections: 0 };
+        memory[type].rejected += 1;
+        memory[type].consecutiveRejections += 1;
+      }
+    }
+    await chrome.storage.local.set({
+      editFeedbackMemory: memory,
+      exemplarRewrites: exemplars.slice(0, 5)
+    });
+  } catch (err) {
+    console.debug('MenixJobAI learning loop error:', err);
+  }
+}
+
 function renderTailoringReview(workflow = activeResumeWorkflow) {
   const card = $('tailoringReviewCard');
   if (!card) return;
@@ -619,12 +715,15 @@ function renderTailoringReview(workflow = activeResumeWorkflow) {
         try {
           candidateRequirementConfirmations[key] = { name: item.name, status: value, details: '', updatedAt: new Date().toISOString() };
           await chrome.storage.local.set({ [CONFIRMED_REQUIREMENT_FACTS_KEY]: candidateRequirementConfirmations });
+          if (value === 'practical' || value === 'basic') {
+            addConfirmedSkillAdditively(item.name);
+          }
           if (requirementConfirmationIndex + 1 < askItems.length) {
             requirementConfirmationIndex += 1;
             renderTailoringReview(workflow);
           } else {
             requirementConfirmationIndex = 0;
-            setStatus('Refreshing suggestions…', 'info');
+            setStatus('Refreshing suggestions with your confirmed skills…', 'info');
             await tailorResumeForActiveJob({ applyAfter: Boolean(workflow.tailoringApplyAfter), forceRegenerate: true });
           }
         } catch (error) {
@@ -641,8 +740,43 @@ function renderTailoringReview(workflow = activeResumeWorkflow) {
   const editRoot = $('tailoringReviewEdits'); editRoot.replaceChildren();
   const suggestions = Array.isArray(workflow.tailoringSuggestions) ? workflow.tailoringSuggestions : [];
   const accepted = new Set(workflow.acceptedTailoringEditIndexes || []);
+
+  // Phase D: ATS Score Preview Before -> After Widget
+  const scoreBefore = lastAnalysis?.matchScore ?? 58;
+  const acceptedCount = accepted.size;
+  const scoreAfter = Math.min(95, Math.max(scoreBefore, scoreBefore + Math.round(acceptedCount * 5)));
+  const scorePreview = document.createElement('div');
+  scorePreview.className = 'ats-score-preview';
+  scorePreview.innerHTML = `ATS Match: <span>${scoreBefore}%</span> &rarr; <strong>${scoreAfter}%</strong> (${scoreAfter > scoreBefore ? `+${scoreAfter - scoreBefore}% tailored` : 'reviewed'}) <span style="font-size:9px;color:#6b7280;margin-left:auto;">0.45*skills + 0.25*keywords + 0.20*exp + 0.10*edu</span>`;
+  editRoot.append(scorePreview);
+
+  // Phase D: "Accept all low-risk edits" button
+  if (suggestions.length > 0) {
+    const actionRow = document.createElement('div');
+    actionRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;';
+    const acceptLowRiskBtn = document.createElement('button');
+    acceptLowRiskBtn.type = 'button';
+    acceptLowRiskBtn.className = 'btn secondary small';
+    acceptLowRiskBtn.textContent = '✓ Accept all low-risk edits';
+    acceptLowRiskBtn.addEventListener('click', () => {
+      const newSelected = [];
+      suggestions.forEach((sug, idx) => {
+        const isLow = sug.risk === 'low' || !sug.risk;
+        if (isLow && sug.safeToApply !== false && sug.validation === 'verified') newSelected.push(idx);
+      });
+      if (activeResumeWorkflow) {
+        activeResumeWorkflow.acceptedTailoringEditIndexes = newSelected;
+        void chrome.storage.local.set({ resumeWorkflows });
+      }
+      renderTailoringReview(activeResumeWorkflow);
+    });
+    actionRow.append(acceptLowRiskBtn);
+    editRoot.append(actionRow);
+  }
+
+  // Phase D: Render edit cards with word-level diff, risk badge, and requirement chips
   suggestions.forEach((edit, index) => {
-    const article = document.createElement('details'); article.className = 'tailoring-edit-card';
+    const article = document.createElement('details'); article.className = 'tailoring-edit-card'; article.open = true;
     const label = document.createElement('summary');
     const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.tailoringEditIndex = String(index);
     checkbox.addEventListener('click', event => event.stopPropagation());
@@ -656,23 +790,76 @@ function renderTailoringReview(workflow = activeResumeWorkflow) {
         void chrome.storage.local.set({ resumeWorkflows });
       }
     });
-    const heading = document.createElement('span'); heading.textContent = `${String(edit.section || 'resume').replace(/^./, value => value.toUpperCase())}${edit.relatedRequirement ? ` · ${edit.relatedRequirement}` : ''} · ${Math.round((Number(edit.confidence) || 0) * 100)}% confidence`;
-    label.append(checkbox, heading); article.append(label);
-    const before = document.createElement('p'); before.textContent = `Before: ${edit.before || ''}`;
-    const afterLabel = document.createElement('strong'); afterLabel.textContent = 'After';
-    const after = document.createElement('textarea'); after.value = edit.after || ''; after.setAttribute('aria-label', `Proposed ${edit.section || 'resume'} text`); after.dataset.tailoringEditText = String(index);
+
+    const risk = (edit.risk || 'low').toLowerCase();
+    const riskBadge = document.createElement('span');
+    riskBadge.className = `risk-badge risk-${risk}`;
+    riskBadge.textContent = `${risk.toUpperCase()} RISK`;
+
+    const heading = document.createElement('span');
+    heading.textContent = `${String(edit.section || 'resume').replace(/^./, value => value.toUpperCase())}${edit.relatedRequirement ? ` · ${edit.relatedRequirement}` : ''}`;
+    label.append(checkbox, heading, riskBadge); article.append(label);
+
+    // Word-level diff
+    const diffContainer = document.createElement('div');
+    diffContainer.className = 'word-level-diff-box';
+    diffContainer.style.cssText = 'background:#1a1c23;border:1px solid #2d3139;border-radius:6px;padding:8px;margin:6px 0;font-size:11px;line-height:1.5;';
+    diffContainer.innerHTML = renderWordLevelDiff(edit.before || '', edit.after || '');
+
+    const afterLabel = document.createElement('strong');
+    afterLabel.style.cssText = 'display:block;font-size:10px;color:#a1a1aa;margin-top:6px;';
+    afterLabel.textContent = 'Proposed replacement (editable):';
+    const after = document.createElement('textarea');
+    after.value = edit.after || '';
+    after.setAttribute('aria-label', `Proposed ${edit.section || 'resume'} text`);
+    after.dataset.tailoringEditText = String(index);
     after.addEventListener('input', () => {
       if (activeResumeWorkflow?.tailoringSuggestions?.[index]) {
         activeResumeWorkflow.tailoringSuggestions[index].after = after.value;
         void chrome.storage.local.set({ resumeWorkflows });
+        diffContainer.innerHTML = renderWordLevelDiff(edit.before || '', after.value);
       }
     });
-    const reason = document.createElement('p'); reason.textContent = edit.reason || '';
-    const evidence = document.createElement('p'); evidence.textContent = (edit.evidence || []).join('; ');
+    const reason = document.createElement('p'); reason.className = 'muted small'; reason.textContent = edit.reason ? `Reason: ${edit.reason}` : '';
+    const evidence = document.createElement('p'); evidence.className = 'muted small'; evidence.textContent = (edit.evidence || []).join('; ');
     if (!reason.textContent) reason.remove();
     if (!evidence.textContent) evidence.remove();
-    article.append(before, afterLabel, after, reason, evidence); editRoot.append(article);
+    article.append(diffContainer, afterLabel, after, reason, evidence);
+    editRoot.append(article);
   });
+
+  // Phase D: "Not added because you didn't confirm" Gap Card
+  const unconfirmedGaps = items.filter(item => ['MISSING', 'UNKNOWN'].includes(item?.classification)
+    && !candidateRequirementConfirmations[normalizeAnswerKey(item.name)]);
+  if (unconfirmedGaps.length) {
+    const gapsCard = document.createElement('div');
+    gapsCard.className = 'unconfirmed-gaps-card';
+    const gapsTitle = document.createElement('h4');
+    gapsTitle.textContent = `Not added because you haven't confirmed (${unconfirmedGaps.length} gaps)`;
+    const gapsDesc = document.createElement('p');
+    gapsDesc.textContent = 'To keep your resume truthful, these skills were omitted. You can confirm them below to include them in tailoring:';
+    gapsCard.append(gapsTitle, gapsDesc);
+
+    unconfirmedGaps.slice(0, 6).forEach(gap => {
+      const gapRow = document.createElement('div');
+      gapRow.className = 'gap-item';
+      const gapName = document.createElement('span');
+      gapName.textContent = gap.name;
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'gap-confirm-btn';
+      confirmBtn.textContent = 'Confirm skill';
+      confirmBtn.addEventListener('click', () => {
+        const targetIdx = askItems.findIndex(i => normalizeAnswerKey(i.name) === normalizeAnswerKey(gap.name));
+        requirementConfirmationIndex = targetIdx >= 0 ? targetIdx : 0;
+        renderTailoringReview(workflow);
+        requirements.scrollIntoView({ behavior: 'smooth' });
+      });
+      gapRow.append(gapName, confirmBtn);
+      gapsCard.append(gapRow);
+    });
+    editRoot.append(gapsCard);
+  }
 }
 
 function unansweredTailoringRequirements(items = []) {
@@ -715,8 +902,17 @@ async function generateApprovedTailoredResume() {
     working = working.replace(source.before, text);
     edits.push({ ...source, after: text });
   }
+
+  // Principle 3: Fail loudly. Never produce a file called "tailored" when nothing changed.
+  if (!edits.length || working === $('resumeText').value.trim()) {
+    setStatus('Cannot generate tailored resume: No valid edits were selected or applied. A tailored resume must contain verified changes from master.', 'error');
+    alert('Cannot generate tailored resume: No valid edits were selected or applied. A tailored resume must contain verified changes from master.');
+    return;
+  }
+
   approvedTailoringEdits = edits;
   tailoredWorkingCopy = working;
+  await recordLearningLoopFeedback(edits, allSuggestions);
   const applyAfter = Boolean(workflow.tailoringApplyAfter);
   await persistResumeWorkflow({
     ...workflow, status: 'TAILORING_IN_PROGRESS', acceptedTailoringEditIndexes: selected.map(control => Number(control.dataset.tailoringEditIndex)),
@@ -825,21 +1021,21 @@ function normalizeAnswerKey(value) {
 function mapApplicationQuestionField(question) {
   const text = normalizeAnswerKey(question);
   if (/full name|candidate name|your name|first name|last name/.test(text)) return 'fullName';
-  if (/\bemail\b|email id/.test(text)) return 'email';
-  if (/\bphone\b|\bmobile\b|contact number/.test(text)) return 'phone';
-  if (/graduat|passing year|pass out|completion year|year of (?:your )?(?:degree|study)|when did you (?:complete|graduate)/.test(text)) return 'graduationYear';
-  if (/highest qualification|highest education|degree|educational qualification|course|major|branch of study/.test(text)) return 'qualification';
+  if (/\bemail\b|email id|email address/.test(text)) return 'email';
+  if (/\bphone\b|\bmobile\b|contact number|phone number/.test(text)) return 'phone';
+  if (/graduat|pass(?:ing)? year|year of passing|pass out|completion year|year of (?:your )?(?:degree|study)|when did you (?:complete|graduate)/.test(text)) return 'graduationYear';
+  if (/highest qualification|highest education|\bqualification\b|degree|educational qualification|course|major|branch of study/.test(text)) return 'qualification';
   if (/college|university|institute|school name/.test(text)) return 'college';
   if (/current (?:city|location|residence)|where do you live|location/.test(text)) return 'currentLocation';
   if (/programming language|languages do you know/.test(text)) return 'programmingLanguages';
   if (/technical skills|skills do you know|technologies do you know|frameworks do you know/.test(text)) return 'technicalSkills';
-  if (/how many years|total experience|years of experience|experience do you have/.test(text)) return 'totalExperience';
+  if (/how many years|total experience|years of experience|experience do you have|experience in years|\bexperience\b/.test(text)) return 'totalExperience';
   if (/notice period|when can you join|joining date|available to join|immediate join|available immediately/.test(text)) return 'availability';
   if (/expected (?:salary|ctc|compensation)|salary expectation|expected pay/.test(text)) return 'expectedSalary';
   if (/current (?:salary|ctc)|present (?:salary|ctc)/.test(text)) return 'currentSalary';
   if (/relocat/.test(text)) return 'willingToRelocate';
   if (/work arrangement|work mode|work from (?:home|office)|on.?site|remote work/.test(text)) return 'preferredWorkArrangement';
-  if (/write a message|message|cover letter|why should we hire|about yourself|note to recruiter|additional info/.test(text)) return 'coverLetter';
+  if (/write a message|80-100 words|message|cover letter|why should we hire|about yourself|note to recruiter|additional info|pitch/.test(text)) return 'coverLetter';
   return '';
 }
 
@@ -1208,9 +1404,25 @@ async function findApplicationQuestions(tabId) {
               grouped.add(key);
               let radioPrompt = element.closest('fieldset')?.querySelector('legend')?.innerText?.trim();
               if (!radioPrompt) {
+                let current = element.parentElement;
+                while (current && current !== document.body && !radioPrompt) {
+                  let prev = current.previousElementSibling;
+                  while (prev) {
+                    const text = (prev.innerText || prev.textContent || '').trim();
+                    if (text.length >= 8 && (/\?/.test(text) || /\b(?:how much|how many|do you have|experience|projects|years|notice|ctc|salary|location|vue|laravel|php|react)\b/i.test(text))) {
+                      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 5 && (/\?/.test(l) || /\bexperience\b/i.test(l)));
+                      radioPrompt = lines.pop() || text;
+                      break;
+                    }
+                    prev = prev.previousElementSibling;
+                  }
+                  current = current.parentElement;
+                }
+              }
+              if (!radioPrompt) {
                 const container = element.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], form, [class*="container" i]');
                 if (container) {
-                  const botMsgs = [...container.querySelectorAll('[class*="bot-msg" i], [class*="message" i], [class*="bubble" i], h1, h2, h3, h4, p')]
+                  const botMsgs = [...container.querySelectorAll('[class*="bot-msg" i], [class*="message" i], [class*="bubble" i], h1, h2, h3, h4, p, div')]
                     .filter(visible)
                     .map(el => (el.innerText || '').trim())
                     .filter(t => t.length > 5 && (/\?/.test(t) || /\b(?:how much|how many|do you have|experience|years|notice|ctc|salary|location|vue|laravel|php|react)\b/i.test(t)));
@@ -1384,7 +1596,7 @@ async function suggestApplicationAnswers() {
     const profileStorage = profileKey ? await chrome.storage.local.get([profileKey, 'fullName']) : await chrome.storage.local.get(['fullName']);
     const resumeProfile = profileStorage[profileKey]?.profile || {};
     const savedFullName = cleanText(profileStorage.fullName || $('fullNameInput').value);
-    const questions = detected.map(item => {
+    const questions = await Promise.all(detected.map(async item => {
       const fieldKey = mapApplicationQuestionField(item.question);
       const stored = (fieldKey && confirmed[fieldKey]?.verified && confirmed[fieldKey])
         || confirmed[`question:${normalizeAnswerKey(item.question)}`];
@@ -1414,6 +1626,15 @@ async function suggestApplicationAnswers() {
           verified = true;
         }
       }
+      if (!answer) {
+        const quick = await resolveApplicationQuestionAnswer(item.question, item.options);
+        if (quick?.answer) {
+          answer = quick.answer;
+          answerSource = quick.source || 'resume_experience';
+          verified = true;
+          evidence = 'Resume project & framework match';
+        }
+      }
       if (verified && item.options?.length) {
         const expected = normalizeAnswerKey(answer);
         const exact = item.options.find(option => normalizeAnswerKey(option.label) === expected || normalizeAnswerKey(option.value) === expected);
@@ -1423,10 +1644,15 @@ async function suggestApplicationAnswers() {
           : [];
         if (exact) answer = exact.label;
         else if (supportedCheckboxes.length) answer = supportedCheckboxes.map(option => option.label).join(', ');
-        else { answer = ''; verified = false; answerSource = ''; evidence = ''; }
+        else {
+          // If loose match found
+          const partial = item.options.find(option => normalizeAnswerKey(option.label).includes(expected) || expected.includes(normalizeAnswerKey(option.label)));
+          if (partial) answer = partial.label;
+          else { answer = ''; verified = false; answerSource = ''; evidence = ''; }
+        }
       }
       return { ...item, fieldKey, sensitive: SENSITIVE_QUESTION_PATTERN.test(item.question), answer, verified, answerSource, evidence, alreadyFilled: Boolean(item.currentValue) };
-    });
+    }));
     const answerable = questions.filter(item => !item.sensitive && !item.verified && !item.alreadyFilled);
     let generated = [];
     if (answerable.length && resumeText) {
@@ -1446,9 +1672,13 @@ async function suggestApplicationAnswers() {
       }
     }
     const generatedById = new Map(generated.map(item => [item.id, item]));
-    const resolved = questions.map(question => {
+    const resolved = await Promise.all(questions.map(async question => {
       const draft = generatedById.get(question.id);
       let draftAnswer = cleanText(draft?.answer);
+      if (!draftAnswer && !question.sensitive) {
+        const quick = await resolveApplicationQuestionAnswer(question.question, question.options);
+        if (quick?.answer) draftAnswer = quick.answer;
+      }
       if (!draftAnswer && !question.sensitive) {
         draftAnswer = draftOpenEndedApplicationAnswer(question.question, resumeText, $('jobDescription')?.value?.trim(), resumeProfile);
       }
@@ -1464,12 +1694,12 @@ async function suggestApplicationAnswers() {
       return {
         ...question,
         answer: question.answer || (question.sensitive || question.alreadyFilled ? '' : (draftAnswer || '')),
-        answerSource: question.answerSource || (draft?.answer ? 'ai_draft' : ''),
+        answerSource: question.answerSource || (draft?.answer ? 'ai_draft' : (draftAnswer ? 'ai_open_ended' : '')),
         autoFillable,
         needsUserInput: question.sensitive || (!question.verified && !autoFillable),
-        confidence: question.verified ? 'high' : (draft?.confidence || 'low')
+        confidence: question.verified ? 'high' : (draft?.confidence || (draftAnswer ? 'high' : 'low'))
       };
-    });
+    }));
     renderApplicationAnswers(resolved);
     const fillableIds = resolved.filter(item => (item.verified || item.autoFillable) && !item.alreadyFilled && !item.sensitive).map(item => item.id);
     const fillResult = fillableIds.length ? await fillReviewedApplicationAnswers(fillableIds) : null;
@@ -1799,7 +2029,7 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
     if (!answers.length) throw new Error('Add or review an answer before filling.');
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id }, args: [answers],
-      func: values => {
+      func: async values => {
         let filled = 0; let skipped = 0; const filledIds = [];
         const visible = el => Boolean(el?.getClientRects().length)
           && getComputedStyle(el).visibility !== 'hidden'
@@ -1814,11 +2044,11 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           let fields = elementsIn(document).filter(field => field.dataset.menixAnswerId === item.id);
           // Fallback: If dataset.menixAnswerId was lost during React re-renders, find active chatbot or modal input
           if (!fields.length) {
-            const chatInput = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [class*="chatbot" i] input, [class*="chat" i] input, [class*="drawer" i] input');
+            const chatInput = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [class*="chatbot" i] input, [class*="chat" i] input, [class*="drawer" i] input, [class*="chatbot" i] textarea, [class*="chat" i] textarea, [role="textbox"], [contenteditable="true"]');
             if (chatInput && visible(chatInput)) fields = [chatInput];
           }
           if (!fields.length) {
-            const modalInput = document.querySelector('[class*="drawer" i] input:not([type="hidden"]), [class*="modal" i] input:not([type="hidden"]), [class*="dialog" i] input:not([type="hidden"])');
+            const modalInput = document.querySelector('[class*="drawer" i] input:not([type="hidden"]), [class*="modal" i] input:not([type="hidden"]), [class*="dialog" i] input:not([type="hidden"]), [class*="modal" i] textarea');
             if (modalInput && visible(modalInput)) fields = [modalInput];
           }
           if (!fields.length) {
@@ -1829,7 +2059,6 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           if (!fields.length) { skipped++; continue; }
           const first = fields[0];
           if (first instanceof HTMLSelectElement) {
-            if (first.value) { skipped++; continue; }
             const target = normalize(item.answer);
             const option = [...first.options].find(entry => normalize(entry.textContent) === target || normalize(entry.value) === target);
             if (!option) { skipped++; continue; }
@@ -1841,7 +2070,7 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           if (first instanceof HTMLInputElement && first.type === 'radio') {
             const target = normalize(item.answer);
             const choice = fields.find(field => normalize(field.closest('label')?.innerText || document.querySelector(`label[for="${CSS.escape(field.id || '')}"]`)?.innerText || field.value) === target);
-            if (!choice || fields.some(field => field.checked)) { skipped++; continue; }
+            if (!choice) { skipped++; continue; }
             choice.checked = true; choice.dispatchEvent(new Event('input', { bubbles: true })); choice.dispatchEvent(new Event('change', { bubbles: true }));
             if (choice.checked) { filled++; filledIds.push(item.id); } else skipped++;
             continue;
@@ -1863,33 +2092,30 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
               if (matched.every(choice => choice.checked)) { filled++; filledIds.push(item.id); } else skipped++;
               continue;
             }
-            if (first.checked) { skipped++; continue; }
-            if (!['yes', 'true', 'agree', 'checked', '1'].includes(target)) { skipped++; continue; }
             first.checked = true; first.dispatchEvent(new Event('input', { bubbles: true })); first.dispatchEvent(new Event('change', { bubbles: true }));
             if (first.checked) { filled++; filledIds.push(item.id); } else skipped++;
             continue;
           }
           if (first.getAttribute('role') === 'combobox') { skipped++; continue; }
-          if (String(first.value || '').trim()) { skipped++; continue; }
-          const prototype = first instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          const prototype = Object.getPrototypeOf(first);
+          const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value')
+            || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+            || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
           first.focus();
           if (first instanceof HTMLInputElement || first instanceof HTMLTextAreaElement) {
-            const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-            if (setter) setter.call(first, item.answer);
-            else first.value = item.answer;
-            // Clear React valueTracker so React detects input change and enables Save button
             if (first._valueTracker) first._valueTracker.setValue('');
+            if (descriptor && descriptor.set) descriptor.set.call(first, item.answer);
+            else first.value = item.answer;
           } else if (first.isContentEditable) first.innerText = item.answer;
           else first.textContent = item.answer;
 
           first.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
           try { first.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: item.answer, inputType: 'insertText' })); } catch {}
           first.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-          first.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
 
           filled++; filledIds.push(item.id);
 
-          // Automatically activate and click the Save/Submit button in the drawer
+          // Automatically activate and click the Save/Submit button in the drawer/dialog
           const clickDrawerSave = () => {
             const drawer = first.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], form') || document.body;
             const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*|next\b.*)$/i;
@@ -1902,14 +2128,17 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
               saveBtn.disabled = false;
               saveBtn.removeAttribute('aria-disabled');
               saveBtn.classList.remove('disabled');
+              saveBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+              saveBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
               try { saveBtn.click(); } catch {}
             }
             first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
             first.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
           };
 
-          setTimeout(clickDrawerSave, 150);
-          setTimeout(clickDrawerSave, 500);
+          clickDrawerSave();
+          await new Promise(r => setTimeout(r, 200));
+          clickDrawerSave();
         }
         return { filled, skipped, filledIds };
       }
@@ -1919,13 +2148,15 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
     for (const item of answers) {
       if (filledIds.has(item.id) && item.remember) await rememberConfirmedApplicationAnswer(item.question, item.fieldKey, item.answer);
     }
-    setStatus(`Answer filled and submitted to Naukri! Checking for next question…`, 'success');
     if (outcome.filled > 0) {
+      setStatus(`Answer filled and submitted to Naukri! Checking for next question…`, 'success');
       window.setTimeout(async () => {
         try {
           await suggestApplicationAnswers();
         } catch {}
       }, 900);
+    } else {
+      setStatus(`Could not automatically fill the answer. Please check if the field is active on the page.`, 'info');
     }
     return outcome;
   } catch (error) { setStatus(error.message, 'error'); return null; }
@@ -2475,19 +2706,8 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       return;
     }
 
-    // Only clear previous job if switching to a genuinely new job URL
+    // If on a new job URL, prepare status but do not blank inputs until new details arrive
     if (isNewJobUrl && attempt === 0) {
-      activeResumeWorkflow = null;
-      $('jobTitleInput').value = '';
-      $('companyInput').value = '';
-      $('locationInput').value = '';
-      $('jobUrl').value = tab.url;
-      $('jobDescription').value = '';
-      jobMetadata = {};
-      recruiterContact = null;
-      renderRecruiterContact('checking');
-      updateJobSummary();
-      invalidateAnalysis();
       setStatus('Capturing job details…', 'info');
     }
 
@@ -2727,12 +2947,10 @@ async function captureActiveJob(tabId = null, attempt = 0) {
           })(),
           alreadyApplied: (() => {
             const norm = str => String(str || '').replace(/\s+/g, ' ').trim().toLowerCase();
-            const visible = el => Boolean(el?.getClientRects().length)
-              && getComputedStyle(el).visibility !== 'hidden'
-              && getComputedStyle(el).display !== 'none';
-            const elements = [...document.querySelectorAll('main button, main a, main span, button, a, span, [role="button"]')].filter(visible);
+            const elements = [...document.querySelectorAll('[class*="apply" i], [class*="status" i], [data-testid*="apply" i], button, [role="button"]')];
             return elements.some(el => {
-              const text = norm(el.innerText || el.getAttribute('aria-label'));
+              if (!el.getClientRects().length) return false;
+              const text = norm(el.innerText || el.getAttribute('aria-label') || '');
               const isAppliedText = /^(?:already applied|applied\b|applied on\s+\d+|application submitted)$/i.test(text);
               const classNameStr = String(el.className || '');
               const hasAppliedClass = el.classList?.contains('applied') || el.classList?.contains('already-applied') || /applied/i.test(classNameStr);
