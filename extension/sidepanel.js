@@ -903,8 +903,9 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
     return { answer: confirmed[fieldKey].value, source: 'user_confirmed' };
   }
 
-  // 3. Specific skill experience question (e.g. "How many years of experience do you have in Laravel?")
-  const skillMatch = questionText.match(/(?:years?(?:\s+of)?(?:\s+experience)?\s+(?:in|with|on)\s+|experience\s+(?:in|with|on)\s+|knowledge\s+of\s+|hands[- ]on\s+with\s+|worked\s+with\s+|proficiency\s+in\s+)([A-Za-z0-9#+.\s-]{2,30}?)(?:\?|\s+for|\s+at|\s+to|\s*$)/i);
+  // 3. Specific skill experience question (e.g. "How many years of experience do you have in Laravel?" or "How much practical experience do you have developing with Vue.js?")
+  const skillMatch = questionText.match(/(?:years?(?:\s+of)?(?:\s+experience)?\s+(?:in|with|on|using)|experience\s+(?:do you have\s+)?(?:in|with|on|using|developing\s+with)|knowledge\s+of|worked\s+with|proficiency\s+in|working\s+with|developing\s+with)\s+([A-Za-z0-9#+.\s-]{2,30}?)(?:\?|\s+for|\s+at|\s+to|\s*$)/i)
+    || questionText.match(/\b(?:developing\s+with|working\s+with|experience\s+in)\s+([A-Za-z0-9#+.\s-]{2,30}?)(?:\?|\s*$)/i);
   if (skillMatch) {
     const rawSkill = skillMatch[1].trim();
     const skillNorm = normalizeAnswerKey(rawSkill);
@@ -922,10 +923,10 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
     const hasSkill = new RegExp(`\\b${escaped}\\b`, 'i').test(resumeText);
 
     if (!hasSkill) {
-      // Skill NOT in resume -> 0 years / No
-      if (options.length && options.some(o => /^(?:no|0|0\s*years?|none)$/i.test(o.label || o.value))) {
-        const matching = options.find(o => /^(?:no|0|0\s*years?|none)$/i.test(o.label || o.value));
-        return { answer: matching.label || matching.value, source: 'resume_skill_missing' };
+      // Skill NOT in resume -> 0 years / No / No practical experience
+      if (options.length) {
+        const matching = options.find(o => /^(?:no|0|0\s*years?|none|no practical|no experience)\b/i.test(o.label || o.value));
+        if (matching) return { answer: matching.label || matching.value, source: 'resume_skill_missing' };
       }
       return { answer: '0', source: 'resume_skill_missing' };
     } else {
@@ -942,6 +943,16 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
         return { answer: 'Yes', source: 'resume_skill_found' };
       }
       if (options.length) {
+        if (years >= 3) {
+          const opt3 = options.find(o => /3\+|3\s*years?|3\s*yrs?|3\+?\s*independent/i.test(o.label || o.value));
+          if (opt3) return { answer: opt3.label || opt3.value, source: 'resume_skill_found' };
+        }
+        if (years >= 1) {
+          const opt12 = options.find(o => /1\s*[-–]\s*2|1\s*year|2\s*years?|independent/i.test(o.label || o.value));
+          if (opt12) return { answer: opt12.label || opt12.value, source: 'resume_skill_found' };
+        }
+        const optAcad = options.find(o => /academic|basic|college/i.test(o.label || o.value));
+        if (optAcad) return { answer: optAcad.label || optAcad.value, source: 'resume_skill_found' };
         const numOpt = options.find(o => new RegExp(`^${years}(?:\\+?\\s*years?)?$`, 'i').test(o.label || o.value));
         if (numOpt) return { answer: numOpt.label || numOpt.value, source: 'resume_skill_found' };
       }
@@ -1106,7 +1117,18 @@ async function findApplicationQuestions(tabId) {
               : [element];
             if (group.length > 1 || element.type === 'radio') {
               grouped.add(key);
-              const question = element.closest('fieldset')?.querySelector('legend')?.innerText?.trim() || labelFor(element);
+              let radioPrompt = element.closest('fieldset')?.querySelector('legend')?.innerText?.trim();
+              if (!radioPrompt) {
+                const container = element.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], form, [class*="container" i]');
+                if (container) {
+                  const botMsgs = [...container.querySelectorAll('[class*="bot-msg" i], [class*="message" i], [class*="bubble" i], h1, h2, h3, h4, p')]
+                    .filter(visible)
+                    .map(el => (el.innerText || '').trim())
+                    .filter(t => t.length > 5 && (/\?/.test(t) || /\b(?:how much|how many|do you have|experience|years|notice|ctc|salary|location|vue|laravel|php|react)\b/i.test(t)));
+                  radioPrompt = botMsgs[botMsgs.length - 1];
+                }
+              }
+              const question = radioPrompt || labelFor(element);
               const id = `menix-question-${output.length}`;
               group.forEach(item => { item.dataset.menixAnswerId = id; });
               output.push({ id, question, kind: element.type, options: group.map(item => ({ value: item.value, label: item.closest('label')?.innerText?.trim() || [...(item.labels || [])].map(label => label.innerText.trim()).join(' ') || item.value })), currentValue: group.find(item => item.checked)?.value || '', currentLabel: group.find(item => item.checked)?.closest('label')?.innerText?.trim() || '' });
@@ -2120,6 +2142,15 @@ if (embeddedPanelParams.get('embedded') === '1') {
       token: embeddedPanelParams.get('closeToken')
     }, '*');
   });
+  if ($('minimizeEmbeddedPanel')) {
+    $('minimizeEmbeddedPanel').classList.remove('hidden');
+    $('minimizeEmbeddedPanel').addEventListener('click', () => {
+      window.parent.postMessage({
+        type: 'MENIX_MINIMIZE_PANEL',
+        token: embeddedPanelParams.get('closeToken')
+      }, '*');
+    });
+  }
 }
 
 $('viewResumeBtn').addEventListener('click', () => {
@@ -3096,6 +3127,37 @@ async function handleNaukriDirectApply(tabId) {
             const visible = el => Boolean(el?.getClientRects().length)
               && getComputedStyle(el).visibility !== 'hidden'
               && getComputedStyle(el).display !== 'none';
+
+            // 0. Try clicking matching RADIO BUTTONS first
+            const radios = [...document.querySelectorAll('input[type="radio"]')].filter(visible);
+            if (radios.length) {
+              const normAns = normalize(ans);
+              const matchedRadio = radios.find(r => {
+                const lbl = normalize(r.closest('label')?.innerText || document.querySelector(`label[for="${CSS.escape(r.id || '')}"]`)?.innerText || r.value || '');
+                return lbl === normAns
+                  || lbl.includes(normAns) || normAns.includes(lbl)
+                  || (normAns === '0' && /^(?:0|no\b|none|no practical)/i.test(lbl))
+                  || (/no practical/i.test(normAns) && /no practical/i.test(lbl))
+                  || (/independent/i.test(normAns) && lbl.includes('independent'))
+                  || (/academic/i.test(normAns) && lbl.includes('academic'));
+              });
+              if (matchedRadio) {
+                matchedRadio.click();
+                matchedRadio.checked = true;
+                matchedRadio.dispatchEvent(new Event('input', { bubbles: true }));
+                matchedRadio.dispatchEvent(new Event('change', { bubbles: true }));
+
+                // Click Save button
+                const drawer = matchedRadio.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], form') || document.body;
+                const savePattern = /^(?:save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
+                const saveBtn = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible).find(b => {
+                  if (b === matchedRadio || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+                  return savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || ''));
+                });
+                if (saveBtn) saveBtn.click();
+                return { success: true, method: 'radio', saved: Boolean(saveBtn) };
+              }
+            }
 
             // 1. Try clicking a matching chip/pill FIRST
             if (chips.length) {

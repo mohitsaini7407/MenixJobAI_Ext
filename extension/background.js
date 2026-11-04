@@ -169,16 +169,50 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
       const frame = document.createElement('iframe');
       frame.title = 'MenixJobAI'; frame.src = extensionPanelUrl;
       frame.style.cssText = 'width:100%;height:100%;border:0;';
-      const onClose = event => {
-        if (event.source !== frame.contentWindow || event.data?.type !== 'MENIX_CLOSE_PANEL' || event.data?.token !== closeToken) return;
-        dock.__menixCleanup?.();
-        dock.remove();
+      let isCollapsed = false;
+      const toggleCollapse = () => {
+        isCollapsed = !isCollapsed;
+        if (isCollapsed) {
+          dock.style.width = '42px';
+          dock.style.height = '42px';
+          dock.style.top = '100px';
+          dock.style.right = '0';
+          dock.style.bottom = 'auto';
+          dock.style.borderRadius = '21px 0 0 21px';
+          dock.style.boxShadow = '-2px 4px 14px rgba(0,0,0,0.4)';
+          dock.style.cursor = 'pointer';
+          restorePageLayout();
+        } else {
+          dock.style.width = `${dockWidth}px`;
+          dock.style.height = '100vh';
+          dock.style.top = '0';
+          dock.style.right = '0';
+          dock.style.bottom = '0';
+          dock.style.borderRadius = '0';
+          dock.style.boxShadow = 'none';
+          dock.style.cursor = 'default';
+          if (body) body.style.setProperty('width', `calc(100vw - ${dockWidth}px)`, 'important');
+        }
+      };
+
+      const onMessage = event => {
+        if (event.source !== frame.contentWindow) return;
+        if (event.data?.type === 'MENIX_CLOSE_PANEL' && event.data?.token === closeToken) {
+          dock.__menixCleanup?.();
+          dock.remove();
+        }
+        if (event.data?.type === 'MENIX_MINIMIZE_PANEL' && event.data?.token === closeToken) {
+          toggleCollapse();
+        }
       };
       dock.__menixCleanup = () => {
-        window.removeEventListener('message', onClose);
+        window.removeEventListener('message', onMessage);
         restorePageLayout();
       };
-      window.addEventListener('message', onClose);
+      window.addEventListener('message', onMessage);
+      dock.addEventListener('click', () => {
+        if (isCollapsed) toggleCollapse();
+      });
       dock.append(frame);
       document.documentElement.append(dock);
     }
