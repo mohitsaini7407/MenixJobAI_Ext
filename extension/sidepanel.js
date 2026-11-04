@@ -1374,12 +1374,28 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
   }
 
   if (fieldKey === 'qualification') {
-    const deg = cleanText(resumeProfile.degree) || extractVerifiedResumeAnswer('qualification', resumeText);
-    if (deg) return { answer: deg, source: 'resume_degree' };
+    const deg = cleanText(resumeProfile.degree) || extractVerifiedResumeAnswer('qualification', resumeText) || 'B.Tech';
+    if (options && options.length) {
+      const normDeg = normalizeAnswerKey(deg);
+      const matched = options.find(o => {
+        const l = normalizeAnswerKey(o.label || o.value);
+        return l.includes(normDeg) || normDeg.includes(l)
+          || (/btech|b\.tech|b\.e|bachelor/i.test(deg) && /btech|b\.tech|b\.e|bachelor|graduate/i.test(l))
+          || (/mtech|m\.tech|master/i.test(deg) && /mtech|m\.tech|master|post/i.test(l));
+      });
+      if (matched) return { answer: matched.label || matched.value, source: 'resume_degree' };
+    }
+    return { answer: deg, source: 'resume_degree' };
   }
 
   if (fieldKey === 'graduationYear') {
-    const yr = extractVerifiedResumeAnswer('graduationYear', resumeText) || '2026';
+    const yr = extractVerifiedResumeAnswer('graduationYear', resumeText) || '2025';
+    if (options && options.length) {
+      const exact = options.find(o => (o.label || o.value || '').includes(yr));
+      if (exact) return { answer: exact.label || exact.value, source: 'resume_graduation' };
+      const latest = options.find(o => /\b(?:2025|2026|2024)\b/.test(o.label || o.value)) || options[0];
+      if (latest) return { answer: latest.label || latest.value, source: 'resume_graduation' };
+    }
     return { answer: yr, source: 'resume_graduation' };
   }
 
@@ -2163,13 +2179,44 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
             .filter(visible)
             .filter(el => !el.closest('#__menixjobai_dock, .app'));
           const targetAnswer = normalize(item.answer);
+          const yrMatch = targetAnswer.match(/\b(20\d\d)\b/);
           const matchedChip = chips.find(c => {
             const t = normalize(c.innerText || c.value || '');
-            return t === targetAnswer || t.includes(targetAnswer) || targetAnswer.includes(t);
+            return t === targetAnswer || t.includes(targetAnswer) || targetAnswer.includes(t)
+              || (yrMatch && t.includes(yrMatch[1]))
+              || (/15\s*days?|immediate/i.test(targetAnswer) && /15\s*days?|immediate/i.test(t))
+              || (/^0\b/.test(targetAnswer) && /^(?:0|no|none|no practical)\b/i.test(t));
           });
           if (matchedChip) {
+            const opts = { bubbles: true, cancelable: true, view: window };
+            matchedChip.dispatchEvent(new PointerEvent('pointerdown', opts));
+            matchedChip.dispatchEvent(new MouseEvent('mousedown', opts));
+            matchedChip.dispatchEvent(new PointerEvent('pointerup', opts));
+            matchedChip.dispatchEvent(new MouseEvent('mouseup', opts));
             matchedChip.click();
-            matchedChip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+            // Also check for Save button after clicking chip
+            await new Promise(r => setTimeout(r, 200));
+            const container = matchedChip.closest('[class*="chatbot" i], [class*="chat" i], [class*="drawer" i], [class*="modal" i], form') || drawer || document.body;
+            const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*|next\b.*)$/i;
+            const allBtns = [...container.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], [class*="button" i], a, div, span')].filter(visible);
+            let saveBtn = allBtns.find(b => {
+              if (b === matchedChip || b.closest('#__menixjobai_dock, .app')) return false;
+              const txt = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
+              return savePattern.test(txt) || /chatbot.*save/i.test(b.className);
+            });
+            if (saveBtn) {
+              const clickable = saveBtn.closest('button, [role="button"], [class*="save" i], [class*="btn" i]') || saveBtn;
+              clickable.disabled = false;
+              clickable.removeAttribute('disabled');
+              clickable.removeAttribute('aria-disabled');
+              clickable.classList.remove('disabled');
+              clickable.dispatchEvent(new PointerEvent('pointerdown', opts));
+              clickable.dispatchEvent(new MouseEvent('mousedown', opts));
+              clickable.dispatchEvent(new PointerEvent('pointerup', opts));
+              clickable.dispatchEvent(new MouseEvent('mouseup', opts));
+              try { clickable.click(); } catch {}
+            }
             filled++; filledIds.push(item.id);
             continue;
           }
@@ -3654,7 +3701,7 @@ async function returnToJobAndClickApply(profileTabId = activeResumeWorkflow?.pro
 
 async function handleNaukriDirectApply(tabId) {
   setStatus('Monitoring Naukri application screener & questionnaire…', 'info');
-  const deadline = Date.now() + 90_000;
+  const deadline = Date.now() + 120_000;
   let applicationConfirmed = false;
   let lastProcessedQuestion = '';
   let questionStuckCount = 0;
@@ -3675,71 +3722,52 @@ async function handleNaukriDirectApply(tabId) {
 
           const bodyText = (document.body?.innerText || '').toLowerCase();
 
-          // 0. Check for error banner: "application was not accepted due to incomplete information"
-          if (/not accepted due to incomplete information|incomplete information|answer all mandatory questions/i.test(bodyText)) {
-            // Check if there is a Re-apply button or chat still open
-            const reapplyBtn = [...document.querySelectorAll('button, a, [role="button"]')].filter(visible).find(el => {
-              const lbl = normalize(el.innerText || el.getAttribute('aria-label'));
-              return /^(?:apply|reapply|apply again|try again)$/i.test(lbl);
-            });
-            if (reapplyBtn && !reapplyBtn.disabled) {
-              reapplyBtn.click();
-              return { state: 'reapplying' };
+          // 1. FIRST PRIORITY: Check if a Naukri Chatbot drawer or questionnaire is open
+          const chatInput = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [contenteditable="true"][placeholder*="message" i], [class*="chatbot" i] input, [class*="chat" i] input, [class*="chatbot" i] textarea, [class*="chat" i] textarea');
+          const specificDrawer = document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot-container" i], [class*="chat-container" i], [class*="chat_container" i], [class*="apply-message" i], [data-testid*="chatbot" i]');
+          const chatContainer = chatInput ? (chatInput.closest('[class*="drawer" i], [class*="chat" i], [class*="modal" i], [class*="container" i]') || specificDrawer) : specificDrawer;
+
+          const isChatbotVisible = Boolean((chatContainer && visible(chatContainer)) || (chatInput && visible(chatInput)));
+
+          if (isChatbotVisible) {
+            const container = (chatContainer && visible(chatContainer)) ? chatContainer : (chatInput?.closest('[class*="drawer" i], [class*="container" i]') || document.body);
+            const containerText = (container.innerText || '').toLowerCase();
+
+            // Check if chatbot explicitly completed / submitted
+            if (/successfully applied|application (?:has been |was )?(?:sent|submitted|received)|thank you for applying|your application is submitted|application successful/i.test(containerText)) {
+              return { state: 'submitted', detail: 'Chatbot displayed completion text.' };
             }
-          }
 
-          // A. Check for success indicators
-          const successPattern = /successfully applied|application (?:has been |was )?(?:sent|submitted|received)|already applied|applied successfully|application successful/i;
-          if (successPattern.test(bodyText)) {
-            return { state: 'submitted', detail: 'Success text found on page.' };
-          }
-
-          // Check if Apply button on job card says "Applied"
-          const buttons = [...document.querySelectorAll('main button, main a, button, a, [role="button"]')].filter(visible);
-          const hasAppliedBtn = buttons.some(el => {
-            const label = normalize(el.innerText || el.getAttribute('aria-label'));
-            return /^(?:applied|already applied|applied on \d+.*)$/i.test(label)
-              && (el.classList.contains('apply-button') || /applied/i.test(el.className));
-          });
-          if (hasAppliedBtn) return { state: 'submitted', detail: 'Button changed to Applied.' };
-
-          // B. Check for Naukri Chatbot
-          // Find input with placeholder containing message/chat
-          const chatInput = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [contenteditable="true"][placeholder*="message" i]');
-          const specificDrawer = document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot-container" i], [class*="chat-container" i], [class*="apply-message" i], [data-testid*="chatbot" i]');
-          const chatContainer = chatInput ? chatInput.closest('[class*="drawer" i], [class*="chat" i], [class*="modal" i], [class*="container" i]') : specificDrawer;
-
-          if (chatContainer || chatInput) {
-            const container = chatContainer || chatInput?.parentElement?.parentElement || document.body;
-
-            // Extract bot message bubbles
-            const botBubbles = [...container.querySelectorAll('[class*="bot-msg" i], [class*="bot_msg" i], [class*="bot-message" i], [class*="msg-text" i], [class*="message-text" i], [class*="bubble" i], [class*="bot" i], p, div')]
+            // Extract bot message bubbles (ignore candidate's messages)
+            const botBubbles = [...container.querySelectorAll('[class*="bot-msg" i], [class*="bot_msg" i], [class*="bot-message" i], [class*="msg-text" i], [class*="message-text" i], [class*="bubble" i], [class*="bot" i] p, [data-testid*="bot" i], p')]
               .filter(visible)
-              .filter(el => !el.closest('[class*="user" i], [class*="sent" i], [class*="right" i], [class*="applicant" i]'))
+              .filter(el => !el.closest('[class*="user" i], [class*="sent" i], [class*="right" i], [class*="applicant" i], [class*="self" i]'))
               .map(el => (el.innerText || '').trim())
               .filter(t => t.length > 3 && !/^(?:hi\b|hello\b|welcome\b|kindly answer the following|please answer)/i.test(t));
 
-            // Find question text
             const activeQuestion = botBubbles[botBubbles.length - 1]
-              || [...container.querySelectorAll('p, div, span')].filter(visible).map(el => (el.innerText || '').trim()).filter(t => /\?/.test(t) || /\b(?:experience|years|notice|salary|ctc|location|degree|laravel|vue|react|python|php|skills?)\b/i.test(t)).pop();
+              || [...container.querySelectorAll('p, div, span')].filter(visible)
+                .filter(el => !el.closest('[class*="user" i], [class*="sent" i], [class*="right" i], [class*="applicant" i], [class*="self" i]'))
+                .map(el => (el.innerText || '').trim())
+                .filter(t => /\?/.test(t) || /\b(?:experience|years|notice|salary|ctc|location|degree|pass-out|graduation|pursue|web development|skills?)\b/i.test(t)).pop();
 
             // Extract chips/options inside the chat container
             const chips = [...container.querySelectorAll('[class*="chip" i], [class*="pill" i], [class*="option" i], [class*="quick-reply" i], [class*="button-item" i]')]
               .filter(visible)
-              .filter(el => !el.disabled && !/^(?:close|back|cancel|help|send)$/i.test((el.innerText || '').trim()))
+              .filter(el => !el.disabled && !/^(?:close|back|cancel|help)$/i.test((el.innerText || '').trim()))
               .map(el => ({ label: el.innerText.trim(), value: el.innerText.trim() }));
 
-            if (activeQuestion) {
+            if (activeQuestion || chips.length || (chatInput && visible(chatInput))) {
               return {
                 state: 'chatbot_question',
-                question: activeQuestion,
+                question: activeQuestion || 'Recruiter Chat Question',
                 chips,
-                hasInput: Boolean(chatInput)
+                hasInput: Boolean(chatInput && visible(chatInput))
               };
             }
           }
 
-          // C. Standard Questionnaire Dialog/Modal (non-chat)
+          // 2. Standard Questionnaire Dialog/Modal (non-chat)
           const drawerSelectors = [
             '[class*="apply-pop-up" i]', '[class*="apply-popup" i]', '[class*="drawer" i]',
             '[class*="apply-dialog" i]', '[class*="modal" i]', 'form[name*="apply" i]',
@@ -3747,7 +3775,7 @@ async function handleNaukriDirectApply(tabId) {
           ];
           const drawer = drawerSelectors.flatMap(sel => {
             try { return [...document.querySelectorAll(sel)]; } catch { return []; }
-          }).find(visible);
+          }).find(el => visible(el) && !el.closest('#__menixjobai_dock, .app'));
 
           if (drawer) {
             const questionTitle = drawer.querySelector('h1, h2, h3, h4, [class*="title" i], [class*="heading" i], legend')?.innerText?.trim() || '';
@@ -3762,6 +3790,37 @@ async function handleNaukriDirectApply(tabId) {
               selects: selects.map(s => ({ options: [...s.options].map(o => ({ label: o.text.trim(), value: o.value })), value: s.value })),
               textFieldsCount: textFields.length
             };
+          }
+
+          // 3. Check for error banner: "application was not accepted due to incomplete information"
+          if (/not accepted due to incomplete information|incomplete information|answer all mandatory questions/i.test(bodyText)) {
+            // Find Apply button to re-trigger the questionnaire drawer
+            const applyButtons = [...document.querySelectorAll('main button, main a, button, a, [role="button"]')].filter(visible);
+            const reapplyBtn = applyButtons.find(el => {
+              const lbl = normalize(el.innerText || el.getAttribute('aria-label'));
+              return /^(?:apply|reapply|apply again|try again|apply on naukri)$/i.test(lbl);
+            });
+            if (reapplyBtn && !reapplyBtn.disabled) {
+              reapplyBtn.click();
+              return { state: 'reapplying' };
+            }
+          }
+
+          // 4. Check for success indicators ONLY when no chatbot or modal is open
+          const successPattern = /successfully applied|application (?:has been |was )?(?:sent|submitted|received)|already applied|applied successfully|application successful/i;
+          if (successPattern.test(bodyText)) {
+            return { state: 'submitted', detail: 'Success text found on page.' };
+          }
+
+          // Check if Apply button on job card says "Applied"
+          const buttons = [...document.querySelectorAll('main button, main a, button, a, [role="button"]')].filter(visible);
+          const hasAppliedBtn = buttons.some(el => {
+            const label = normalize(el.innerText || el.getAttribute('aria-label'));
+            return /^(?:applied|already applied|applied on \d+.*)$/i.test(label)
+              && (el.classList.contains('apply-button') || /applied/i.test(el.className));
+          });
+          if (hasAppliedBtn) {
+            return { state: 'submitted', detail: 'Button changed to Applied and no questionnaire is open.' };
           }
 
           return { state: 'waiting' };
@@ -3779,7 +3838,7 @@ async function handleNaukriDirectApply(tabId) {
         break;
       }
 
-      // Check if an answer is already selected on the page but Save has not been clicked yet
+      // Check if an option/radio is already selected on the page but Save has not been clicked yet
       await chrome.scripting.executeScript({
         target: { tabId },
         func: () => {
@@ -3790,14 +3849,26 @@ async function handleNaukriDirectApply(tabId) {
           if (!drawer) return;
           const hasSelectedOption = drawer.querySelector('input[type="radio"]:checked, [class*="chip" i][class*="selected" i], [class*="chip" i][class*="active" i], [class*="pill" i][class*="active" i]');
           if (hasSelectedOption) {
-            const savePattern = /^(?:save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
-            const btns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
+            const savePattern = /^(?:save\b.*|save & next|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
+            const btns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], a, div, span')].filter(visible);
             const saveBtn = btns.find(b => {
-              if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+              if (b.closest('#__menixjobai_dock, .app')) return false;
               const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
-              return savePattern.test(lbl);
+              return savePattern.test(lbl) || /chatbot.*save/i.test(b.className);
             });
-            if (saveBtn) saveBtn.click();
+            if (saveBtn) {
+              const clickable = saveBtn.closest('button, [role="button"], [class*="save" i], [class*="btn" i]') || saveBtn;
+              clickable.disabled = false;
+              clickable.removeAttribute('disabled');
+              clickable.removeAttribute('aria-disabled');
+              clickable.classList.remove('disabled');
+              const opts = { bubbles: true, cancelable: true, view: window };
+              clickable.dispatchEvent(new PointerEvent('pointerdown', opts));
+              clickable.dispatchEvent(new MouseEvent('mousedown', opts));
+              clickable.dispatchEvent(new PointerEvent('pointerup', opts));
+              clickable.dispatchEvent(new MouseEvent('mouseup', opts));
+              try { clickable.click(); } catch {}
+            }
           }
         }
       }).catch(() => {});
@@ -3806,14 +3877,36 @@ async function handleNaukriDirectApply(tabId) {
         const question = result.question;
         if (question === lastProcessedQuestion) {
           questionStuckCount++;
-          if (questionStuckCount > 4) {
-            // Nudge: press enter on input or click send
+          if (questionStuckCount > 3) {
+            // Nudge: click any Save/Submit button or press Enter
             await chrome.scripting.executeScript({
               target: { tabId },
               func: () => {
+                const drawer = document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="chat_container" i], [class*="drawer" i], [class*="modal" i], form') || document.body;
+                const normalize = val => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*|next\b.*)$/i;
+                const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], [class*="button" i], a, div, span')].filter(el => Boolean(el?.getClientRects().length));
+                const saveBtn = allBtns.find(b => {
+                  if (b.closest('#__menixjobai_dock, .app')) return false;
+                  return savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || '')) || /chatbot.*save/i.test(b.className);
+                });
+                if (saveBtn) {
+                  const clickable = saveBtn.closest('button, [role="button"], [class*="save" i], [class*="btn" i]') || saveBtn;
+                  clickable.disabled = false;
+                  clickable.removeAttribute('disabled');
+                  clickable.removeAttribute('aria-disabled');
+                  clickable.classList.remove('disabled');
+                  const opts = { bubbles: true, cancelable: true, view: window };
+                  clickable.dispatchEvent(new PointerEvent('pointerdown', opts));
+                  clickable.dispatchEvent(new MouseEvent('mousedown', opts));
+                  clickable.dispatchEvent(new PointerEvent('pointerup', opts));
+                  clickable.dispatchEvent(new MouseEvent('mouseup', opts));
+                  try { clickable.click(); } catch {}
+                }
                 const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i]');
                 if (input && input.value) {
                   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                  input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                 }
               }
             });
@@ -3835,11 +3928,44 @@ async function handleNaukriDirectApply(tabId) {
         const [{ result: answered }] = await chrome.scripting.executeScript({
           target: { tabId },
           args: [answerText, result.chips || []],
-          func: (ans, chips) => {
+          func: async (ans, chips) => {
             const normalize = val => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
             const visible = el => Boolean(el?.getClientRects().length)
               && getComputedStyle(el).visibility !== 'hidden'
               && getComputedStyle(el).display !== 'none';
+
+            const opts = { bubbles: true, cancelable: true, view: window };
+
+            // Helper to activate and click Save button in drawer
+            const clickDrawerSave = async (rootEl) => {
+              const drawer = rootEl?.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], form')
+                || document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="drawer" i]')
+                || document.body;
+              const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*|next\b.*)$/i;
+              const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], [class*="button" i], a, div, span')].filter(visible);
+              let saveBtn = allBtns.find(b => {
+                if (b === rootEl || b.closest('#__menixjobai_dock, .app')) return false;
+                return savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || '')) || /chatbot.*save/i.test(b.className);
+              }) || [...document.querySelectorAll('button, [role="button"], [class*="save" i]')].filter(visible).find(b => {
+                if (b.closest('#__menixjobai_dock, .app')) return false;
+                return savePattern.test(normalize(b.innerText || b.value || ''));
+              });
+
+              if (saveBtn) {
+                const clickable = saveBtn.closest('button, [role="button"], [class*="save" i], [class*="btn" i]') || saveBtn;
+                clickable.disabled = false;
+                clickable.removeAttribute('disabled');
+                clickable.removeAttribute('aria-disabled');
+                clickable.classList.remove('disabled');
+                clickable.dispatchEvent(new PointerEvent('pointerdown', opts));
+                clickable.dispatchEvent(new MouseEvent('mousedown', opts));
+                clickable.dispatchEvent(new PointerEvent('pointerup', opts));
+                clickable.dispatchEvent(new MouseEvent('mouseup', opts));
+                try { clickable.click(); } catch {}
+                return true;
+              }
+              return false;
+            };
 
             // 0. Try clicking matching RADIO BUTTONS first
             const radios = [...document.querySelectorAll('input[type="radio"]')].filter(visible);
@@ -3859,51 +3985,45 @@ async function handleNaukriDirectApply(tabId) {
                 matchedRadio.checked = true;
                 matchedRadio.dispatchEvent(new Event('input', { bubbles: true }));
                 matchedRadio.dispatchEvent(new Event('change', { bubbles: true }));
-
-                // Click Save button
-                const drawer = matchedRadio.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], form') || document.body;
-                const savePattern = /^(?:save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
-                const saveBtn = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible).find(b => {
-                  if (b === matchedRadio || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
-                  return savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || ''));
-                });
-                if (saveBtn) saveBtn.click();
-                return { success: true, method: 'radio', saved: Boolean(saveBtn) };
+                await new Promise(r => setTimeout(r, 200));
+                const saved = await clickDrawerSave(matchedRadio);
+                return { success: true, method: 'radio', saved };
               }
             }
 
             // 1. Try clicking a matching chip/pill FIRST
             if (chips.length) {
               const normAns = normalize(ans);
+              const yrMatch = normAns.match(/\b(20\d\d)\b/);
               const allChips = [...document.querySelectorAll('[class*="chip" i], [class*="pill" i], [class*="option" i], [class*="quick-reply" i], [class*="button-item" i]')].filter(visible);
               const targetChip = allChips.find(el => {
                 const lbl = normalize(el.innerText || el.value || '');
                 return lbl === normAns
-                  || (normAns === '0' && /^(?:0|no|none|0\s*years?|0\s*yrs?)\b/i.test(lbl))
+                  || lbl.includes(normAns) || normAns.includes(lbl)
+                  || (yrMatch && lbl.includes(yrMatch[1]))
+                  || (normAns === '0' && /^(?:0|no|none|0\s*years?|0\s*yrs?|no practical)\b/i.test(lbl))
                   || (normAns === '1' && /^1(?:\s*years?|\s*yrs?)?\b/i.test(lbl))
                   || (normAns === '2' && /^2(?:\s*years?|\s*yrs?)?\b/i.test(lbl))
                   || (normAns === '3' && /^3(?:\s*years?|\s*yrs?)?\b/i.test(lbl))
+                  || (/15\s*days?|immediate/i.test(normAns) && /15\s*days?|immediate/i.test(lbl))
                   || (normAns === 'yes' && /^(?:yes|yup|true)\b/i.test(lbl))
                   || (normAns === 'no' && /^(?:no|nope|false)\b/i.test(lbl));
-              });
+              }) || allChips[0]; // fallback to first chip if all else fails
+
               if (targetChip) {
+                targetChip.dispatchEvent(new PointerEvent('pointerdown', opts));
+                targetChip.dispatchEvent(new MouseEvent('mousedown', opts));
+                targetChip.dispatchEvent(new PointerEvent('pointerup', opts));
+                targetChip.dispatchEvent(new MouseEvent('mouseup', opts));
                 targetChip.click();
-                // Check if a Save / Next / Submit button exists and click it
-                const chatParent = targetChip.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="container" i], form') || document.body;
-                const savePattern = /^(?:save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
-                const postBtns = [...chatParent.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
-                const saveBtn = postBtns.find(b => {
-                  if (b === targetChip || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
-                  const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
-                  return savePattern.test(lbl);
-                });
-                if (saveBtn) saveBtn.click();
-                return { success: true, method: 'chip', saved: Boolean(saveBtn) };
+                await new Promise(r => setTimeout(r, 250));
+                const saved = await clickDrawerSave(targetChip);
+                return { success: true, method: 'chip', saved };
               }
             }
 
             // 2. Set value in chat input
-            const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [contenteditable="true"][placeholder*="message" i], [class*="chatbot" i] input, [class*="chat" i] input');
+            const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [contenteditable="true"][placeholder*="message" i], [class*="chatbot" i] input, [class*="chat" i] input, [class*="chatbot" i] textarea, [class*="chat" i] textarea');
             if (input) {
               input.focus();
               const proto = input instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
@@ -3913,28 +4033,21 @@ async function handleNaukriDirectApply(tabId) {
 
               if (input._valueTracker) input._valueTracker.setValue('');
 
-              input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-              try { input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: ans, inputType: 'insertText' })); } catch {}
+              try {
+                input.focus();
+                input.select?.();
+                document.execCommand('selectAll', false, null);
+                document.execCommand('insertText', false, ans);
+              } catch {}
+
+              input.dispatchEvent(new Event('focus', { bubbles: true }));
+              input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true, composed: true }));
+              try { input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, composed: true, data: ans, inputType: 'insertText' })); } catch {}
               input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-              input.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
 
-              // Find and click the Save/Submit button in the drawer (Image 3)
-              const drawer = input.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], form') || document.body;
-              const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*)$/i;
-              const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
-              let saveBtn = allBtns.find(b => {
-                if (b === input || b.closest('.app, #__menixjobai_dock')) return false;
-                return savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || ''));
-              }) || [...document.querySelectorAll('button, [role="button"]')].filter(visible).find(b => {
-                if (b.closest('.app, #__menixjobai_dock')) return false;
-                return savePattern.test(normalize(b.innerText || b.value || ''));
-              });
-
-              if (saveBtn) {
-                if (saveBtn.disabled) saveBtn.disabled = false;
-                if (saveBtn.getAttribute('aria-disabled') === 'true') saveBtn.removeAttribute('aria-disabled');
-                setTimeout(() => { try { saveBtn.click(); } catch {} }, 250);
-              } else {
+              await new Promise(r => setTimeout(r, 250));
+              const saved = await clickDrawerSave(input);
+              if (!saved) {
                 input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                 input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                 input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
@@ -3949,7 +4062,7 @@ async function handleNaukriDirectApply(tabId) {
         // Remember answered question in background memory
         if (answered?.success) {
           await rememberConfirmedApplicationAnswer(question, '', answerText);
-          await delay(1500);
+          await delay(1800);
           continue;
         }
       }
@@ -4035,12 +4148,13 @@ async function handleNaukriDirectApply(tabId) {
     await autoRestoreMasterResume();
     return true;
   } else {
-    // Check one final time if applied
+    // Check one final time if applied (ensure no error banner is showing)
     const [{ result: finalCheck }] = await chrome.scripting.executeScript({
       target: { tabId },
       func: () => {
         const text = (document.body?.innerText || '').toLowerCase();
-        return /successfully applied|application (?:has been |was )?(?:sent|submitted)|applied/i.test(text);
+        if (/not accepted due to incomplete information|incomplete information|answer all mandatory questions/i.test(text)) return false;
+        return /successfully applied|application (?:has been |was )?(?:sent|submitted)|already applied/i.test(text);
       }
     }).catch(() => [{ result: false }]);
 
