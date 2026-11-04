@@ -459,3 +459,4 @@ public final class DocxTailoringEngine {
         return text.length() <= max ? text : text.substring(0, max - 3) + "...";
     }
 }
+

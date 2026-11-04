@@ -135,3 +135,4 @@ class DocxTailoringEngineTest {
         assertTrue(index.get(1).runs().get(0).isBold());
     }
 }
+

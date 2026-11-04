@@ -21,3 +21,4 @@ public record DocxEditOperation(
         risk = (risk == null || risk.isBlank()) ? "low" : risk.trim().toLowerCase();
     }
 }
+
