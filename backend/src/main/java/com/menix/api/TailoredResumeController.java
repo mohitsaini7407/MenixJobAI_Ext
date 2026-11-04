@@ -1,5 +1,8 @@
 package com.menix.api;
 
+import com.menix.model.DocxEditOperation;
+import com.menix.model.DocxTailoringReport;
+import com.menix.service.DocxTailoringEngine;
 import com.menix.service.ResumeTailoringValidator;
 import org.apache.poi.xwpf.usermodel.*;
 import org.apache.xmlbeans.XmlObject;
@@ -117,34 +120,36 @@ public class TailoredResumeController {
 
     byte[] editMasterTemplate(byte[] masterBytes, List<TemplateEdit> edits, List<String> confirmedFacts) throws Exception {
         if (masterBytes == null || masterBytes.length == 0) return null;
-        if (edits == null || edits.isEmpty()) return masterBytes.clone();
+        if (edits == null || edits.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "No edits were provided to tailor the resume. A tailored file cannot be produced without changes.");
+        }
         String masterText = extractDocumentText(masterBytes);
-        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(masterBytes));
-             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            for (TemplateEdit edit : edits) {
-                if (edit == null || edit.before() == null || edit.before().isBlank() || edit.after() == null) continue;
-                if (Boolean.FALSE.equals(edit.safeToApply())) {
-                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "A resume edit marked unsafe was rejected.");
-                }
-                List<String> evidence = edit.evidence() == null || edit.evidence().isEmpty()
-                    ? List.of(edit.before()) : edit.evidence();
-                ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
-                    masterText, masterText, "", edit.before(), edit.after(), evidence, confirmedFacts);
-                if (!validation.valid()) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
-                    "Resume edit rejected: " + validation.reason());
-                List<XWPFParagraph> matches = allBodyParagraphs(document).stream()
-                    .filter(paragraph -> paragraph.getText() != null
-                        && locateNormalizedRange(paragraphTextFromRuns(paragraph), edit.before()) != null)
-                    .toList();
-                if (matches.size() != 1) {
-                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, matches.isEmpty()
-                        ? "Resume edit could not be mapped to one original paragraph. No changes were applied."
-                        : "Resume edit matched multiple original paragraphs. No changes were applied.");
-                }
-                applyParagraphRangeEdit(matches.get(0), edit.before(), edit.after());
+        List<DocxEditOperation> operations = new ArrayList<>();
+        int counter = 1;
+        for (TemplateEdit edit : edits) {
+            if (edit == null || edit.before() == null || edit.before().isBlank() || edit.after() == null) continue;
+            if (Boolean.FALSE.equals(edit.safeToApply())) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "A resume edit marked unsafe was rejected.");
             }
-            document.write(output);
-            return output.toByteArray();
+            List<String> evidence = edit.evidence() == null || edit.evidence().isEmpty()
+                ? List.of(edit.before()) : edit.evidence();
+            ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
+                masterText, masterText, "", edit.before(), edit.after(), evidence, confirmedFacts);
+            if (!validation.valid()) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume edit rejected: " + validation.reason());
+            }
+            operations.add(new DocxEditOperation(
+                "edit-" + (counter++), null, "replace_span",
+                edit.before(), edit.after(), edit.relatedRequirement() != null ? edit.relatedRequirement() : edit.section(), List.of(), "low", false
+            ));
+        }
+
+        try {
+            DocxTailoringEngine.TailoringResult result = DocxTailoringEngine.applyEdits(masterBytes, operations);
+            return result.docxBytes();
+        } catch (DocxTailoringEngine.DocxTailoringException ex) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage(), ex);
         }
     }
 

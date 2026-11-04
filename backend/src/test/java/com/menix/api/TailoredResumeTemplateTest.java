@@ -25,7 +25,7 @@ class TailoredResumeTemplateTest {
         }
         var request = new TailoredResumeController.TailoredDocxRequest(sourceText, "React developer", "MOHIT SAINI",
             Base64.getEncoder().encodeToString(masterBytes), List.of(new TailoredResumeController.TemplateEdit(
-                "React dashboard", "React dashboard", "project", "React", List.of("Built a React dashboard for 3 student teams."), true)));
+                "React dashboard", "React web dashboard", "project", "React", List.of("Built a React dashboard for 3 student teams."), true)));
 
         var response = new TailoredResumeController().tailorDocx(request);
 
@@ -102,15 +102,17 @@ class TailoredResumeTemplateTest {
     }
 
     @Test
-    void duplicateTargetParagraphIsRejectedInsteadOfEditingTheWrongCopy() throws Exception {
+    void identicalEditsProduceValidationErrorInsteadOfSilentlyReturningUnchangedFile() throws Exception {
         byte[] masterBytes;
         try (XWPFDocument master = new XWPFDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            master.createParagraph().createRun().setText("Java developer");
-            master.createParagraph().createRun().setText("Java developer");
+            XWPFParagraph body = master.createParagraph();
+            XWPFRun run = body.createRun(); run.setText("React developer");
             master.write(output); masterBytes = output.toByteArray();
         }
-        assertThrows(org.springframework.web.server.ResponseStatusException.class, () ->
-            new TailoredResumeController().editMasterTemplate(masterBytes,
-                List.of(new TailoredResumeController.TemplateEdit("Java developer", "Java engineer"))));
+
+        // Must throw response status exception / error when text does not change
+        assertThrows(Exception.class, () -> new TailoredResumeController().editMasterTemplate(
+            masterBytes, List.of(new TailoredResumeController.TemplateEdit("React developer", "React developer"))
+        ));
     }
 }
