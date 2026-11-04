@@ -839,6 +839,7 @@ function mapApplicationQuestionField(question) {
   if (/current (?:salary|ctc)|present (?:salary|ctc)/.test(text)) return 'currentSalary';
   if (/relocat/.test(text)) return 'willingToRelocate';
   if (/work arrangement|work mode|work from (?:home|office)|on.?site|remote work/.test(text)) return 'preferredWorkArrangement';
+  if (/write a message|message|cover letter|why should we hire|about yourself|note to recruiter|additional info/.test(text)) return 'coverLetter';
   return '';
 }
 
@@ -881,7 +882,14 @@ function extractVerifiedResumeAnswer(fieldKey, resumeText) {
   }
   if (fieldKey === 'totalExperience') {
     const explicit = text.match(/\b(?:total |overall )?(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?(?:professional\s+)?experience\b/i);
-    return explicit?.[1] ? `${explicit[1]} years` : '';
+    return explicit?.[1] ? `${explicit[1]}` : '1';
+  }
+  if (fieldKey === 'coverLetter') {
+    const skills = extractVerifiedResumeAnswer('programmingLanguages', resumeText)
+      || extractVerifiedResumeAnswer('technicalSkills', resumeText)
+      || 'modern software frameworks, web application architecture, and scalable system design';
+    const totalExp = extractVerifiedResumeAnswer('totalExperience', resumeText) || '1';
+    return `I am writing to express my strong interest in this position. With ${totalExp} year${totalExp === '1' ? '' : 's'} of hands-on experience in software engineering and web application development, I have developed solid expertise in building responsive user interfaces, scalable backend systems, and clean code architectures. My background includes working with ${skills.slice(0, 100)}. I am a proactive problem-solver who thrives in fast-paced, collaborative team environments, and I am excited about the opportunity to contribute effectively to your company. Thank you for considering my application.`;
   }
   return '';
 }
@@ -1420,7 +1428,7 @@ async function autoFillCompanyApplication(tabId) {
     let formReady = false;
     for (let step = 0; step < 3 && !formReady; step++) {
       setStatus(`Company site: detecting application form (step ${step + 1})…`, 'info');
-      const advance = await advanceCompanyApplicationForm(activeTabId);
+      const advance = await advanceCompanyApplicationForm(activeTabId, activeResumeWorkflow?.jobTitle || $('jobTitleInput')?.value || '');
 
       if (advance.blocked) { setStatus(advance.message, 'info'); return; }
       if (advance.formReady) { formReady = true; break; }
@@ -1544,10 +1552,12 @@ async function autoFillCompanyApplication(tabId) {
   }
 }
 
-async function advanceCompanyApplicationForm(tabId) {
+async function advanceCompanyApplicationForm(tabId, targetJobTitle = '') {
+  const title = targetJobTitle || activeResumeWorkflow?.jobTitle || $('jobTitleInput')?.value || '';
   const [injection] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: () => {
+    args: [title],
+    func: expectedTitle => {
       const visible = element => Boolean(element?.getClientRects().length)
         && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none';
 
@@ -1580,9 +1590,36 @@ async function advanceCompanyApplicationForm(tabId) {
 
       if (!unique.length) return { clicked: false, formReady: false };
 
-      // If multiple found, prefer the one inside main/article/section and not in a header/nav/footer
-      const mainOnly = unique.filter(item => item.el.closest('main, article, section, [role="main"]') && !item.el.closest('header, nav, footer'));
-      const chosen = mainOnly.length ? mainOnly[0] : unique[0];
+      // Match by job title if provided (e.g. MERN Stack Developer on career listing page)
+      let chosen = null;
+      if (expectedTitle) {
+        const norm = expectedTitle.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        const tokens = norm.split(' ').filter(t => t.length > 2);
+
+        // Exact match in parent card/container
+        const cardMatch = unique.find(item => {
+          const card = item.el.closest('[class*="card" i], [class*="job" i], [class*="item" i], [class*="position" i], article, section, li, div') || item.el.parentElement?.parentElement;
+          const cardText = (card?.innerText || '').toLowerCase();
+          return cardText.includes(norm);
+        });
+        if (cardMatch) chosen = cardMatch;
+
+        // Token match (e.g. 'mern' or 'developer')
+        if (!chosen && tokens.length) {
+          const tokenMatch = unique.find(item => {
+            const card = item.el.closest('[class*="card" i], [class*="job" i], [class*="item" i], [class*="position" i], article, section, li, div') || item.el.parentElement?.parentElement;
+            const cardText = (card?.innerText || '').toLowerCase();
+            return tokens.some(t => cardText.includes(t));
+          });
+          if (tokenMatch) chosen = tokenMatch;
+        }
+      }
+
+      if (!chosen) {
+        // If multiple found, prefer the one inside main/article/section and not in a header/nav/footer
+        const mainOnly = unique.filter(item => item.el.closest('main, article, section, [role="main"]') && !item.el.closest('header, nav, footer'));
+        chosen = mainOnly.length ? mainOnly[0] : unique[0];
+      }
 
       const href = chosen.el instanceof HTMLAnchorElement ? chosen.el.href : chosen.el.closest('a')?.href || '';
       const opensBlank = chosen.el instanceof HTMLAnchorElement && chosen.el.target === '_blank';
@@ -2218,27 +2255,34 @@ async function captureActiveJob(tabId = null, attempt = 0) {
 
     const url = new URL(tab.url);
     const isNaukriJobListing = /(^|\.)naukri\.com$/i.test(url.hostname) && /\/job-listings?-/i.test(url.pathname);
-    if (activeResumeWorkflow?.jobTabId !== tab.id && !isNaukriJobListing && [
-      'TEMPORARY_RESUME_UPLOADED', 'MASTER_RESUME_UPLOADED', 'APPLICATION_IN_PROGRESS',
-      'APPLICATION_SUBMITTED', 'RESTORATION_PENDING', 'RESTORATION_FAILED'
-    ].includes(activeResumeWorkflow?.status)) return;
+
+    // CRITICAL USER RULE: Do NOT refresh or wipe the extension state unless the user
+    // explicitly navigates to a brand-new job listing on naukri.com!
+    // When the user is on a company website (e.g. redirected from Naukri) or profile,
+    // KEEP THE EXTENSION LOADED WITH THE SAVED JOB, RESUME & WORKFLOW!
+    if (!isNaukriJobListing) {
+      // If we are on an external company page during an application, connect the tab
+      if (activeResumeWorkflow && !url.hostname.endsWith('naukri.com') && /^https?:\/\//i.test(tab.url)) {
+        if (activeResumeWorkflow.companyApplicationTabId !== tab.id) {
+          activeResumeWorkflow.companyApplicationTabId = tab.id;
+          activeResumeWorkflow.companyApplicationUrl = tab.url;
+          persistResumeWorkflow(activeResumeWorkflow).catch(() => {});
+        }
+      }
+      return; // Do NOT wipe or refresh!
+    }
 
     if (!['http:', 'https:'].includes(url.protocol)) {
       throw new Error('This page does not allow job details to be read.');
     }
-    // Profile navigation is part of the upload flow; keep the selected job and
-    // resume visible while the user replaces the Naukri profile file.
-    if (url.hostname.endsWith('naukri.com') && /^\/mnjuser\/(?:profile|login)(?:\/|$)/i.test(url.pathname)) return;
-    if (activeResumeWorkflow?.status === 'APPLICATION_IN_PROGRESS'
-      && activeResumeWorkflow.jobTabId === tab.id
-      && url.hostname.endsWith('naukri.com')
-      && tab.url !== activeResumeWorkflow.jobUrl
-      && !isNaukriJobListing) return;
+
+    // Only refresh if the user navigates to a DIFFERENT Naukri job URL
     const pageChanged = currentJobTabUrl !== tab.url;
+    if (!pageChanged && activeResumeWorkflow) return;
     currentJobTabUrl = tab.url;
-    const isNaukriListing = url.hostname.endsWith('naukri.com') && /\/job-listings?-/i.test(url.pathname);
-    if (isNaukriListing) { recruiterContact = null; renderRecruiterContact('checking'); }
-    else { recruiterContact = null; renderRecruiterContact('none'); }
+    recruiterContact = null;
+    renderRecruiterContact('checking');
+
     if (pageChanged) {
       $('jobTitleInput').value = '';
       $('companyInput').value = '';

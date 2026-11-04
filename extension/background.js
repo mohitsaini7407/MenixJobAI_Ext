@@ -36,10 +36,13 @@ function configurePanelForTab(tabId, url) {
 
 chrome.action.onClicked.addListener(tab => {
   if (!tab?.id || !tab.url) return;
-  if (isNaukriUrl(tab.url) && !/^\/mnjuser\/login(?:\/|$)/i.test(new URL(tab.url).pathname)) {
-    toggleNaukriDock(tab.id, tab.url);
-    return;
-  }
+  try {
+    const parsed = new URL(tab.url);
+    if (['http:', 'https:'].includes(parsed.protocol)) {
+      toggleNaukriDock(tab.id, tab.url);
+      return;
+    }
+  } catch {}
   if (tab.windowId != null && chrome.sidePanel?.open) {
     chrome.sidePanel.open({ windowId: tab.windowId }).catch(error => console.debug('MenixJobAI side panel could not open:', error));
   }
@@ -72,7 +75,9 @@ function toggleNaukriDock(tabId, url) {
 function showNaukriDock(tabId, url, forceRefresh = false) {
   let parsed;
   try { parsed = new URL(url || ''); } catch { return; }
-  if (parsed.hostname !== 'naukri.com' && !parsed.hostname.endsWith('.naukri.com')) return;
+  if (!['http:', 'https:'].includes(parsed.protocol)) return;
+  // Don't show dock on chrome internal or restricted extension pages
+  if (/^(?:chrome|edge|brave|about):/i.test(parsed.protocol)) return;
   configurePanelForTab(tabId, url);
   // Keep the login unobstructed; open the panel on the profile so the user can manage resume upload.
   if (/^\/mnjuser\/login(\/|$)/i.test(parsed.pathname)) return;
