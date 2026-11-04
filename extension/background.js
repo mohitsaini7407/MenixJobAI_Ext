@@ -171,22 +171,33 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
       const dock = document.createElement('div');
       dock.id = '__menixjobai_dock';
       dock.dataset.menixVersion = version;
-      dock.style.cssText = `position:fixed;top:0;right:0;bottom:0;width:${dockWidth}px;height:100vh;z-index:2147483647;background:#0b1017;border-left:1px solid #dbe4f0;overflow:hidden;`;
+      dock.style.cssText = `position:fixed;top:0;right:0;bottom:0;width:${dockWidth}px;height:100vh;z-index:2147483647;background:#0b1017;border-left:1px solid #dbe4f0;overflow:hidden;transition:width 0.2s ease,height 0.2s ease,border-radius 0.2s ease;`;
       const frame = document.createElement('iframe');
       frame.title = 'MenixJobAI'; frame.src = extensionPanelUrl;
       frame.style.cssText = 'width:100%;height:100%;border:0;';
+
+      const expandBtn = document.createElement('button');
+      expandBtn.type = 'button';
+      expandBtn.id = '__menixjobai_expand_btn';
+      expandBtn.setAttribute('aria-label', 'Open MenixJobAI');
+      expandBtn.title = 'Click to open MenixJobAI';
+      expandBtn.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;display:none;align-items:center;justify-content:center;cursor:pointer;background:linear-gradient(135deg,#ff7900,#ff9a24);border-radius:28px 0 0 28px;box-shadow:-3px 4px 18px rgba(255,121,0,0.5);padding:0;outline:none;z-index:2147483647;';
+      expandBtn.innerHTML = '<span style="color:#ffffff;font-family:Inter,system-ui,sans-serif;font-weight:900;font-size:24px;line-height:1;margin-left:6px;user-select:none;display:block;">M</span>';
+
       let isCollapsed = false;
       const toggleCollapse = () => {
         isCollapsed = !isCollapsed;
         if (isCollapsed) {
-          dock.style.width = '42px';
-          dock.style.height = '42px';
-          dock.style.top = '100px';
+          dock.style.width = '56px';
+          dock.style.height = '56px';
+          dock.style.top = '120px';
           dock.style.right = '0';
           dock.style.bottom = 'auto';
-          dock.style.borderRadius = '21px 0 0 21px';
-          dock.style.boxShadow = '-2px 4px 14px rgba(0,0,0,0.4)';
+          dock.style.borderRadius = '28px 0 0 28px';
+          dock.style.boxShadow = '-3px 4px 20px rgba(0,0,0,0.5), 0 0 0 2px rgba(255,121,0,0.6)';
           dock.style.cursor = 'pointer';
+          frame.style.display = 'none';
+          expandBtn.style.display = 'flex';
           restorePageLayout();
         } else {
           dock.style.width = `${dockWidth}px`;
@@ -197,9 +208,19 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
           dock.style.borderRadius = '0';
           dock.style.boxShadow = 'none';
           dock.style.cursor = 'default';
+          expandBtn.style.display = 'none';
+          frame.style.display = 'block';
           if (body) body.style.setProperty('width', `calc(100vw - ${dockWidth}px)`, 'important');
         }
       };
+
+      expandBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleCollapse();
+      });
+      expandBtn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+      });
 
       const onMessage = event => {
         if (event.source !== frame.contentWindow) return;
@@ -220,6 +241,7 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
         if (isCollapsed) toggleCollapse();
       });
       dock.append(frame);
+dock.append(expandBtn);
       document.documentElement.append(dock);
     }
   }).catch(error => console.debug('MenixJobAI could not show the Naukri panel:', error));
