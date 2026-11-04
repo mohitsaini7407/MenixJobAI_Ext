@@ -32,3 +32,4 @@ public record JobSpec(
         redFlags = redFlags == null ? List.of() : List.copyOf(redFlags);
     }
 }
+

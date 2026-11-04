@@ -31,3 +31,4 @@ Software Development Intern | TechCorp India | June 2024 - August 2024
 - Contributed to frontend feature development using React and Tailwind CSS.
 - Collaborated on backend REST API endpoints and SQL database queries.
 - Participated in sprint planning, code reviews, and Git-based collaborative workflows.
+

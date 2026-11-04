@@ -64,3 +64,4 @@ public enum RoleFamily {
         return Fit.DIFFERENT;
     }
 }
+
