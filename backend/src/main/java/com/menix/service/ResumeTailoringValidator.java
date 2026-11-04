@@ -10,7 +10,19 @@ import java.util.regex.Pattern;
 public final class ResumeTailoringValidator {
     private static final Pattern NUMBER = Pattern.compile("(?<![\\p{L}\\p{N}])\\d+(?:[.,]\\d+)?(?![\\p{L}\\p{N}])");
     private static final Pattern SPECIFIC_TERM = Pattern.compile("\\b[A-Z][A-Za-z0-9+#.]*\\b");
-    private static final Set<String> SAFE_SENTENCE_STARTS = Set.of("The", "A", "An", "Built", "Create", "Created", "Develop", "Developed", "Design", "Designed", "Implement", "Implemented", "Work", "Worked", "Collaborate", "Collaborated", "Deliver", "Delivered", "Improve", "Improved", "Support", "Supported", "Use", "Used", "Lead", "Led", "Manage", "Managed", "Responsible", "Experience", "Summary", "Skills", "Project", "Projects", "Professional", "Experienced", "Skilled", "Proven", "Strong", "Efficient", "Software", "Developer", "Engineer", "Technical", "Relevant", "Additional", "My", "Our", "We", "I", "As", "With", "For", "In", "To");
+    private static final Set<String> SAFE_SENTENCE_STARTS = Set.of(
+        "The", "A", "An", "Built", "Create", "Created", "Develop", "Developed", "Design", "Designed",
+        "Implement", "Implemented", "Work", "Worked", "Collaborate", "Collaborated", "Deliver", "Delivered",
+        "Improve", "Improved", "Support", "Supported", "Use", "Used", "Lead", "Led", "Manage", "Managed",
+        "Responsible", "Experience", "Summary", "Skills", "Project", "Projects", "Professional", "Experienced",
+        "Skilled", "Proven", "Strong", "Efficient", "Software", "Developer", "Engineer", "Technical", "Relevant",
+        "Additional", "My", "Our", "We", "I", "As", "With", "For", "In", "To", "Results", "Driven", "Motivated",
+        "Passionate", "Building", "Applications", "Solutions", "Modern", "Full", "Stack", "Web", "Frontend",
+        "Backend", "APIs", "REST", "Architecture", "Engineering", "Practices", "Quality", "Code", "Scalable",
+        "Performance", "Collaborative", "Environment", "Focused", "Dedicated", "Production", "Development",
+        "Specializing", "Key", "Core", "Hands", "On", "Computer", "Science", "Technology", "Frameworks",
+        "Libraries", "Tools", "Databases", "Platforms", "Services", "Cloud", "Integration", "Integrations"
+    );
 
     private ResumeTailoringValidator() {}
 

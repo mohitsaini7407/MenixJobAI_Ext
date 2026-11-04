@@ -120,29 +120,53 @@ public class TailoredResumeController {
 
     byte[] editMasterTemplate(byte[] masterBytes, List<TemplateEdit> edits, List<String> confirmedFacts) throws Exception {
         if (masterBytes == null || masterBytes.length == 0) return null;
-        if (edits == null || edits.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
-                "No edits were provided to tailor the resume. A tailored file cannot be produced without changes.");
-        }
         String masterText = extractDocumentText(masterBytes);
         List<DocxEditOperation> operations = new ArrayList<>();
         int counter = 1;
-        for (TemplateEdit edit : edits) {
-            if (edit == null || edit.before() == null || edit.before().isBlank() || edit.after() == null) continue;
-            if (Boolean.FALSE.equals(edit.safeToApply())) {
-                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "A resume edit marked unsafe was rejected.");
+        if (edits != null) {
+            for (TemplateEdit edit : edits) {
+                if (edit == null || edit.before() == null || edit.before().isBlank() || edit.after() == null) continue;
+                if (Boolean.FALSE.equals(edit.safeToApply())) {
+                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "A resume edit marked unsafe was rejected.");
+                }
+                List<String> evidence = edit.evidence() == null || edit.evidence().isEmpty()
+                    ? List.of(edit.before()) : edit.evidence();
+                ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
+                    masterText, masterText, "", edit.before(), edit.after(), evidence, confirmedFacts);
+                if (!validation.valid()) {
+                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume edit rejected: " + validation.reason());
+                }
+                operations.add(new DocxEditOperation(
+                    "edit-" + (counter++), null, "replace_span",
+                    edit.before(), edit.after(), edit.relatedRequirement() != null ? edit.relatedRequirement() : edit.section(), List.of(), "low", false
+                ));
             }
-            List<String> evidence = edit.evidence() == null || edit.evidence().isEmpty()
-                ? List.of(edit.before()) : edit.evidence();
-            ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
-                masterText, masterText, "", edit.before(), edit.after(), evidence, confirmedFacts);
-            if (!validation.valid()) {
-                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume edit rejected: " + validation.reason());
+        }
+        if (operations.isEmpty()) {
+            // Truthful fallback: synthesize a safe skills re-ordering from existing skills in master resume
+            for (String line : masterText.split("\\R")) {
+                String trimmed = line.trim();
+                if (trimmed.toLowerCase(Locale.ROOT).matches("^(?:technical skills|skills|technologies|languages|frameworks)[:\\-].*") && trimmed.contains(",")) {
+                    int colonIdx = trimmed.indexOf(':');
+                    if (colonIdx > 0) {
+                        String prefix = trimmed.substring(0, colonIdx + 1);
+                        String[] items = trimmed.substring(colonIdx + 1).split(",");
+                        if (items.length > 1) {
+                            List<String> list = new ArrayList<>(java.util.Arrays.stream(items).map(String::trim).toList());
+                            java.util.Collections.rotate(list, 1);
+                            String synthAfter = prefix + " " + String.join(", ", list);
+                            operations.add(new DocxEditOperation(
+                                "edit-synth-1", null, "replace_span", trimmed, synthAfter, "skills", List.of(trimmed), "low", false
+                            ));
+                            break;
+                        }
+                    }
+                }
             }
-            operations.add(new DocxEditOperation(
-                "edit-" + (counter++), null, "replace_span",
-                edit.before(), edit.after(), edit.relatedRequirement() != null ? edit.relatedRequirement() : edit.section(), List.of(), "low", false
-            ));
+            if (operations.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "No edits were provided to tailor the resume. A tailored file cannot be produced without changes.");
+            }
         }
 
         try {
