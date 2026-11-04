@@ -1,0 +1,54 @@
+{
+  "id": "fixture_2_laravel_php",
+  "title": "Full Stack Developer (PHP, Laravel, MySQL & Bootstrap)",
+  "company": "Chennai Infotech Solutions",
+  "location": "Chennai, Tamil Nadu (Hybrid)",
+  "shift": "Day Shift",
+  "workMode": "Hybrid",
+  "employmentType": "Permanent, Full-Time",
+  "salary": "INR 4,50,000 - 7,00,000 P.A.",
+  "bondOrAgreement": false,
+  "roleFamily": "PHP_LAMP",
+  "mustHave": [
+    "PHP",
+    "Laravel",
+    "MySQL",
+    "Bootstrap",
+    "Blade Templates",
+    "jQuery"
+  ],
+  "niceToHave": [
+    "REST APIs",
+    "Git",
+    "JavaScript",
+    "HTML5 / CSS3"
+  ],
+  "tools": [
+    "Composer",
+    "PhpStorm",
+    "Postman"
+  ],
+  "keySkillTags": [
+    "Laravel",
+    "PHP",
+    "MySQL",
+    "Bootstrap",
+    "jQuery",
+    "REST APIs",
+    "Git"
+  ],
+  "responsibilities": [
+    "Develop and maintain enterprise web applications using PHP Laravel.",
+    "Design and optimize relational database schemas in MySQL.",
+    "Build responsive UI views using Bootstrap, Blade templates, and jQuery."
+  ],
+  "redFlags": [],
+  "expected": {
+    "minScore": 45,
+    "maxScore": 60,
+    "missingMustHaves": ["PHP", "Laravel"],
+    "familyFit": "ADJACENT",
+    "verdict": "Stretch",
+    "roleFamily": "PHP_LAMP"
+  }
+}

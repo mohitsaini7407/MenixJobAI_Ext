@@ -1,0 +1,59 @@
+{
+  "id": "fixture_3_swe_trainee_2026",
+  "title": "Software Engineer Trainee - 2026 Batch Freshers",
+  "company": "NextGen Software Systems",
+  "location": "Noida / Lucknow, India",
+  "shift": "Day Shift",
+  "workMode": "On-site",
+  "employmentType": "Permanent, Full-Time",
+  "salary": "INR 5,00,000 - 6,50,000 P.A.",
+  "bondOrAgreement": true,
+  "roleFamily": "FULL_STACK_WEB",
+  "mustHave": [
+    "Python",
+    "SQL",
+    "Data Structures & Algorithms (DSA)",
+    "AI / LLM APIs",
+    "AWS Basics",
+    "Object-Oriented Programming (OOP)"
+  ],
+  "niceToHave": [
+    "React",
+    "Web development projects",
+    "Git",
+    "PostgreSQL"
+  ],
+  "tools": [
+    "Git",
+    "GitHub",
+    "Postman",
+    "VS Code"
+  ],
+  "keySkillTags": [
+    "Python",
+    "SQL",
+    "Data Structures",
+    "Algorithms",
+    "AI",
+    "AWS",
+    "React",
+    "2026 Batch"
+  ],
+  "responsibilities": [
+    "Work on product engineering, building web modules and integrating modern AI services.",
+    "Write clean, optimized algorithms and backend SQL queries.",
+    "Collaborate across agile engineering teams to test and deploy software."
+  ],
+  "redFlags": [
+    "2-Year Service Agreement / Bond"
+  ],
+  "expected": {
+    "minScore": 85,
+    "maxScore": 95,
+    "gap": "Data Structures & Algorithms (DSA)",
+    "redFlags": ["2-Year Service Agreement / Bond"],
+    "familyFit": "SAME",
+    "verdict": "Strong",
+    "roleFamily": "FULL_STACK_WEB"
+  }
+}

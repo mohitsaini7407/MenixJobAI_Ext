@@ -1,0 +1,53 @@
+{
+  "id": "fixture_4_shopify_developer",
+  "title": "Shopify Web Developer (Custom Apps, Liquid & APIs)",
+  "company": "D2C Commerce Studio",
+  "location": "Delhi / Noida",
+  "shift": "Day Shift",
+  "workMode": "Hybrid",
+  "employmentType": "Permanent, Full-Time",
+  "salary": "INR 5,50,000 - 8,00,000 P.A.",
+  "bondOrAgreement": false,
+  "roleFamily": "ECOMMERCE_PLATFORM",
+  "mustHave": [
+    "Shopify Custom App Development",
+    "Shopify REST & GraphQL APIs",
+    "Metafields",
+    "Liquid Theme Development"
+  ],
+  "niceToHave": [
+    "React",
+    "Node.js",
+    "JavaScript",
+    "HTML5 / CSS3",
+    "Git"
+  ],
+  "tools": [
+    "Shopify CLI",
+    "GitHub",
+    "Postman"
+  ],
+  "keySkillTags": [
+    "Shopify",
+    "Liquid",
+    "Custom Apps",
+    "GraphQL",
+    "REST APIs",
+    "Metafields",
+    "React"
+  ],
+  "responsibilities": [
+    "Build custom Shopify applications and integrate third-party APIs.",
+    "Develop bespoke Shopify themes using Liquid, HTML5, CSS3, and modern JavaScript.",
+    "Manage app state and GraphQL Admin API integrations for e-commerce stores."
+  ],
+  "redFlags": [],
+  "expected": {
+    "minScore": 60,
+    "maxScore": 72,
+    "gaps": ["Shopify Custom App Development", "Shopify REST & GraphQL APIs", "Metafields", "Liquid Theme Development"],
+    "familyFit": "ADJACENT",
+    "verdict": "Good",
+    "roleFamily": "ECOMMERCE_PLATFORM"
+  }
+}

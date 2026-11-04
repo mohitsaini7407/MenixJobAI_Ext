@@ -1,0 +1,55 @@
+{
+  "id": "fixture_1_non_it_recruiter",
+  "title": "US IT Recruiter / Talent Acquisition Specialist (Night Shift)",
+  "company": "Apex Global Staffing Solutions",
+  "location": "Vadodara, Gujarat (On-site)",
+  "shift": "US Night Shift (6:30 PM - 3:30 AM IST)",
+  "workMode": "On-site",
+  "employmentType": "Permanent, Full-Time",
+  "salary": "INR 2,50,000 - 4,00,000 P.A.",
+  "bondOrAgreement": false,
+  "roleFamily": "NON_IT",
+  "mustHave": [
+    "US Staffing",
+    "Boolean Search",
+    "W2 / C2C Recruitment",
+    "Candidate Sourcing",
+    "Cold Calling",
+    "Applicant Tracking Systems (ATS)",
+    "Rate Negotiation"
+  ],
+  "niceToHave": [
+    "Monster / Dice Job Portals",
+    "LinkedIn Recruiter",
+    "Excellent English Communication"
+  ],
+  "tools": [
+    "Ceipal",
+    "Bullhorn",
+    "JobDiva"
+  ],
+  "keySkillTags": [
+    "US IT Recruitment",
+    "Sourcing",
+    "Boolean Search",
+    "C2C",
+    "W2",
+    "Screening",
+    "Cold Calling",
+    "Night Shift"
+  ],
+  "responsibilities": [
+    "Source qualified candidates for US-based clients via portals and social channels.",
+    "Perform initial screening calls, format resumes, and negotiate hourly rates.",
+    "Maintain candidate records in the ATS and coordinate interviews with account managers."
+  ],
+  "redFlags": [
+    "Night shift / US hours"
+  ],
+  "expected": {
+    "maxScore": 15,
+    "familyFit": "DIFFERENT",
+    "verdict": "Skip",
+    "roleFamily": "NON_IT"
+  }
+}

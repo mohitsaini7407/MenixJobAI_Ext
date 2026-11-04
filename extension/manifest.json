@@ -20,13 +20,8 @@
     "clipboardWrite"
   ],
   "host_permissions": [
-    "https://menixjobai-api.onrender.com/*",
-    "https://*.naukri.com/*",
-    "http://localhost:8080/*",
-    "http://127.0.0.1:8080/*"
-  ],
-  "optional_host_permissions": [
-    "https://*/*"
+    "https://*/*",
+    "http://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: https:"

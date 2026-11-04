@@ -229,8 +229,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const url = changeInfo.url || tab.url;
   if (changeInfo.url) manuallyClosedNaukriDocks.delete(tabId);
   if (url) configurePanelForTab(tabId, url);
-  if ((changeInfo.status === 'complete' || changeInfo.url) && url && /(^|\.)naukri\.com\//i.test(url.replace(/^https?:\/\//i, ''))) {
-    if (!manuallyClosedNaukriDocks.has(tabId)) showNaukriDock(tabId, url);
+  if ((changeInfo.status === 'complete' || changeInfo.url) && url) {
+    const isNaukri = /(^|\.)naukri\.com\//i.test(url.replace(/^https?:\/\//i, ''));
+    const isJobOrCareerSite = /(?:career|careers|job|jobs|apply|recruitment|workday|greenhouse|lever|smartrecruiters)/i.test(url);
+    if ((isNaukri || isJobOrCareerSite) && !manuallyClosedNaukriDocks.has(tabId)) {
+      showNaukriDock(tabId, url);
+    }
   }
 });
 
@@ -238,7 +242,11 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.get(tabId).then(tab => {
     if (tab?.id && tab.url) {
       configurePanelForTab(tab.id, tab.url);
-      if (!manuallyClosedNaukriDocks.has(tab.id)) showNaukriDock(tab.id, tab.url);
+      const isNaukri = /(^|\.)naukri\.com\//i.test(tab.url.replace(/^https?:\/\//i, ''));
+      const isJobOrCareerSite = /(?:career|careers|job|jobs|apply|recruitment|workday|greenhouse|lever|smartrecruiters)/i.test(tab.url);
+      if ((isNaukri || isJobOrCareerSite) && !manuallyClosedNaukriDocks.has(tab.id)) {
+        showNaukriDock(tab.id, tab.url);
+      }
     }
   }).catch(() => {});
 });

@@ -1,0 +1,33 @@
+MOHIT BANASYA
+mohitsaini@example.com | +91 9876543210 | Delhi NCR, India | linkedin.com/in/mohit-saini | github.com/mohitsaini
+
+SUMMARY
+Full Stack Web Developer with hands-on experience developing responsive web applications using React, Node.js, and modern JavaScript. Passionate about creating clean user interfaces, robust REST APIs, and integrating AI workflows.
+
+EDUCATION
+Bachelor of Technology (B.Tech) in Computer Science and Engineering
+Panipat Institute of Engineering and Technology (PIET) | 2022 - 2026 | CGPA: 8.4
+
+TECHNICAL SKILLS
+Languages: JavaScript (ES6+), TypeScript, Python, SQL, C++, HTML5, CSS3
+Frameworks & Libraries: React, Node.js, Express.js, Next.js, Redux, Tailwind CSS, Bootstrap
+Databases & Cloud: MongoDB, PostgreSQL, MySQL, AWS (S3, EC2 basic), Firebase
+Tools & Platforms: Git, GitHub, REST APIs, Postman, Vite, Docker (basic)
+Core Concepts: Full Stack Web Development, Object-Oriented Programming (OOP), Database Design, Agile
+
+PROJECTS
+MERN Job Automation Assistant | React, Node.js, Express, MongoDB, Chrome Extensions API
+- Developed a full-stack automation tool with real-time match scoring and document processing.
+- Built RESTful endpoints in Node.js and Express with MongoDB caching.
+- Designed accessible React interfaces with responsive state management.
+
+AI-Powered Document Hub | Python, FastAPI, React, OpenAI API
+- Integrated LLM APIs for automated text extraction, summarization, and query processing.
+- Implemented vector storage and retrieval pipelines for high-accuracy contextual matching.
+- Constructed interactive UI dashboards in React with real-time streaming responses.
+
+EXPERIENCE
+Software Development Intern | TechCorp India | June 2024 - August 2024
+- Contributed to frontend feature development using React and Tailwind CSS.
+- Collaborated on backend REST API endpoints and SQL database queries.
+- Participated in sprint planning, code reviews, and Git-based collaborative workflows.

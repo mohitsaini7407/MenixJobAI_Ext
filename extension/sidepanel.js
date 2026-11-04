@@ -169,7 +169,7 @@ function containsTerm(text, term) {
 function localQuickScore(resumeText, jobDescription) {
   const resume = ` ${cleanText(resumeText).toLowerCase().replace(/[^\p{L}\p{N}+#.]+/gu, ' ')} `;
   const job = cleanText(jobDescription).toLowerCase();
-  const jobLines = String(jobDescription || '').split(/[\n•;.!?]+/).map(line => line.toLowerCase().trim()).filter(Boolean);
+  const jobLines = String(jobDescription || '').split(/[\r\n•;.!?]+/).map(line => line.toLowerCase().trim()).filter(Boolean);
   const requirementLines = jobLines.filter(line => /\b(?:must|required|preferred|requirement|responsibilit|qualification|experience with|knowledge of|proficien|certif|degree|build|manage|analy[sz]|deploy|design|operate|support)\b/.test(line));
   const relevantText = requirementLines.length ? requirementLines.join(' ') : jobLines.join(' ');
   const tokensFrom = text => [...new Set((text.match(/[\p{L}][\p{L}\p{N}+#.]{2,}/gu) || []).filter(word => !LOCAL_STOP_WORDS.has(word)))];
@@ -183,7 +183,7 @@ function localQuickScore(resumeText, jobDescription) {
     || jobDescription.match(/\b(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?experience\b/i);
   const candidateYears = resumeText.match(/\b(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?experience\b/i);
   const degreeRequired = /\b(?:bachelor|b\.?tech|b\.?e\.?|b\.?s\.?|master|m\.?tech|m\.?s\.?|ph\.?d|degree)\b/i.test(jobDescription);
-  const degreeCandidate = cleanText(resumeText).match(/\b(?:B\.?Tech(?:nology)?|B\.?E\.?|B\.?Sc\.?|M\.?Tech(?:nology)?|M\.?E\.?|M\.?Sc\.?|M\.?B\.?A\.?|Ph\.?D|Bachelor(?:'s)?|Master(?:'s)?)\b[^\n,;]*/i);
+  const degreeCandidate = cleanText(resumeText).match(/\b(?:B\.?Tech(?:nology)?|B\.?E\.?|B\.?Sc\.?|M\.?Tech(?:nology)?|M\.?E\.?|M\.?Sc\.?|M\.?B\.?A\.?|Ph\.?D|Bachelor(?:'s)?|Master(?:'s)?)\b[^\r\n,;]*/i);
   let experienceScore = null;
   if (requiredYears && candidateYears) {
     const minYears = Number(requiredYears[1]);
@@ -229,7 +229,7 @@ async function overviewCacheKey(resumeText, jobDescription) {
     .replace(/^\s*(?:home|jobs|login|sign up|download app)\s*(?:\|.*)?$/gim, ' ')
     .slice(0, 6000)).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const resumeHash = await digestText(normalizedResume);
-  return `matchOverview:${await digestText(`${resumeHash}\n${normalizedJob}\ngemini-2.5-flash\noverview-evidence-v4-noise-filter`)}`;
+  return `matchOverview:${await digestText(`${resumeHash}\r\n${normalizedJob}\r\ngemini-2.5-flash\r\noverview-evidence-v4-noise-filter`)}`;
 }
 
 async function sha256Hex(text) {
@@ -369,7 +369,7 @@ async function activateResumeWorkflow(job = currentJobPayload(), tabId = null) {
 function renderResumeDocumentPreview(text) {
   const container = $('applyResumePreviewContent');
   container.replaceChildren();
-  const lines = String(text || '').replace(/\r/g, '').split('\n').map(line => line.trim()).filter(Boolean);
+  const lines = String(text || '').replace(/\r/g, '').split('\r\n').map(line => line.trim()).filter(Boolean);
   if (!lines.length) return;
   if (lines.length === 1 && /^(?:loading|resume preview is unavailable|resume text preview is unavailable)/i.test(lines[0])) {
     const message = document.createElement('p');
@@ -845,7 +845,7 @@ function mapApplicationQuestionField(question) {
 
 function extractVerifiedResumeAnswer(fieldKey, resumeText) {
   const text = String(resumeText || '').replace(/\r/g, '');
-  const lines = text.split('\n').map(line => line.replace(/^\s*[•*-]\s*/, '').trim()).filter(Boolean);
+  const lines = text.split('\r\n').map(line => line.replace(/^\s*[•*-]\s*/, '').trim()).filter(Boolean);
   const section = (start, end) => {
     const startIndex = lines.findIndex(line => new RegExp(`^${start}(?:\\s|$)`, 'i').test(line));
     if (startIndex < 0) return [];
@@ -900,7 +900,7 @@ function draftOpenEndedApplicationAnswer(questionText, resumeText, jobDescriptio
   const lowerQ = q.toLowerCase();
   
   // Extract key skills from resume
-  const skillsMatch = resumeText.match(/(?:skills|technologies|proficiencies|technical stack)[^:\n]*:([^\n]+)/i);
+  const skillsMatch = resumeText.match(/(?:skills|technologies|proficiencies|technical stack)[^:\r\n]*:([^\r\n]+)/i);
   let topSkills = skillsMatch ? skillsMatch[1].split(/[,|•;]+/).map(s => s.trim()).filter(s => s.length > 1 && s.length < 25).slice(0, 5).join(', ') : '';
   if (!topSkills) {
     const commonSkills = ['React', 'JavaScript', 'Node.js', 'Python', 'Web Development', 'MERN Stack', 'REST APIs', 'HTML/CSS'];
@@ -963,6 +963,21 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
     return { answer: confirmed[fieldKey].value, source: 'user_confirmed' };
   }
 
+  // 2b. Practical project & framework experience questions (e.g. "How much practical experience do you have in developing responsive web pages using modern frameworks?")
+  if (/practical experience|experience do you have (?:in|with|developing)|independent projects|academic projects/i.test(questionText)) {
+    if (options && options.length) {
+      const opt3 = options.find(o => /3\+|3\s*years?|3\+?\s*independent/i.test(o.label || o.value));
+      const opt12 = options.find(o => /1\s*[-–]\s*2|1\s*year|2\s*years?|independent/i.test(o.label || o.value));
+      const optAcad = options.find(o => /academic|college/i.test(o.label || o.value));
+      const hasWebProjects = /PROJECTS|React|Node|Full Stack|HTML|CSS|JavaScript|web/i.test(resumeText);
+      if (hasWebProjects) {
+        if (opt12) return { answer: opt12.label || opt12.value, source: 'resume_projects_found' };
+        if (opt3) return { answer: opt3.label || opt3.value, source: 'resume_projects_found' };
+        if (optAcad) return { answer: optAcad.label || optAcad.value, source: 'resume_projects_found' };
+      }
+    }
+  }
+
   // 3. Specific skill experience question (e.g. "How many years of experience do you have in Laravel?" or "How much practical experience do you have developing with Vue.js?")
   const skillMatch = questionText.match(/(?:years?(?:\s+of)?(?:\s+experience)?\s+(?:in|with|on|using)|experience\s+(?:do you have\s+)?(?:in|with|on|using|developing\s+with)|knowledge\s+of|worked\s+with|proficiency\s+in|working\s+with|developing\s+with)\s+([A-Za-z0-9#+.\s-]{2,30}?)(?:\?|\s+for|\s+at|\s+to|\s*$)/i)
     || questionText.match(/\b(?:developing\s+with|working\s+with|experience\s+in)\s+([A-Za-z0-9#+.\s-]{2,30}?)(?:\?|\s*$)/i);
@@ -991,8 +1006,8 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
       return { answer: '0', source: 'resume_skill_missing' };
     } else {
       // Skill IS in resume! Check for explicit years
-      const durationMatch = resumeText.match(new RegExp(`${escaped}[^\\n]{0,35}?\\b(\\d+(?:\\.\\d+)?)\\+?\\s*(?:years?|yrs?)\\b`, 'i'))
-        || resumeText.match(new RegExp(`\\b(\\d+(?:\\.\\d+)?)\\+?\\s*(?:years?|yrs?)[^\\n]{0,35}?${escaped}`, 'i'));
+      const durationMatch = resumeText.match(new RegExp(`${escaped}[^\\r\n]{0,35}?\\b(\\d+(?:\\.\\d+)?)\\+?\\s*(?:years?|yrs?)\\b`, 'i'))
+        || resumeText.match(new RegExp(`\\b(\\d+(?:\\.\\d+)?)\\+?\\s*(?:years?|yrs?)[^\\r\n]{0,35}?${escaped}`, 'i'));
       let years = durationMatch ? Math.round(Number(durationMatch[1])) : null;
       if (!years || years <= 0) {
         const totalExp = extractVerifiedResumeAnswer('totalExperience', resumeText);
@@ -1177,7 +1192,7 @@ async function findApplicationQuestions(tabId) {
           const accessible = [...direct, ...labelled, aria].filter(Boolean);
           return (accessible.find(value => intent.test(value)) || fieldset || prompt || accessible[0] || placeholder || fallback).slice(0, 300);
         };
-        const intent = /\?|\b(?:full name|candidate name|first name|last name|email|email id|phone|mobile|contact number|graduat|passing year|pass out|qualification|degree|college|university|institute|current (?:city|location)|where do you live|experience|salary|CTC|notice period|when can you join|available to join|relocat|work arrangement|work mode|work from|programming language|technical skills|technologies do you know|highest education|expected|select your)\b/i;
+        const intent = /\?|\b(?:full name|candidate name|first name|last name|email|email id|phone|mobile|contact number|graduat|passing year|year of passing|pass out|qualification|degree|college|university|institute|current (?:city|location)|where do you live|experience|salary|CTC|notice period|when can you join|available to join|relocat|work arrangement|work mode|work from|programming language|technical skills|technologies do you know|highest education|expected|select your|write a message|message|cover letter|pitch|about yourself|why should we hire)\b/i;
         const questionLike = element => intent.test(labelFor(element));
         const candidates = supported.filter(element => questionLike(element));
         const output = [];
@@ -1403,8 +1418,8 @@ async function suggestApplicationAnswers() {
         const expected = normalizeAnswerKey(answer);
         const exact = item.options.find(option => normalizeAnswerKey(option.label) === expected || normalizeAnswerKey(option.value) === expected);
         const supportedCheckboxes = item.kind === 'checkbox'
-          ? item.options.filter(option => answer.split(/[;,|\n]+/).map(normalizeAnswerKey).includes(normalizeAnswerKey(option.label))
-            || answer.split(/[;,|\n]+/).map(normalizeAnswerKey).includes(normalizeAnswerKey(option.value)))
+          ? item.options.filter(option => answer.split(/[;,|\r\n]+/).map(normalizeAnswerKey).includes(normalizeAnswerKey(option.label))
+            || answer.split(/[;,|\r\n]+/).map(normalizeAnswerKey).includes(normalizeAnswerKey(option.value)))
           : [];
         if (exact) answer = exact.label;
         else if (supportedCheckboxes.length) answer = supportedCheckboxes.map(option => option.label).join(', ');
@@ -1414,18 +1429,21 @@ async function suggestApplicationAnswers() {
     });
     const answerable = questions.filter(item => !item.sensitive && !item.verified && !item.alreadyFilled);
     let generated = [];
-    if (answerable.length) {
-      if (!resumeText) throw new Error('Upload a Master Resume to draft answers.');
-      const response = await api('/ai/application-answers', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          resumeText,
-          jobDescription: $('jobDescription').value.trim(),
-          resumeHash: await sha256Hex(cleanText(resumeText)),
-          questions: answerable.map(({ id, question, options }) => ({ id, question, options: (options || []).map(option => option.label) }))
-        })
-      });
-      generated = response.answers || [];
+    if (answerable.length && resumeText) {
+      try {
+        const response = await api('/ai/application-answers', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            resumeText,
+            jobDescription: $('jobDescription')?.value?.trim() || '',
+            resumeHash: await sha256Hex(cleanText(resumeText)),
+            questions: answerable.map(({ id, question, options }) => ({ id, question, options: (options || []).map(option => option.label) }))
+          })
+        });
+        generated = response?.answers || [];
+      } catch (apiErr) {
+        console.debug('MenixJobAI: backend application-answers offline, using local answer synthesis:', apiErr);
+      }
     }
     const generatedById = new Map(generated.map(item => [item.id, item]));
     const resolved = questions.map(question => {
@@ -1783,6 +1801,9 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
       target: { tabId: tab.id }, args: [answers],
       func: values => {
         let filled = 0; let skipped = 0; const filledIds = [];
+        const visible = el => Boolean(el?.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden'
+          && getComputedStyle(el).display !== 'none';
         const normalize = value => String(value || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
         const elementsIn = root => {
           const found = [...root.querySelectorAll('[data-menix-answer-id]')];
@@ -1828,7 +1849,7 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           if (first instanceof HTMLInputElement && first.type === 'checkbox') {
             const target = normalize(item.answer);
             if (fields.length > 1) {
-              const tokens = item.answer.split(/[;,|\n]+/).map(normalize).filter(Boolean);
+              const tokens = item.answer.split(/[;,|\r\n]+/).map(normalize).filter(Boolean);
               const matched = fields.filter(field => {
                 const label = normalize(field.closest('label')?.innerText || [...(field.labels || [])].map(entry => entry.innerText).join(' ') || field.value);
                 return !field.checked && tokens.some(token => token === label || token.includes(label) || label.includes(token));
@@ -1871,23 +1892,24 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           // Automatically activate and click the Save/Submit button in the drawer
           const clickDrawerSave = () => {
             const drawer = first.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], form') || document.body;
-            const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*)$/i;
+            const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*|next\b.*)$/i;
             const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
             let saveBtn = allBtns.find(b => !b.closest('.app, #__menixjobai_dock') && savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || '')));
             if (!saveBtn) {
               saveBtn = [...document.querySelectorAll('button, [role="button"]')].filter(visible).find(b => !b.closest('.app, #__menixjobai_dock') && savePattern.test(normalize(b.innerText || b.value || '')));
             }
             if (saveBtn) {
-              if (saveBtn.disabled) saveBtn.disabled = false;
-              if (saveBtn.getAttribute('aria-disabled') === 'true') saveBtn.removeAttribute('aria-disabled');
-              saveBtn.click();
-            } else {
-              first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-              first.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+              saveBtn.disabled = false;
+              saveBtn.removeAttribute('aria-disabled');
+              saveBtn.classList.remove('disabled');
+              try { saveBtn.click(); } catch {}
             }
+            first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            first.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
           };
 
-          setTimeout(clickDrawerSave, 250);
+          setTimeout(clickDrawerSave, 150);
+          setTimeout(clickDrawerSave, 500);
         }
         return { filled, skipped, filledIds };
       }
@@ -2475,6 +2497,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       },
 
       func: () => {
+        const isNaukriJobListing = /(^|\.)naukri\.com$/i.test(location.hostname) && /\/job-listings?-/i.test(location.pathname);
         const bodyText = document.body?.innerText || '';
         const visible = element => Boolean(element?.getClientRects().length);
 
@@ -2538,13 +2561,13 @@ async function captureActiveJob(tabId = null, attempt = 0) {
           return candidates[0] || '';
         })();
         const recruiterNodes = Array.from(document.querySelectorAll('[class*="recruiter" i], [class*="contact" i], [data-testid*="recruiter" i], [data-testid*="contact" i]')).filter(visible);
-        const recruiterText = recruiterNodes.map(element => element.innerText || '').filter(Boolean).join('\n').slice(0, 6000);
-        const relevantContactText = `${contactText}\n${recruiterText}`;
+        const recruiterText = recruiterNodes.map(element => element.innerText || '').filter(Boolean).join('\r\n').slice(0, 6000);
+        const relevantContactText = `${contactText}\r\n${recruiterText}`;
         const contactEmails = [...new Set((relevantContactText.match(/[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+/gi) || []).map(value => value.toLowerCase()).filter(value => value.length <= 254 && !/\.(?:png|jpe?g|gif|webp|svg)$/i.test(value)))];
         const mailto = Array.from(document.querySelectorAll('a[href^="mailto:"]')).filter(anchor => visible(anchor) && (anchor.closest('main') || recruiterNodes.some(node => node.contains(anchor)))).map(anchor => anchor.getAttribute('href').slice(7).split(/[?;]/)[0].trim().toLowerCase()).filter(value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
         const contactEmail = [...contactEmails, ...mailto][0] || '';
         const contactPhone = (relevantContactText.match(/(?:\+?\d{1,3}[\s().-]*)?(?:\(?\d{2,5}\)?[\s.-]*)?\d{3,5}[\s.-]*\d{3,5}/g) || []).map(value => value.trim()).find(value => { const digits = value.replace(/\D/g, ''); return digits.length >= 10 && digits.length <= 13; }) || '';
-        const contactLines = relevantContactText.split(/\n+/).map(line => line.trim()).filter(Boolean);
+        const contactLines = relevantContactText.split(/\r\n+/).map(line => line.trim()).filter(Boolean);
         const labeledValue = (pattern) => {
           const line = contactLines.find(value => pattern.test(value));
           return line?.replace(/^[^:]{1,40}[:\-]\s*/, '').trim().slice(0, 100) || '';
@@ -2617,7 +2640,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
             return text.match(/\b\d+\s*(?:-|–|to)\s*\d+\s*(?:years?|yrs?)\b|\b\d+\+?\s*(?:years?|yrs?)\b/i)?.[0]?.replace(/\s+/g, ' ') || '';
           })(),
           salary: (() => {
-            const lines = (document.body?.innerText || '').split('\n').map(line => line.trim()).filter(Boolean);
+            const lines = (document.body?.innerText || '').split('\r\n').map(line => line.trim()).filter(Boolean);
             const salaryLine = lines.find(line => /(?:salary|ctc|₹|INR|Rs\.?)/i.test(line));
             if (salaryLine) {
               if (/not disclosed/i.test(salaryLine)) return 'Not Disclosed';
@@ -2667,10 +2690,10 @@ async function captureActiveJob(tabId = null, attempt = 0) {
 
             // Also capture Job Highlights if separate
             const highlightNodes = Array.from(document.querySelectorAll('[class*="highlight" i], [class*="job-highlights" i]')).filter(visible);
-            const highlightText = highlightNodes.map(el => el.innerText?.trim() || '').filter(t => t.length >= 25 && t.length <= 4000).join('\n');
+            const highlightText = highlightNodes.map(el => el.innerText?.trim() || '').filter(t => t.length >= 25 && t.length <= 4000).join('\r\n');
 
             if (highlightText && !mainJdText.includes(highlightText.slice(0, 30))) {
-              mainJdText = `Job highlights:\n${highlightText}\n\nJob description:\n${mainJdText}`;
+              mainJdText = `Job highlights:\r\n${highlightText}\r\n\r\nJob description:\r\n${mainJdText}`;
             }
 
             if (mainJdText.length >= 100) return mainJdText.slice(0, 24000);
@@ -2970,7 +2993,7 @@ async function captureOriginalProfileResumeName(tabId) {
     const [{ result }] = await chrome.scripting.executeScript({ target: { tabId }, func: () => {
       const visible = element => Boolean(element.getClientRects().length);
       const area = [...document.querySelectorAll('section,article,[class*="resume" i],[id*="resume" i]')].filter(visible).map(element => element.innerText || '').filter(text => /resume/i.test(text)).sort((a, b) => a.length - b.length)[0] || document.body?.innerText || '';
-      return area.split(/\n+/).map(line => line.trim()).find(line => /\.(?:pdf|docx?)$/i.test(line)) || '';
+      return area.split(/\r\n+/).map(line => line.trim()).find(line => /\.(?:pdf|docx?)$/i.test(line)) || '';
     } });
     if (result) await persistResumeWorkflow({ ...activeResumeWorkflow, originalProfileResumeName: result });
   } catch { /* Profile filename may be unavailable until the user signs in. */ }
@@ -3901,7 +3924,7 @@ async function generateTemporaryResumeForActiveJob() {
     const job = currentJobPayload();
     const generated = await generateResumeStep(job);
     const saved = await chrome.storage.local.get(['fullName']);
-    const candidateName = (saved.fullName || $('fullNameInput').value || $('resumeText').value.split(/\r?\n/).find(line => line.trim()) || '').trim();
+    const candidateName = (saved.fullName || $('fullNameInput').value || $('resumeText').value.split(/\r?\r\n/).find(line => line.trim()) || '').trim();
     const firstNameRaw = candidateName.split(/\s+/)[0] || '';
     const firstName = safeFilenamePart(firstNameRaw).replace(/_/g, '');
     if (!firstNameRaw || !firstName || firstName === 'Job') throw new Error('Add your name in Settings before generating a tailored resume.');
@@ -4094,21 +4117,21 @@ async function inspectNaukriResume(tabId, config, expectedFileName) {
       const selectedText = (siteConfig.fileNameSelectors || []).flatMap(selector => {
         try { return [...document.querySelectorAll(selector)].filter(visible).map(element => element.innerText || element.textContent || ''); }
         catch { return []; }
-      }).join('\n');
+      }).join('\r\n');
       const bodyText = document.body?.innerText || '';
-      const text = `${selectedText}\n${bodyText}`;
+      const text = `${selectedText}\r\n${bodyText}`;
       const hasName = text.toLowerCase().includes(expected.toLowerCase());
       const successTexts = (siteConfig.successSelectors || []).flatMap(selector => {
         try { return [...document.querySelectorAll(selector)].filter(visible).map(element => element.innerText || element.textContent || ''); }
         catch { return []; }
-      }).join('\n');
+      }).join('\r\n');
       const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toLowerCase();
       const successSignal = /(?:uploaded\s+successfully|successfully\s+(?:uploaded|updated)|resume\s+(?:uploaded|updated)|upload\s+complete)/i.test(successTexts)
         || /uploaded\s+on\s+today/i.test(text)
         || text.toLowerCase().includes(`uploaded on ${today}`)
         || /(?:resume\s+(?:uploaded|updated)\s+successfully|successfully\s+(?:uploaded|updated))/i.test(bodyText);
       const fileNames = [...new Set((text.match(/[A-Z0-9][A-Z0-9 _().-]*\.(?:docx?|pdf)/gi) || []).map(value => value.trim()))].slice(0, 6);
-      const relevantLines = text.split(/\n+/).map(line => line.trim()).filter(line => /resume|upload|\.(?:docx?|pdf)/i.test(line)).slice(0, 8);
+      const relevantLines = text.split(/\r\n+/).map(line => line.trim()).filter(line => /resume|upload|\.(?:docx?|pdf)/i.test(line)).slice(0, 8);
       return {
         ok: hasName && successSignal,
         hasName,
@@ -4783,7 +4806,7 @@ function normalizeOverviewResult(data) {
       : normalized.matchScore === null ? 'Not scored' : normalized.matchScore >= 80 ? 'Strong Match' : normalized.matchScore >= 65 ? 'Good Match' : normalized.matchScore >= 40 ? 'Partial Match' : 'Low Match';
     return normalized;
   }
-  const rawText = data?.review?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('\n') || '';
+  const rawText = data?.review?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('\r\n') || '';
   let old = {};
   try { old = JSON.parse(rawText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); } catch { old = {}; }
   const scores = {
@@ -5108,7 +5131,7 @@ function normalizeAnalysisItems(values) {
 
 // ------------------------------
 function localPipelineFilename(fullName, masterText) {
-  const source = fullName?.trim() || masterText.split(/\r?\n/).find(line => line.trim()) || 'Candidate';
+  const source = fullName?.trim() || masterText.split(/\r?\r\n/).find(line => line.trim()) || 'Candidate';
   const firstPart = safeFilenamePart(source.split(/\s+/)[0]).replace(/_/g, '') || 'Candidate';
   const today = new Date();
   const date = [String(today.getDate()).padStart(2, '0'), String(today.getMonth() + 1).padStart(2, '0'), today.getFullYear()].join('-');
@@ -5118,7 +5141,7 @@ function localPipelineFilename(fullName, masterText) {
 async function generateResumeStep(job) {
   const masterText = $('resumeText').value.trim();
   const saved = await chrome.storage.local.get(['fullName']);
-  const fullName = saved.fullName || $('fullNameInput').value.trim() || masterText.split(/\r?\n/).find(line => line.trim()) || '';
+  const fullName = saved.fullName || $('fullNameInput').value.trim() || masterText.split(/\r?\r\n/).find(line => line.trim()) || '';
   const master = await readResumeFile('master');
   if (!master?.file || !/\.docx$/i.test(master.name || resumeFileName || '')) {
     throw new Error('To preserve your original design, store the Master Resume as its original DOCX before tailoring. PDF and pasted text cannot be safely edited in place.');
