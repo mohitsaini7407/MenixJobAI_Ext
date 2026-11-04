@@ -127,14 +127,16 @@ public class TailoredResumeController {
             for (TemplateEdit edit : edits) {
                 if (edit == null || edit.before() == null || edit.before().isBlank() || edit.after() == null) continue;
                 if (Boolean.FALSE.equals(edit.safeToApply())) {
-                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "A resume edit marked unsafe was rejected.");
+                    logger.warn("Skipping resume edit marked unsafe: {}", edit.before());
+                    continue;
                 }
                 List<String> evidence = edit.evidence() == null || edit.evidence().isEmpty()
                     ? List.of(edit.before()) : edit.evidence();
                 ResumeTailoringValidator.Validation validation = ResumeTailoringValidator.validate(
                     masterText, masterText, "", edit.before(), edit.after(), evidence, confirmedFacts);
                 if (!validation.valid()) {
-                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Resume edit rejected: " + validation.reason());
+                    logger.warn("Skipping unverified resume edit: {} ({})", edit.before(), validation.reason());
+                    continue;
                 }
                 operations.add(new DocxEditOperation(
                     "edit-" + (counter++), null, "replace_span",
@@ -146,7 +148,7 @@ public class TailoredResumeController {
             // Truthful fallback: synthesize a safe skills re-ordering from existing skills in master resume
             for (String line : masterText.split("\\R")) {
                 String trimmed = line.trim();
-                if (trimmed.toLowerCase(Locale.ROOT).matches("^(?:technical skills|skills|technologies|languages|frameworks)[:\\-].*") && trimmed.contains(",")) {
+                if (trimmed.toLowerCase(Locale.ROOT).matches("^(?:technical skills|skills|technologies|languages|frameworks|tools|core competencies|proficiencies)[:\\-].*") && trimmed.contains(",")) {
                     int colonIdx = trimmed.indexOf(':');
                     if (colonIdx > 0) {
                         String prefix = trimmed.substring(0, colonIdx + 1);
@@ -165,7 +167,7 @@ public class TailoredResumeController {
             }
             if (operations.isEmpty()) {
                 throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
-                    "No edits were provided to tailor the resume. A tailored file cannot be produced without changes.");
+                    "No valid verified edits could be applied to the master resume. Ensure your resume contains an editable skills section.");
             }
         }
 

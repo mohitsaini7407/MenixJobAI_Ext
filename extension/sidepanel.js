@@ -937,35 +937,7 @@ function synthesizeTruthfulTailoringEdits(masterText, jobTitle = '', jobDescript
     }
   }
 
-  // 2. Summary / Profile Targeting
-  const summaryCandidates = lines.slice(1, 6).filter(l => {
-    const wordCount = l.split(/\s+/).length;
-    return wordCount >= 12 && wordCount <= 90 && !/^(?:education|skills|experience|projects|certifications)/i.test(l) && !/@|\+?\d{10}/.test(l);
-  });
-  if (summaryCandidates.length > 0 && edits.length < 2) {
-    const origSummary = summaryCandidates[0];
-    const targetRole = (jobTitle || '').replace(/\b(?:senior|junior|lead|intern|developer|engineer|specialist)\b/gi, '').trim() || jobTitle;
-    if (jobTitle && origSummary.length > 25) {
-      const roleMatch = origSummary.match(/^(?:A |An )?(?:Passionate |Experienced |Dedicated |Results-driven )?(?:Software |Web |Full Stack |Frontend |Backend )?(?:Developer|Engineer|Professional)/i);
-      if (roleMatch && targetRole) {
-        const targeted = origSummary.replace(roleMatch[0], `${jobTitle} specializing in modern software development`);
-        if (targeted !== origSummary && masterText.includes(origSummary)) {
-          edits.push({
-            id: `synth-summary-${edits.length + 1}`,
-            before: origSummary,
-            after: targeted,
-            section: 'summary',
-            safeToApply: true,
-            validation: 'verified',
-            reason: `Aligned summary role focus with ${jobTitle}.`,
-            evidence: [origSummary]
-          });
-        }
-      }
-    }
-  }
-
-  // 3. Fallback: Re-order first skills line if needed
+  // 2. Fallback: Re-order first skills line if needed (zero new terms, 100% truthful)
   if (edits.length === 0) {
     for (const line of lines) {
       if (/^(?:technical skills|skills|technologies|languages|frameworks)[:\-]/i.test(line) && line.includes(',')) {
@@ -5560,7 +5532,7 @@ async function generateResumeStep(job) {
     requestBody.templateEdits = approvedTailoringEdits.map(edit => ({
       before: edit.before, after: edit.after, section: edit.section,
       relatedRequirement: edit.relatedRequirement, evidence: edit.evidence,
-      safeToApply: edit.safeToApply === true && edit.validation === 'verified'
+      safeToApply: edit.safeToApply !== false && edit.validation !== 'rejected'
     }));
   }
   const response = await fetch(`${apiBase}/ai/tailor-docx`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
