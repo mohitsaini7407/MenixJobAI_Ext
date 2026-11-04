@@ -126,7 +126,7 @@ body,.app,.topbar{background:#0b1017}
 
 body{min-width:320px;background:#0b1017}
 .app{width:100%;max-width:390px;padding:8px 10px 0}
-.topbar{position:static;margin:0;padding:4px 2px 9px;border:0;gap:8px}
+.topbar{position:sticky;top:0;z-index:100;margin:-8px -10px 8px;padding:8px 12px;border:0;gap:8px}
 .brand-mark{width:30px;height:30px;border:0;border-radius:8px;background:transparent}
 .brand-mark img{width:29px;height:29px;filter:hue-rotate(22deg) saturate(1.35)}
 .brand strong{font-size:14px}
@@ -705,3 +705,15 @@ input[type="checkbox"]{accent-color:var(--analysis-blue)}
 #analysisSection .visibility-card{background:#fff;border:1px solid var(--analysis-border);border-radius:10px;padding:12px}
 #analysisSection .visibility-field input,#analysisSection .visibility-field textarea{background:#f8fafc;color:#1e293b;border:1px solid var(--analysis-border);border-radius:8px;font-family:inherit;font-size:11px;width:100%;padding:8px}
 #analysisSection .visibility-field input:focus,#analysisSection .visibility-field textarea:focus{border-color:var(--analysis-blue);background:#fff}
+
+/* Fixed/sticky navbar visible during scroll */
+.topbar {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 1000 !important;
+  margin: -8px -10px 8px -10px !important;
+  padding: 8px 12px !important;
+  background: #ffffff !important;
+  border-bottom: 1px solid var(--analysis-border) !important;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08) !important;
+}
