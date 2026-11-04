@@ -3035,6 +3035,29 @@ async function handleNaukriDirectApply(tabId) {
         break;
       }
 
+      // Check if an answer is already selected on the page but Save has not been clicked yet
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const visible = el => Boolean(el?.getClientRects().length)
+            && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+          const normalize = val => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
+          const drawer = document.querySelector('[class*="drawer" i], [class*="modal" i], [class*="popup" i], [class*="dialog" i], [class*="chatbot" i], [class*="container" i], [class*="screener" i], form');
+          if (!drawer) return;
+          const hasSelectedOption = drawer.querySelector('input[type="radio"]:checked, [class*="chip" i][class*="selected" i], [class*="chip" i][class*="active" i], [class*="pill" i][class*="active" i]');
+          if (hasSelectedOption) {
+            const savePattern = /^(?:save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
+            const btns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
+            const saveBtn = btns.find(b => {
+              if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+              const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
+              return savePattern.test(lbl);
+            });
+            if (saveBtn) saveBtn.click();
+          }
+        }
+      }).catch(() => {});
+
       if (result?.state === 'chatbot_question') {
         const question = result.question;
         if (question === lastProcessedQuestion) {
@@ -3090,7 +3113,17 @@ async function handleNaukriDirectApply(tabId) {
               });
               if (targetChip) {
                 targetChip.click();
-                return { success: true, method: 'chip' };
+                // Check if a Save / Next / Submit button exists and click it
+                const chatParent = targetChip.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="container" i], form') || document.body;
+                const savePattern = /^(?:save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
+                const postBtns = [...chatParent.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
+                const saveBtn = postBtns.find(b => {
+                  if (b === targetChip || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+                  const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
+                  return savePattern.test(lbl);
+                });
+                if (saveBtn) saveBtn.click();
+                return { success: true, method: 'chip', saved: Boolean(saveBtn) };
               }
             }
 
@@ -3178,15 +3211,17 @@ async function handleNaukriDirectApply(tabId) {
               f.dispatchEvent(new Event('change', { bubbles: true }));
             }
 
-            // Submit inside drawer ONLY
-            const drawer = document.querySelector('[class*="drawer" i], [class*="modal" i], [class*="popup" i]');
+            // Click Save / Submit inside drawer or modal
+            const drawer = document.querySelector('[class*="drawer" i], [class*="modal" i], [class*="popup" i], [class*="dialog" i], [class*="chatbot" i], [class*="container" i], [class*="screener" i], form');
             if (drawer) {
+              const savePattern = /^(?:save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
               const btns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
               const submitBtn = btns.find(b => {
-                const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label'));
-                return /^(?:apply(?: now)?|apply without update|submit(?: application)?|save(?: &|&) apply|continue to apply|confirm|next)$/i.test(lbl);
+                if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+                const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
+                return savePattern.test(lbl);
               });
-              if (submitBtn && !submitBtn.disabled) submitBtn.click();
+              if (submitBtn) submitBtn.click();
             }
           }
         });
