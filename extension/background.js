@@ -87,6 +87,7 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
   const panelUrl = new URL(chrome.runtime.getURL('sidepanel.html'));
   panelUrl.searchParams.set('embedded', '1');
   panelUrl.searchParams.set('closeToken', token);
+  panelUrl.searchParams.set('tabId', String(tabId));
   chrome.scripting.executeScript({
     target: { tabId },
     args: [true, panelUrl.href, token, dockVersion, forceRefresh],

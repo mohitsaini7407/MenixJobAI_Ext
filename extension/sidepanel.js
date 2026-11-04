@@ -1870,6 +1870,13 @@ function updateResumeCard(fileName = resumeFileName) {
   $('masterResumeBadge').classList.toggle('success-badge', hasResume && resumeIsSaved);
 }
 
+document.querySelector('.job-card')?.addEventListener('click', () => {
+  if (!$('jobDescription')?.value?.trim()) {
+    setStatus('Capturing active job…', 'info');
+    captureActiveJob();
+  }
+});
+
 function updateJobSummary() {
   const title = cleanText($('jobTitleInput').value);
   const company = cleanText($('companyInput').value);
@@ -1951,6 +1958,41 @@ function createResumeFileIcon(type) {
 function extractExperienceTags(description) {
   const match = description.match(/\b\d+\s*[-–]\s*\d+\s*(?:years?|yrs?)\b|\b\d+\+?\s*(?:years?|yrs?)\b/i);
   return match ? [match[0].replace(/\s+/g, ' ')] : [];
+}
+
+
+function parseNaukriSlug(pathname) {
+  const match = (pathname || '').match(/\/job-listings-([a-z0-9\-]+)/i);
+  if (!match) return '';
+  let slug = match[1].toLowerCase();
+  slug = slug.replace(/-\d{8,}$/, '');
+  slug = slug.replace(/-\d+-to-\d+-y(?:ear)?s?$/, '');
+  slug = slug.replace(/-(?:gurgaon|gurugram|noida|delhi|bangalore|bengaluru|pune|mumbai|hyderabad|chennai|remote|kolkata|ahmedabad)(?:-[a-z]+)?$/, '');
+  const words = slug.split('-').filter(Boolean);
+  if (!words.length) return '';
+  return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+function cleanJobTitle(heading, docTitle, pathname) {
+  if (heading && heading.trim().length >= 3) {
+    const cleanHeading = heading.replace(/\s+/g, ' ').trim();
+    if (!/^(?:naukri|naukri campus|home|jobs|search|opportunities|prepare|participate)$/i.test(cleanHeading)) {
+      return cleanHeading;
+    }
+  }
+  if (docTitle) {
+    let cleaned = docTitle
+      .replace(/\s*[-|]\s*(?:naukri(?:\.com|\s+campus)?|recruitment|careers?|job\s+search).*$/i, '')
+      .replace(/^[\s\-|]+|[\s\-|]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleaned.length >= 3 && !/^(?:naukri|naukri campus)$/i.test(cleaned)) {
+      return cleaned;
+    }
+  }
+  const slugTitle = parseNaukriSlug(pathname);
+  if (slugTitle && slugTitle.length >= 3) return slugTitle;
+  return heading?.trim() || '';
 }
 
 function cleanCompanyName(company) {
@@ -2245,9 +2287,33 @@ $('saveSettings').addEventListener('click', async () => {
 async function captureActiveJob(tabId = null, attempt = 0) {
   const requestId = ++captureRequestId;
   try {
-    const tab = tabId
-      ? await chrome.tabs.get(tabId)
-      : (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
+    const embeddedTabId = parseInt(new URLSearchParams(window.location.search).get('tabId') || '0', 10) || null;
+    let tab = null;
+
+    if (tabId) {
+      try { tab = await chrome.tabs.get(tabId); } catch {}
+    }
+    if (!tab && embeddedTabId) {
+      try { tab = await chrome.tabs.get(embeddedTabId); } catch {}
+    }
+    if (!tab) {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        tab = tabs[0];
+      } catch {}
+    }
+    if (!tab) {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        tab = tabs[0];
+      } catch {}
+    }
+    if (!tab) {
+      try {
+        const tabs = await chrome.tabs.query({ active: true });
+        tab = tabs.find(t => /(^|\.)naukri\.com$/i.test(new URL(t.url || 'http://localhost').hostname)) || tabs[0];
+      } catch {}
+    }
 
     if (!tab?.id || !tab.url) {
       throw new Error('No active browser tab was found.');
@@ -2256,12 +2322,8 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     const url = new URL(tab.url);
     const isNaukriJobListing = /(^|\.)naukri\.com$/i.test(url.hostname) && /\/job-listings?-/i.test(url.pathname);
 
-    // CRITICAL USER RULE: Do NOT refresh or wipe the extension state unless the user
-    // explicitly navigates to a brand-new job listing on naukri.com!
-    // When the user is on a company website (e.g. redirected from Naukri) or profile,
-    // KEEP THE EXTENSION LOADED WITH THE SAVED JOB, RESUME & WORKFLOW!
+    // If on a company site during an application, do NOT wipe the job
     if (!isNaukriJobListing) {
-      // If we are on an external company page during an application, connect the tab
       if (activeResumeWorkflow && !url.hostname.endsWith('naukri.com') && /^https?:\/\//i.test(tab.url)) {
         if (activeResumeWorkflow.companyApplicationTabId !== tab.id) {
           activeResumeWorkflow.companyApplicationTabId = tab.id;
@@ -2269,29 +2331,34 @@ async function captureActiveJob(tabId = null, attempt = 0) {
           persistResumeWorkflow(activeResumeWorkflow).catch(() => {});
         }
       }
-      return; // Do NOT wipe or refresh!
+      return;
     }
 
     if (!['http:', 'https:'].includes(url.protocol)) {
       throw new Error('This page does not allow job details to be read.');
     }
 
-    // Only refresh if the user navigates to a DIFFERENT Naukri job URL
-    const pageChanged = currentJobTabUrl !== tab.url;
-    if (!pageChanged && activeResumeWorkflow) return;
-    currentJobTabUrl = tab.url;
-    recruiterContact = null;
-    renderRecruiterContact('checking');
+    const isNewJobUrl = currentJobTabUrl !== tab.url;
 
-    if (pageChanged) {
+    // If it is the same job URL and details are already captured, nothing to do
+    if (!isNewJobUrl && $('jobDescription')?.value?.trim() && $('jobTitleInput')?.value?.trim() && activeResumeWorkflow) {
+      return;
+    }
+
+    // Only clear previous job if switching to a genuinely new job URL
+    if (isNewJobUrl && attempt === 0) {
+      activeResumeWorkflow = null;
       $('jobTitleInput').value = '';
       $('companyInput').value = '';
       $('locationInput').value = '';
       $('jobUrl').value = tab.url;
       $('jobDescription').value = '';
       jobMetadata = {};
+      recruiterContact = null;
+      renderRecruiterContact('checking');
       updateJobSummary();
       invalidateAnalysis();
+      setStatus('Capturing job details…', 'info');
     }
 
     const [{ result }] = await chrome.scripting.executeScript({
@@ -2302,6 +2369,59 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       func: () => {
         const bodyText = document.body?.innerText || '';
         const visible = element => Boolean(element?.getClientRects().length);
+
+        // Job Title extraction with multi-selector search
+        const headingText = (() => {
+          const selectors = [
+            'h1',
+            '[class*="header-title" i]',
+            '[class*="job-title" i]',
+            '[class*="jobTitle" i]',
+            '[class*="jd-header-title" i]',
+            '[class*="styles_title" i]',
+            '[data-testid*="job-title" i]',
+            '[data-testid*="title" i]',
+            'h2[class*="title" i]',
+            'h2'
+          ];
+          for (const sel of selectors) {
+            const elements = Array.from(document.querySelectorAll(sel)).filter(visible);
+            for (const el of elements) {
+              const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+              if (text.length >= 3 && text.length <= 160 && !/^(?:naukri|naukri campus|home|jobs|search|opportunities|prepare|participate)$/i.test(text)) {
+                return text;
+              }
+            }
+          }
+          return '';
+        })();
+
+        // Company Name extraction with multi-selector search
+        const companyText = (() => {
+          const selectors = [
+            '[class*="comp-name" i]',
+            '[class*="companyName" i]',
+            '[class*="company-name" i]',
+            '[data-testid*="company" i]',
+            '[class*="jd-header-comp-name" i]',
+            'a[href*="/cmp/"]',
+            'a[href*="/company/"]',
+            '[class*="employer" i]',
+            '[class*="comp-info" i]',
+            '[class*="company" i]'
+          ];
+          for (const sel of selectors) {
+            const el = Array.from(document.querySelectorAll(sel)).find(visible);
+            if (el) {
+              const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+              if (text && text.length >= 2 && text.length <= 100 && !/^(?:naukri|rating|reviews?|apply|save|send me jobs)$/i.test(text)) {
+                return text.replace(/\s*[★·|]?\s*[0-5](?:\.\d)?\s*[\d,.]*\s*[KMB]?\s*Reviews?.*$/i, '').trim();
+              }
+            }
+          }
+          return '';
+        })();
+
         const contactText = (() => {
           const selectors = ['[data-testid*="job-description" i]', '[id*="jobDescription" i]', '[id*="jobDesc" i]', '[class*="job-description" i]', '[class*="jobDescription" i]', '[class*="dang-inner-html" i]', '[class*="job-desc" i]', '[data-job-description]', 'main'];
           const candidates = selectors.flatMap(selector => Array.from(document.querySelectorAll(selector)))
@@ -2340,12 +2460,9 @@ async function captureActiveJob(tabId = null, attempt = 0) {
         const explicitApplyLinks = applyLinks.filter(item => item.explicit);
         const selectedApplyLinks = explicitApplyLinks.length ? explicitApplyLinks : applyLinks;
         const uniqueApplyHrefs = [...new Set(selectedApplyLinks.map(item => item.href))];
-        // Prefer the explicit "apply on company site" href since Naukri shows an interstitial
-        // before redirecting. Having the URL lets us navigate directly on second attempt.
         const companyApplyUrl = uniqueApplyHrefs.length === 1 ? uniqueApplyHrefs[0]
           : uniqueApplyHrefs.length > 1 ? (explicitApplyLinks.length ? explicitApplyLinks[0].href : uniqueApplyHrefs[0]) : '';
         const companyElement = document.querySelector('[data-testid*="company" i], [class*="companyName" i], [class*="company-name" i], [class*="comp-name" i], [class*="jd-header-comp-name" i]');
-        const companyText = companyElement?.textContent?.trim() || '';
         const companyLogo = (() => {
           if (!companyElement || !companyText) return '';
           const companyName = companyText
@@ -2378,134 +2495,176 @@ async function captureActiveJob(tabId = null, attempt = 0) {
         })();
         const ratingMatch = companyText.match(/([0-5](?:\.\d)?)\s*(?:★\s*)?[\d,.]+\s*[KMB]?\s+Reviews?\b/i)
           || bodyText.match(/\b([0-5](?:\.\d)?)\s*(?:★\s*)?[\d,.]+\s*[KMB]?\s+Reviews?\b/i);
+
         return {
-        title: document.title,
-        url: location.href,
-        heading: document.querySelector('h1')?.textContent?.trim() || '',
-        company: companyText,
-        companyLogo,
-        companyApplyUrl,
-        location: document.querySelector('[data-testid*="location" i], [class*="location" i], [class*="locWdth" i]')?.textContent?.trim() || '',
-        experience: (() => {
-          const text = document.body?.innerText || '';
-          return text.match(/\b\d+\s*(?:-|–|to)\s*\d+\s*(?:years?|yrs?)\b|\b\d+\+?\s*(?:years?|yrs?)\b/i)?.[0]?.replace(/\s+/g, ' ') || '';
-        })(),
-        salary: (() => {
-          const lines = (document.body?.innerText || '').split('\n').map(line => line.trim()).filter(Boolean);
-          const salaryLine = lines.find(line => /(?:salary|ctc|₹|INR|Rs\.?)/i.test(line));
-          if (salaryLine) {
-            if (/not disclosed/i.test(salaryLine)) return 'Not Disclosed';
-            const amount = salaryLine.match(/(?:₹|INR|Rs\.?)?\s*[\d,.]+\s*(?:-|–|to)\s*(?:₹|INR|Rs\.?)?\s*[\d,.]+\s*(?:LPA|lakhs?|per annum|\/year)?/i)
-              || salaryLine.match(/(?:₹|INR|Rs\.?)\s*[\d,.]+(?:\s*(?:LPA|lakhs?|per annum|\/year))?/i);
-            return amount?.[0]?.trim() || '';
-          }
-          return '';
-        })(),
-        rating: (() => {
-          return ratingMatch?.[1] || '';
-        })(),
-        recruiterContact: {
-          name: recruiterName,
-          email: contactEmail,
-          phone: contactPhone,
-          company: companyText.replace(/\s*[★·|]?\s*[0-5](?:\.\d)?\s*[\d,.]+\s*[KMB]?\s+Reviews?.*$/i, '').trim(),
-          designation: recruiterDesignation,
-          profileUrl: recruiterProfile,
-          websiteUrl: companyWebsite
-        },
-        text: (() => {
-          const selectors = [
-            '[data-testid*="job-description" i]',
-            '[id*="jobDescription" i]',
-            '[id*="jobDesc" i]',
-            '[class*="job-description" i]',
-            '[class*="jobDescription" i]',
-            '[class*="dang-inner-html" i]',
-            '[class*="job-desc" i]',
-            '[data-job-description]',
-            'main'
-          ];
-          const candidates = selectors
-            .flatMap(selector => Array.from(document.querySelectorAll(selector)))
-            .filter(element => element.getClientRects().length)
-            .map(element => element.innerText?.trim() || '')
-            .filter(text => text.length >= 100 && text.length <= 24000);
-          const best = candidates.sort((a, b) => a.length - b.length)[0];
-          if (best) return best;
-          const isNaukriListing = location.hostname.endsWith('naukri.com')
-            && /\/job-listings?-/i.test(location.pathname);
-          if (isNaukriListing) {
-            return (document.querySelector('main')?.innerText || document.body?.innerText || '').slice(0, 24000);
-          }
-          return '';
-        })(),
-        alreadyApplied: (() => {
-          const norm = str => String(str || '').replace(/\s+/g, ' ').trim().toLowerCase();
-          const visible = el => Boolean(el?.getClientRects().length)
-            && getComputedStyle(el).visibility !== 'hidden'
-            && getComputedStyle(el).display !== 'none';
-          const elements = [...document.querySelectorAll('main button, main a, main span, button, a, span, [role="button"]')].filter(visible);
-          return elements.some(el => {
-            const text = norm(el.innerText || el.getAttribute('aria-label'));
-            const isAppliedText = /^(?:already applied|applied\b|applied on\s+\d+|application submitted)$/i.test(text);
-            const hasAppliedClass = el.classList.contains('applied') || el.classList.contains('already-applied') || /applied/i.test(el.className);
-            return isAppliedText || (hasAppliedClass && /apply|status/i.test(el.className));
-          });
-        })(),
-        pageKeySkills: (() => {
-          const skillSelectors = [
-            '.key-skill a', '[class*="key-skill" i] a',
-            '[class*="styles_chip" i]', '[class*="tags-gt" i] a',
-            '[data-testid*="skill" i]'
-          ];
-          const tags = [];
-          skillSelectors.forEach(sel => {
-            try {
-              document.querySelectorAll(sel).forEach(el => {
-                const t = el.innerText?.trim();
-                if (t && t.length < 40 && !tags.includes(t)) tags.push(t);
-              });
-            } catch {}
-          });
-          return tags;
-        })(),
-        isJobPage: (() => {
-          const text = `${document.title} ${bodyText}`.toLowerCase();
-          const isNaukriJobListing = location.hostname.endsWith('naukri.com')
-            && /\/job-listings?-/i.test(location.pathname);
-          const indicators = [
-            /job description/.test(text),
-            /responsibilit(?:y|ies)/.test(text),
-            /qualifications?/.test(text),
-            /requirements?/.test(text),
-            /experience required|years? of experience/.test(text),
-            /apply now|apply for this job/.test(text),
-            /employment type|job type/.test(text),
-            /skills required/.test(text)
-          ];
-          return isNaukriJobListing || indicators.filter(Boolean).length >= 2;
-        })()
+          title: document.title,
+          url: location.href,
+          heading: headingText,
+          company: companyText,
+          companyLogo,
+          companyApplyUrl,
+          location: document.querySelector('[data-testid*="location" i], [class*="location" i], [class*="locWdth" i]')?.textContent?.trim() || '',
+          experience: (() => {
+            const text = document.body?.innerText || '';
+            return text.match(/\b\d+\s*(?:-|–|to)\s*\d+\s*(?:years?|yrs?)\b|\b\d+\+?\s*(?:years?|yrs?)\b/i)?.[0]?.replace(/\s+/g, ' ') || '';
+          })(),
+          salary: (() => {
+            const lines = (document.body?.innerText || '').split('\n').map(line => line.trim()).filter(Boolean);
+            const salaryLine = lines.find(line => /(?:salary|ctc|₹|INR|Rs\.?)/i.test(line));
+            if (salaryLine) {
+              if (/not disclosed/i.test(salaryLine)) return 'Not Disclosed';
+              const amount = salaryLine.match(/(?:₹|INR|Rs\.?)?\s*[\d,.]+\s*(?:-|–|to)\s*(?:₹|INR|Rs\.?)?\s*[\d,.]+\s*(?:LPA|lakhs?|per annum|\/year)?/i)
+                || salaryLine.match(/(?:₹|INR|Rs\.?)\s*[\d,.]+(?:\s*(?:LPA|lakhs?|per annum|\/year))?/i);
+              return amount?.[0]?.trim() || '';
+            }
+            return '';
+          })(),
+          rating: (() => {
+            return ratingMatch?.[1] || '';
+          })(),
+          recruiterContact: {
+            name: recruiterName,
+            email: contactEmail,
+            phone: contactPhone,
+            company: companyText.replace(/\s*[★·|]?\s*[0-5](?:\.\d)?\s*[\d,.]+\s*[KMB]?\s+Reviews?.*$/i, '').trim(),
+            designation: recruiterDesignation,
+            profileUrl: recruiterProfile,
+            websiteUrl: companyWebsite
+          },
+          text: (() => {
+            // True Job Description selectors (do NOT include header components like styles_jhc__)
+            const jdSelectors = [
+              '[class*="dang-inner-html" i]',
+              '[class*="job-desc-container" i]',
+              '[class*="styles_job-desc" i]',
+              '[class*="styles_job_desc" i]',
+              '[class*="job-description" i]',
+              '[class*="jobDescription" i]',
+              '[id*="jobDescription" i]',
+              '[id*="jobDesc" i]',
+              '[data-testid*="job-description" i]',
+              '[class*="jdContainer" i]',
+              '[class*="job-desc" i]',
+              'section[class*="description" i]'
+            ];
+            const jdCandidates = jdSelectors
+              .flatMap(selector => Array.from(document.querySelectorAll(selector)))
+              .filter(element => element.getClientRects().length)
+              .map(element => element.innerText?.trim() || '')
+              .filter(text => text.length >= 100 && text.length <= 24000);
+
+            // Sort by descending length so the full job description is picked, not a small snippet
+            jdCandidates.sort((a, b) => b.length - a.length);
+            let mainJdText = jdCandidates[0] || '';
+
+            // Also capture Job Highlights if separate
+            const highlightNodes = Array.from(document.querySelectorAll('[class*="highlight" i], [class*="job-highlights" i]')).filter(visible);
+            const highlightText = highlightNodes.map(el => el.innerText?.trim() || '').filter(t => t.length >= 25 && t.length <= 4000).join('\n');
+
+            if (highlightText && !mainJdText.includes(highlightText.slice(0, 30))) {
+              mainJdText = `Job highlights:\n${highlightText}\n\nJob description:\n${mainJdText}`;
+            }
+
+            if (mainJdText.length >= 100) return mainJdText.slice(0, 24000);
+
+            // Fallback: Left container, main, or layout container
+            const fallbackSelectors = [
+              '[class*="leftContainer" i]',
+              '[class*="job-details" i]',
+              '[class*="left-section" i]',
+              '[class*="jd-container" i]',
+              'main',
+              '[role="main"]',
+              'article'
+            ];
+            for (const sel of fallbackSelectors) {
+              const el = document.querySelector(sel);
+              if (el && visible(el)) {
+                const text = el.innerText?.trim() || '';
+                if (text.length >= 100) return text.slice(0, 24000);
+              }
+            }
+
+            // Last resort on Naukri listings
+            const isNaukriListing = location.hostname.endsWith('naukri.com')
+              && /\/job-listings?-/i.test(location.pathname);
+            if (isNaukriListing) {
+              const body = (document.body?.innerText || '').trim();
+              if (body.length >= 100) return body.slice(0, 24000);
+            }
+            return '';
+          })(),
+          alreadyApplied: (() => {
+            const norm = str => String(str || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const visible = el => Boolean(el?.getClientRects().length)
+              && getComputedStyle(el).visibility !== 'hidden'
+              && getComputedStyle(el).display !== 'none';
+            const elements = [...document.querySelectorAll('main button, main a, main span, button, a, span, [role="button"]')].filter(visible);
+            return elements.some(el => {
+              const text = norm(el.innerText || el.getAttribute('aria-label'));
+              const isAppliedText = /^(?:already applied|applied\b|applied on\s+\d+|application submitted)$/i.test(text);
+              const classNameStr = String(el.className || '');
+              const hasAppliedClass = el.classList?.contains('applied') || el.classList?.contains('already-applied') || /applied/i.test(classNameStr);
+              return isAppliedText || (hasAppliedClass && /apply|status/i.test(classNameStr));
+            });
+          })(),
+          pageKeySkills: (() => {
+            const skillSelectors = [
+              '.key-skill a', '[class*="key-skill" i] a',
+              '[class*="styles_chip" i]', '[class*="tags-gt" i] a',
+              '[data-testid*="skill" i]', '[class*="chip" i]'
+            ];
+            const tags = [];
+            skillSelectors.forEach(sel => {
+              try {
+                document.querySelectorAll(sel).forEach(el => {
+                  const t = el.innerText?.trim();
+                  if (t && t.length < 40 && !tags.includes(t)) tags.push(t);
+                });
+              } catch {}
+            });
+            return tags;
+          })(),
+          isJobPage: (() => {
+            const text = `${document.title} ${bodyText}`.toLowerCase();
+            const isNaukriJobListing = location.hostname.endsWith('naukri.com')
+              && /\/job-listings?-/i.test(location.pathname);
+            const indicators = [
+              /job description/.test(text),
+              /responsibilit(?:y|ies)/.test(text),
+              /qualifications?/.test(text),
+              /requirements?/.test(text),
+              /experience required|years? of experience/.test(text),
+              /apply now|apply for this job/.test(text),
+              /employment type|job type/.test(text),
+              /skills required/.test(text)
+            ];
+            return isNaukriJobListing || indicators.filter(Boolean).length >= 2;
+          })()
         };
       }
     });
 
     if (requestId !== captureRequestId) return;
     const pageText = result?.text || '';
-    const nextTitle = cleanText(result?.heading || result?.title?.replace(/\s*[-|].*$/, ''));
+    const nextTitle = cleanJobTitle(result?.heading, result?.title, url.pathname);
     const nextCompany = cleanCompanyName(result?.company || '');
+
     const sameCapturedJob = currentJobTabUrl === tab.url
       && $('jobDescription').value.trim() === pageText
       && cleanText($('jobTitleInput').value) === nextTitle
       && cleanCompanyName($('companyInput').value) === nextCompany;
     if (sameCapturedJob) return;
-    if (pageText.length < 100 || !result?.isJobPage) {
-      if (attempt < 3) {
-        window.setTimeout(() => captureActiveJob(tab.id, attempt + 1), 650 * (attempt + 1));
+
+    if (pageText.length < 80 || !result?.isJobPage) {
+      if (attempt < 8) {
+        window.setTimeout(() => captureActiveJob(tab.id, attempt + 1), 400);
         return;
       }
       throw new Error('No job description was detected on this page.');
     }
 
+    currentJobTabUrl = tab.url;
     $('jobUrl').value = result.url;
     $('jobTitleInput').value = nextTitle;
     $('companyInput').value = nextCompany;
@@ -2526,17 +2685,17 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     updateJobSummary();
     invalidateAnalysis();
     await activateResumeWorkflow(currentJobPayload(), tab.id);
-    setStatus(`Job detected from ${url.hostname}. Ready to analyze.`, 'success');
+    setStatus(`Job detected: ${nextTitle || url.hostname}. Ready to analyze.`, 'success');
     scheduleAutomaticAnalysis();
   } catch (error) {
     if (requestId !== captureRequestId) return;
-    if (attempt < 3 && currentJobTabUrl && !/cannot access contents|manifest must request permission|does not allow/i.test(error.message || '')) {
-      window.setTimeout(() => captureActiveJob(tabId, attempt + 1), 650 * (attempt + 1));
+    if (attempt < 4 && !/cannot access contents|manifest must request permission|does not allow/i.test(error.message || '')) {
+      window.setTimeout(() => captureActiveJob(tabId, attempt + 1), 500);
       return;
     }
     const activeUrl = currentJobTabUrl || '';
     const isNaukriJob = /naukri\.com\/job-listings?-/i.test(activeUrl);
-    if (isNaukriJob || !activeUrl) {
+    if (!activeResumeWorkflow) {
       $('jobUrl').value = activeUrl;
       $('jobTitleInput').value = '';
       $('companyInput').value = '';
@@ -2553,7 +2712,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       accessDenied
         ? 'Naukri access is blocked until the extension is reloaded. Open brave://extensions, reload MenixJobAI, then reopen this job panel.'
         : isNaukriJob
-          ? 'Could not detect the job description. Add it in Edit details; the job link is already filled in.'
+          ? 'Could not detect the job description. Click the job card to retry, or add details in Edit details.'
           : 'No supported job listing was detected. Open a Naukri job or enter details using Edit details.',
       'info'
     );
