@@ -908,9 +908,14 @@ function synthesizeTruthfulTailoringEdits(masterText, jobTitle = '', jobDescript
   const normalizeToken = str => String(str || '').toLowerCase().replace(/[^a-z0-9+#.]/g, '');
   const lines = masterText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-  const jobText = `${jobTitle} ${jobDescription} ${matchedSkills.join(' ')}`.toLowerCase();
+  const flatSkills = Array.isArray(matchedSkills)
+    ? matchedSkills
+    : (matchedSkills && typeof matchedSkills === 'object')
+      ? [...(Array.isArray(matchedSkills.technical) ? matchedSkills.technical : []), ...(Array.isArray(matchedSkills.soft) ? matchedSkills.soft : [])]
+      : [];
+  const jobText = `${jobTitle} ${jobDescription} ${flatSkills.join(' ')}`.toLowerCase();
   const targetKeywords = new Set([
-    ...matchedSkills.map(normalizeToken).filter(Boolean),
+    ...flatSkills.map(normalizeToken).filter(Boolean),
     ...(jobText.match(/\b(?:react|node|javascript|typescript|python|java|mern|express|mongodb|sql|postgres|docker|kubernetes|aws|html|css|tailwind|git|rest|api|llm|ai|angular|vue|spring|boot|graphql)\b/gi) || []).map(normalizeToken)
   ]);
 
