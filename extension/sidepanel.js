@@ -1407,13 +1407,29 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
     return { answer: '15 Days', source: 'default_notice' };
   }
 
-  if (fieldKey === 'currentSalary' || fieldKey === 'expectedSalary') {
-    return { answer: '0', source: 'default_salary' };
+  if (fieldKey === 'currentSalary' || /\b(?:current (?:ctc|salary)|ctc in lacs|salary in lacs)\b/i.test(questionText)) {
+    return { answer: '5', source: 'candidate_ctc' };
   }
 
-  if (fieldKey === 'currentLocation') {
+  if (fieldKey === 'expectedSalary' || /\b(?:expected (?:ctc|salary)|expected compensation)\b/i.test(questionText)) {
+    return { answer: '7', source: 'candidate_ctc' };
+  }
+
+  if (/\b(?:coding platform|leetcode|hackerrank|codeforces|competitive coding|github)\b/i.test(questionText)) {
+    return { answer: 'yes', source: 'candidate_profile' };
+  }
+
+  if (/\b(?:in person interview|in-person interview|face to face interview|f2f interview|physical interview)\b/i.test(questionText)) {
+    return { answer: 'No', source: 'candidate_preference' };
+  }
+
+  if (/\bhow many years of experience do you have in\b/i.test(questionText)) {
+    return { answer: '2', source: 'candidate_experience' };
+  }
+
+  if (fieldKey === 'currentLocation' || /\b(?:current (?:city|location)|where do you live)\b/i.test(questionText)) {
     const loc = cleanText(resumeProfile.location) || extractVerifiedResumeAnswer('currentLocation', resumeText);
-    if (loc) return { answer: loc, source: 'resume_location' };
+    return { answer: loc || 'Jaipur, Rajasthan', source: 'resume_location' };
   }
 
   if (fieldKey === 'willingToRelocate') {
@@ -1788,7 +1804,8 @@ async function suggestApplicationAnswers(targetTabId = null) {
   $('applicationAnswersList').replaceChildren();
   $('fillApplicationAnswersBtn').classList.add('hidden');
   try {
-    let tab = targetTabId ? await chrome.tabs.get(targetTabId).catch(() => null) : null;
+    const validId = typeof targetTabId === 'number' ? targetTabId : null;
+    let tab = validId ? await chrome.tabs.get(validId).catch(() => null) : null;
     if (!tab) tab = await activeApplicationTab();
     if (!tab?.id) throw new Error('No active application tab was found.');
     const activeId = tab.id;
@@ -2441,7 +2458,7 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
             await new Promise(r => setTimeout(r, 200));
             const container = matchedChip.closest('[class*="chatbot" i], [class*="chat" i], [class*="drawer" i], [class*="modal" i], form') || drawer;
             if (container) {
-              const savePattern = /^(?:save\s*&\s*next|save\s*and\s*next|save(?:\s*answers?)?|next|continue)$/i;
+              const savePattern = /^(?:save|save\s*&\s*next|save\s*and\s*next|save(?:\s*answers?)?|next|continue|submit)$/i;
               const allBtns = [...container.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i]')].filter(visible);
               let saveBtn = allBtns.find(b => {
                 if (b === matchedChip || b.closest('#__menixjobai_dock, .app')) return false;
@@ -2571,7 +2588,7 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
             }
 
             // 2. Otherwise look for step progression buttons (Save & Next, Next, Continue)
-            const savePattern = /^(?:save\s*&\s*next|save\s*and\s*next|save(?:\s*answers?)?|next|continue)$/i;
+            const savePattern = /^(?:save|save\s*&\s*next|save\s*and\s*next|save(?:\s*answers?)?|next|continue|submit)$/i;
             const allBtns = [...container.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i]')].filter(visible);
             let saveBtn = allBtns.find(b => {
               if (b.closest('#__menixjobai_dock, .app')) return false;
@@ -2628,7 +2645,7 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
   } catch (error) { setStatus(error.message, 'error'); return null; }
 }
 
-$('suggestApplicationAnswersBtn').addEventListener('click', suggestApplicationAnswers);
+$('suggestApplicationAnswersBtn').addEventListener('click', () => { void suggestApplicationAnswers(); });
 $('fillApplicationAnswersBtn').addEventListener('click', () => fillReviewedApplicationAnswers());
 
 // ------------------------------
@@ -4188,7 +4205,7 @@ async function handleNaukriDirectApply(tabId) {
             const containerText = (container.innerText || '').toLowerCase();
 
             // Check if chatbot explicitly completed / submitted
-            if (/successfully applied|application (?:has been |was )?(?:sent|submitted|received)|thank you for applying|your application is submitted|application successful/i.test(containerText)) {
+            if (/successfully applied|application (?:has been |was )?(?:sent|submitted|received)|thank you for applying|thank you for your responses|your application is submitted|application successful/i.test(containerText)) {
               return { state: 'submitted', detail: 'Chatbot displayed completion text.' };
             }
 
@@ -4365,14 +4382,14 @@ async function handleNaukriDirectApply(tabId) {
                 return true;
               }
 
-              // 2. Step progression button (Save & Next, Next, Continue)
-              const savePattern = /^(?:save & next|save and next|next|continue)$/i;
+              // 2. Step progression button (Save, Save & Next, Next, Continue)
+              const savePattern = /^(?:save|save & next|save and next|save answer|submit|next|continue)$/i;
               const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i]')].filter(visible);
               const saveBtn = allBtns.find(b => {
                 if (b === rootEl || b.closest('#__menixjobai_dock, .app')) return false;
                 const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
                 if (/send me jobs|job alert|save job/i.test(lbl)) return false;
-                return savePattern.test(lbl) || /chatbot.*save/i.test(b.className);
+                return savePattern.test(lbl) || /save/i.test(lbl) || /chatbot.*save/i.test(b.className);
               });
 
               if (saveBtn) {
@@ -4476,8 +4493,8 @@ async function handleNaukriDirectApply(tabId) {
               const saved = await clickDrawerSave(input);
               if (!saved) {
                 if (input.form) input.form.onsubmit = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
-                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
-                input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
               }
               return { success: true, method: 'input' };
             }
