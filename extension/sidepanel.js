@@ -2375,25 +2375,28 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
 
             // Also check for Save button after clicking chip
             await new Promise(r => setTimeout(r, 200));
-            const container = matchedChip.closest('[class*="chatbot" i], [class*="chat" i], [class*="drawer" i], [class*="modal" i], form') || drawer || document.body;
-            const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*|next\b.*)$/i;
-            const allBtns = [...container.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], [class*="button" i], a, div, span')].filter(visible);
-            let saveBtn = allBtns.find(b => {
-              if (b === matchedChip || b.closest('#__menixjobai_dock, .app')) return false;
-              const txt = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
-              return savePattern.test(txt) || /chatbot.*save/i.test(b.className);
-            });
-            if (saveBtn) {
-              const clickable = saveBtn.closest('button, [role="button"], [class*="save" i], [class*="btn" i]') || saveBtn;
-              clickable.disabled = false;
-              clickable.removeAttribute('disabled');
-              clickable.removeAttribute('aria-disabled');
-              clickable.classList.remove('disabled');
-              clickable.dispatchEvent(new PointerEvent('pointerdown', opts));
-              clickable.dispatchEvent(new MouseEvent('mousedown', opts));
-              clickable.dispatchEvent(new PointerEvent('pointerup', opts));
-              clickable.dispatchEvent(new MouseEvent('mouseup', opts));
-              try { clickable.click(); } catch {}
+            const container = matchedChip.closest('[class*="chatbot" i], [class*="chat" i], [class*="drawer" i], [class*="modal" i], form') || drawer;
+            if (container) {
+              const savePattern = /^(?:save\s*&\s*next|save\s*and\s*next|save(?:\s*answers?)?|next|continue)$/i;
+              const allBtns = [...container.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i]')].filter(visible);
+              let saveBtn = allBtns.find(b => {
+                if (b === matchedChip || b.closest('#__menixjobai_dock, .app')) return false;
+                const txt = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
+                if (/send me jobs|job alert|save job/i.test(txt)) return false;
+                return savePattern.test(txt) || /chatbot.*save/i.test(b.className);
+              });
+              if (saveBtn) {
+                const clickable = saveBtn.closest('button, [role="button"], [class*="save" i], [class*="btn" i]') || saveBtn;
+                clickable.disabled = false;
+                clickable.removeAttribute('disabled');
+                clickable.removeAttribute('aria-disabled');
+                clickable.classList.remove('disabled');
+                clickable.dispatchEvent(new PointerEvent('pointerdown', opts));
+                clickable.dispatchEvent(new MouseEvent('mousedown', opts));
+                clickable.dispatchEvent(new PointerEvent('pointerup', opts));
+                clickable.dispatchEvent(new MouseEvent('mouseup', opts));
+                try { clickable.click(); } catch {}
+              }
             }
             filled++; filledIds.push(item.id);
             continue;
@@ -2491,17 +2494,16 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
 
           // Automatically activate and click the Save/Submit button in the drawer/dialog
           const clickDrawerSave = () => {
-            const container = first.closest('[class*="chatbot" i], [class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], [role="dialog"], form') || drawer || document.body;
-            const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*|next\b.*)$/i;
-            const allBtns = [...container.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], [class*="button" i], a, div, span')].filter(visible);
+            const container = first.closest('[class*="chatbot" i], [class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], [role="dialog"], form') || drawer;
+            if (!container) return;
+            const savePattern = /^(?:save\s*&\s*next|save\s*and\s*next|save(?:\s*answers?)?|next|continue|submit(?:\s*application)?)$/i;
+            const allBtns = [...container.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i]')].filter(visible);
             let saveBtn = allBtns.find(b => {
               if (b.closest('#__menixjobai_dock, .app')) return false;
               const txt = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
+              if (/send me jobs|job alert|save job/i.test(txt)) return false;
               return savePattern.test(txt) || /chatbot.*save/i.test(b.className);
             });
-            if (!saveBtn) {
-              saveBtn = [...document.querySelectorAll('button, [role="button"], [class*="save" i]')].filter(visible).find(b => !b.closest('.app, #__menixjobai_dock') && savePattern.test(normalize(b.innerText || b.value || '')));
-            }
             if (saveBtn) {
               const clickable = saveBtn.closest('button, [role="button"], [class*="save" i], [class*="btn" i]') || saveBtn;
               clickable.disabled = false;
@@ -3204,28 +3206,37 @@ async function captureActiveJob(tabId = null, attempt = 0) {
         const safeLink = anchor => { try { const parsed = new URL(anchor.href); return parsed.protocol === 'https:' && parsed.hostname.endsWith('naukri.com') ? parsed.href : ''; } catch { return ''; } };
         const recruiterProfile = Array.from(document.querySelectorAll('a[href]')).filter(anchor => visible(anchor) && recruiterNodes.some(node => node.contains(anchor)) && /recruiter|profile|candidate/i.test(`${anchor.innerText} ${anchor.href}`)).map(safeLink).find(Boolean) || '';
         const companyWebsite = Array.from(document.querySelectorAll('a[href]')).filter(anchor => visible(anchor) && (anchor.closest('[class*="company" i], [data-testid*="company" i]')) && /website|company site|visit site/i.test(`${anchor.innerText} ${anchor.getAttribute('aria-label') || ''}`)).map(anchor => { try { const parsed = new URL(anchor.href); return parsed.protocol === 'https:' ? parsed.href : ''; } catch { return ''; } }).find(Boolean) || '';
-        const applyButtons = Array.from(document.querySelectorAll('main button, main a, main [role="button"], button, a, [role="button"]'))
-          .filter(element => visible(element))
+        const isExcludedButton = label => /send me jobs|job alert|save|share|report|login|sign in|register|view jobs/i.test(label);
+        const externalApplyPattern = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i;
+        const standardApplyPattern = /^(?:apply|apply now|apply for this job|apply on naukri)$/i;
+
+        const candidateButtons = Array.from(document.querySelectorAll('main button, main a, main [role="button"], [class*="apply" i] button, [class*="apply" i] a, button, a, [role="button"]'))
+          .filter(element => visible(element) && !element.closest('#__menixjobai_dock'))
           .map(element => {
             const label = (element.innerText || element.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            const isExternalLabel = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i.test(label);
-            let href = '';
+            return { element, label };
+          })
+          .filter(item => !isExcludedButton(item.label) && (externalApplyPattern.test(item.label) || standardApplyPattern.test(item.label)));
+
+        let hasExternalApplyButton = false;
+        let companyApplyUrl = '';
+
+        for (const item of candidateButtons) {
+          if (externalApplyPattern.test(item.label)) {
+            hasExternalApplyButton = true;
             try {
-              const anchor = element instanceof HTMLAnchorElement ? element : element.closest('a');
+              const anchor = item.element instanceof HTMLAnchorElement ? item.element : item.element.closest('a');
               if (anchor?.href) {
                 const parsed = new URL(anchor.href, location.href);
-                if (parsed.protocol === 'https:' && parsed.origin !== location.origin) {
-                  href = parsed.href;
+                if (parsed.protocol === 'https:' && parsed.hostname !== location.hostname && !parsed.hostname.endsWith('naukri.com')) {
+                  companyApplyUrl = parsed.href;
                 }
               }
             } catch {}
-            return { element, label, isExternalLabel, href };
-          });
-        const hasExternalApplyButton = applyButtons.some(item => item.isExternalLabel);
-        const explicitExternalHrefs = applyButtons.filter(item => item.isExternalLabel && item.href).map(item => item.href);
-        const anyExternalHrefs = applyButtons.filter(item => item.href).map(item => item.href);
-        const uniqueApplyHrefs = [...new Set(explicitExternalHrefs.length ? explicitExternalHrefs : anyExternalHrefs)];
-        const companyApplyUrl = uniqueApplyHrefs[0] || '';
+            break;
+          }
+        }
+
         const isExternalCompanyApply = Boolean(hasExternalApplyButton || companyApplyUrl);
         const companyElement = document.querySelector('[data-testid*="company" i], [class*="companyName" i], [class*="company-name" i], [class*="comp-name" i], [class*="jd-header-comp-name" i]');
         const companyLogo = (() => {
@@ -3747,18 +3758,19 @@ async function returnToJobAndClickApply(profileTabId = activeResumeWorkflow?.pro
       const isVisible = element => Boolean(element?.getClientRects().length)
         && getComputedStyle(element).visibility !== 'hidden'
         && getComputedStyle(element).display !== 'none';
+      const isExcluded = label => /send me jobs|job alert|save|share|report|login|sign in|register|view jobs/i.test(label);
       const externalApply = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i;
       const exactApply = /^(?:apply|apply now|apply for this job|apply on naukri)$/i;
-      const candidates = [...document.querySelectorAll('main button, main a, main [role="button"], button, a, [role="button"]')]
+      const candidates = [...document.querySelectorAll('main button, main a, main [role="button"], [class*="apply" i] button, [class*="apply" i] a, button, a, [role="button"]')]
         .filter(element => !element.closest('#__menixjobai_dock'))
         .filter(element => isVisible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true')
         .map(element => ({ element, label: normalize(element.innerText || element.getAttribute('aria-label')) }))
-        .filter(item => externalApply.test(item.label) || exactApply.test(item.label));
+        .filter(item => !isExcluded(item.label) && (externalApply.test(item.label) || exactApply.test(item.label)));
       const external = candidates.filter(item => externalApply.test(item.label));
       const selected = external.length ? external : candidates.filter(item => exactApply.test(item.label));
       const unique = [...new Map(selected.map(item => [item.element, item])).values()];
-      if (unique.length !== 1) return { clicked: false, count: unique.length };
-      const choice = unique[0];
+      if (!unique.length) return { clicked: false, count: 0 };
+      const choice = unique.find(item => item.element.closest('[class*="apply" i], [class*="jd-header" i], [class*="header" i], [data-testid*="apply" i]')) || unique[0];
       const href = choice.element instanceof HTMLAnchorElement ? choice.element.href : choice.element.closest('a')?.href || '';
       const isExternal = externalApply.test(choice.label) || Boolean(href && new URL(href, location.href).origin !== location.origin);
       choice.element.click();
