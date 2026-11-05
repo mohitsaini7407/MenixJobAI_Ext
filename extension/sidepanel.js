@@ -322,7 +322,7 @@ function currentJobPayload() {
     description: $('jobDescription').value.trim(),
     url: cleanText($('jobUrl').value),
     companyApplyUrl: cleanText(jobMetadata.companyApplyUrl),
-    isExternalCompanyApply: Boolean(jobMetadata.isExternalCompanyApply || activeResumeWorkflow?.isExternalCompanyApply)
+    isExternalCompanyApply: Boolean(jobMetadata.isExternalCompanyApply)
   };
 }
 
@@ -361,8 +361,8 @@ async function activateResumeWorkflow(job = currentJobPayload(), tabId = null) {
   activeResumeWorkflow.jobUrl = job.url;
   activeResumeWorkflow.title = job.title;
   activeResumeWorkflow.company = job.company;
-  if (job.isExternalCompanyApply !== undefined) activeResumeWorkflow.isExternalCompanyApply = Boolean(job.isExternalCompanyApply);
-  if (job.companyApplyUrl) activeResumeWorkflow.companyApplyUrl = job.companyApplyUrl;
+  activeResumeWorkflow.isExternalCompanyApply = Boolean(job.isExternalCompanyApply);
+  activeResumeWorkflow.companyApplyUrl = cleanText(job.companyApplyUrl);
   if (tabId) activeResumeWorkflow.jobTabId = tabId;
   await persistResumeWorkflow(activeResumeWorkflow);
   await loadWorkflowResumePreview();
@@ -1228,7 +1228,17 @@ function draftOpenEndedApplicationAnswer(questionText, resumeText, jobDescriptio
     topSkills = found.length ? found.slice(0, 4).join(', ') : 'modern web technologies and frameworks';
   }
 
-  // 1. Why pursue career in Web Development / Software Engineering / IT?
+  // 1. Projects with Claude / Grok / APIs / GitHub / Demo links
+  const githubMatch = resumeText.match(/https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9_-]+/i)
+    || (resumeProfile.github ? [`https://github.com/${resumeProfile.github.replace(/^https?:\/\/github\.com\/?/i, '')}`] : null);
+  const candidateGithub = githubMatch ? githubMatch[0] : 'https://github.com/mohitsaini7407';
+
+  if (/github|demo|portfolio|share link|project link/i.test(lowerQ)
+      || /claude|grok|llm|generative ai|prompting|api\b/i.test(lowerQ)) {
+    return `Yes, I have built practical projects integrating AI APIs, LLMs, and modern full-stack web applications. You can review my code and repositories on GitHub: ${candidateGithub}. In these projects, my role encompassed end-to-end architecture design, API integration, and prompt engineering with performant code.`;
+  }
+
+  // 2. Why pursue career in Web Development / Software Engineering / IT?
   if (/why\b.*(?:pursue|career|enter|choose|start|work in)\b.*(?:web development|software|developer|engineering|tech|it\b|frontend|backend|full stack)/i.test(lowerQ)
       || /why\b.*(?:web development|software engineering|programming)\b/i.test(lowerQ)
       || /why\b.*career\b/i.test(lowerQ)) {
@@ -2494,9 +2504,31 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
 
           // Automatically activate and click the Save/Submit button in the drawer/dialog
           const clickDrawerSave = () => {
-            const container = first.closest('[class*="chatbot" i], [class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], [role="dialog"], form') || drawer;
+            const container = first.closest('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="chat_container" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], [role="dialog"]') || (drawer !== document.body ? drawer : null);
             if (!container) return;
-            const savePattern = /^(?:save\s*&\s*next|save\s*and\s*next|save(?:\s*answers?)?|next|continue|submit(?:\s*application)?)$/i;
+
+            // Disarm any outer page job alert forms so they can never submit to /alert/manage
+            document.querySelectorAll('form[action*="alert" i], form[action*="manage" i], form#jobAlertForm').forEach(f => {
+              f.onsubmit = (e) => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+            });
+
+            // 1. If inside a chatbot, locate and click the specific chat send button
+            const chatBar = first.closest('[class*="chatInput" i], [class*="chat-input" i], [class*="input" i], [class*="message" i]') || first.parentElement;
+            const sendBtn = chatBar?.querySelector('button, [class*="send" i], [aria-label*="send" i], svg')
+              || container.querySelector('button[class*="send" i], [class*="sendBtn" i], [class*="send-btn" i], [class*="send" i] button');
+
+            const opts = { bubbles: true, cancelable: true, view: window };
+            if (sendBtn) {
+              sendBtn.dispatchEvent(new PointerEvent('pointerdown', opts));
+              sendBtn.dispatchEvent(new MouseEvent('mousedown', opts));
+              sendBtn.dispatchEvent(new PointerEvent('pointerup', opts));
+              sendBtn.dispatchEvent(new MouseEvent('mouseup', opts));
+              try { sendBtn.click(); } catch {}
+              return;
+            }
+
+            // 2. Otherwise look for step progression buttons (Save & Next, Next, Continue)
+            const savePattern = /^(?:save\s*&\s*next|save\s*and\s*next|save(?:\s*answers?)?|next|continue)$/i;
             const allBtns = [...container.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i]')].filter(visible);
             let saveBtn = allBtns.find(b => {
               if (b.closest('#__menixjobai_dock, .app')) return false;
@@ -2510,22 +2542,22 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
               clickable.removeAttribute('disabled');
               clickable.removeAttribute('aria-disabled');
               clickable.classList.remove('disabled');
-              const opts = { bubbles: true, cancelable: true, view: window };
               clickable.dispatchEvent(new PointerEvent('pointerdown', opts));
               clickable.dispatchEvent(new MouseEvent('mousedown', opts));
               clickable.dispatchEvent(new PointerEvent('pointerup', opts));
               clickable.dispatchEvent(new MouseEvent('mouseup', opts));
-              clickable.dispatchEvent(new MouseEvent('click', opts));
               try { clickable.click(); } catch {}
+              return;
             }
-            first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-            first.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+
+            // 3. Fallback: non-bubbling Enter directly to input so parent form is never triggered
+            if (first.form) {
+              first.form.onsubmit = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+            }
+            first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+            first.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
           };
 
-          clickDrawerSave();
-          await new Promise(r => setTimeout(r, 250));
-          clickDrawerSave();
-          await new Promise(r => setTimeout(r, 250));
           clickDrawerSave();
         }
         return { filled, skipped, filledIds };
@@ -2831,7 +2863,11 @@ function updatePrimaryAction() {
   const companyFormOpen = workflow?.status === 'APPLICATION_IN_PROGRESS' && Boolean(workflow?.companyApplicationTabId);
   const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
   const hasTailoredFile = Boolean(workflow?.temporaryResumeId);
-  const isExternalApply = Boolean(workflow?.isExternalCompanyApply || jobMetadata?.isExternalCompanyApply || workflow?.companyApplyUrl || jobMetadata?.companyApplyUrl);
+  const isExternalApply = Boolean(
+    jobMetadata?.isExternalCompanyApply
+    || (jobMetadata?.isExternalCompanyApply === undefined && workflow?.isExternalCompanyApply)
+    || jobMetadata?.companyApplyUrl
+  );
 
   button.disabled = !ready || restored || (applicationStarted && !companyFormOpen);
   if (companyFormOpen) button.textContent = 'Review Application';
@@ -3206,35 +3242,67 @@ async function captureActiveJob(tabId = null, attempt = 0) {
         const safeLink = anchor => { try { const parsed = new URL(anchor.href); return parsed.protocol === 'https:' && parsed.hostname.endsWith('naukri.com') ? parsed.href : ''; } catch { return ''; } };
         const recruiterProfile = Array.from(document.querySelectorAll('a[href]')).filter(anchor => visible(anchor) && recruiterNodes.some(node => node.contains(anchor)) && /recruiter|profile|candidate/i.test(`${anchor.innerText} ${anchor.href}`)).map(safeLink).find(Boolean) || '';
         const companyWebsite = Array.from(document.querySelectorAll('a[href]')).filter(anchor => visible(anchor) && (anchor.closest('[class*="company" i], [data-testid*="company" i]')) && /website|company site|visit site/i.test(`${anchor.innerText} ${anchor.getAttribute('aria-label') || ''}`)).map(anchor => { try { const parsed = new URL(anchor.href); return parsed.protocol === 'https:' ? parsed.href : ''; } catch { return ''; } }).find(Boolean) || '';
-        const isExcludedButton = label => /send me jobs|job alert|save|share|report|login|sign in|register|view jobs/i.test(label);
+        const isExcludedButton = label => /send me jobs|job alert|save\b|share\b|report\b|login\b|sign in\b|register\b|view jobs\b/i.test(label);
         const externalApplyPattern = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i;
         const standardApplyPattern = /^(?:apply|apply now|apply for this job|apply on naukri)$/i;
 
-        const candidateButtons = Array.from(document.querySelectorAll('main button, main a, main [role="button"], [class*="apply" i] button, [class*="apply" i] a, button, a, [role="button"]'))
-          .filter(element => visible(element) && !element.closest('#__menixjobai_dock'))
-          .map(element => {
-            const label = (element.innerText || element.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            return { element, label };
-          })
-          .filter(item => !isExcludedButton(item.label) && (externalApplyPattern.test(item.label) || standardApplyPattern.test(item.label)));
+        // Strictly exclude sidebars, recommended jobs ("Jobs you might be interested in"), and similar job cards
+        const isInsideSidebar = el => Boolean(el.closest('aside, [class*="similar" i], [class*="recommended" i], [class*="interest" i], [class*="other-jobs" i], [class*="suggested" i], #suggestedJobs, [data-testid*="similar" i]'));
+
+        const headerContainers = [
+          document.querySelector('.styles_job-header-container'),
+          document.querySelector('.jd-top-head'),
+          document.querySelector('[class*="top-head" i]'),
+          document.querySelector('[class*="job-header" i]'),
+          document.querySelector('.apply-button-container'),
+          document.querySelector('[class*="apply-button-container" i]'),
+          document.querySelector('#apply-button')?.parentElement,
+          document.querySelector('main [class*="header" i]')
+        ].filter(Boolean);
+
+        let primaryApplyItem = null;
+
+        for (const container of headerContainers) {
+          const btns = Array.from(container.querySelectorAll('button, a, [role="button"]'))
+            .filter(element => visible(element) && !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
+            .map(element => {
+              const label = (element.innerText || element.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+              return { element, label };
+            })
+            .filter(item => !isExcludedButton(item.label) && (externalApplyPattern.test(item.label) || standardApplyPattern.test(item.label)));
+
+          if (btns.length) {
+            primaryApplyItem = btns[0];
+            break;
+          }
+        }
+
+        if (!primaryApplyItem) {
+          const mainCandidates = Array.from(document.querySelectorAll('main button, main a, main [role="button"], [class*="apply" i] button, [class*="apply" i] a, button, a, [role="button"]'))
+            .filter(element => visible(element) && !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
+            .map(element => {
+              const label = (element.innerText || element.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+              return { element, label };
+            })
+            .filter(item => !isExcludedButton(item.label) && (externalApplyPattern.test(item.label) || standardApplyPattern.test(item.label)));
+
+          primaryApplyItem = mainCandidates[0] || null;
+        }
 
         let hasExternalApplyButton = false;
         let companyApplyUrl = '';
 
-        for (const item of candidateButtons) {
-          if (externalApplyPattern.test(item.label)) {
-            hasExternalApplyButton = true;
-            try {
-              const anchor = item.element instanceof HTMLAnchorElement ? item.element : item.element.closest('a');
-              if (anchor?.href) {
-                const parsed = new URL(anchor.href, location.href);
-                if (parsed.protocol === 'https:' && parsed.hostname !== location.hostname && !parsed.hostname.endsWith('naukri.com')) {
-                  companyApplyUrl = parsed.href;
-                }
+        if (primaryApplyItem && externalApplyPattern.test(primaryApplyItem.label)) {
+          hasExternalApplyButton = true;
+          try {
+            const anchor = primaryApplyItem.element instanceof HTMLAnchorElement ? primaryApplyItem.element : primaryApplyItem.element.closest('a');
+            if (anchor?.href) {
+              const parsed = new URL(anchor.href, location.href);
+              if (parsed.protocol === 'https:' && parsed.hostname !== location.hostname && !parsed.hostname.endsWith('naukri.com')) {
+                companyApplyUrl = parsed.href;
               }
-            } catch {}
-            break;
-          }
+            }
+          } catch {}
         }
 
         const isExternalCompanyApply = Boolean(hasExternalApplyButton || companyApplyUrl);
@@ -3693,14 +3761,42 @@ async function detectCompanyApplyButton(tabId) {
         const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
         const visible = element => Boolean(element?.getClientRects().length)
           && getComputedStyle(element).visibility !== 'hidden' && getComputedStyle(element).display !== 'none';
-        const pattern = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i;
-        const matches = [...document.querySelectorAll('main button,main a,main [role="button"],button,a,[role="button"]')]
-          .filter(element => !element.closest('#__menixjobai_dock'))
-          .filter(element => visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true')
-          .filter(element => pattern.test(normalize(element.innerText || element.getAttribute('aria-label'))));
-        const selected = matches.length === 1 ? matches[0] : null;
-        const link = selected instanceof HTMLAnchorElement ? selected : selected?.closest('a');
-        return { matched: Boolean(selected), href: link?.href || '' };
+        const isExcluded = label => /send me jobs|job alert|save\b|share\b|report\b|login\b|sign in\b|register\b|view jobs\b/i.test(label);
+        const externalPattern = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i;
+        const standardPattern = /^(?:apply|apply now|apply for this job|apply on naukri)$/i;
+        const isInsideSidebar = el => Boolean(el.closest('aside, [class*="similar" i], [class*="recommended" i], [class*="interest" i], [class*="other-jobs" i], [class*="suggested" i], #suggestedJobs, [data-testid*="similar" i]'));
+
+        const headerContainers = [
+          document.querySelector('.styles_job-header-container'),
+          document.querySelector('.jd-top-head'),
+          document.querySelector('[class*="top-head" i]'),
+          document.querySelector('[class*="job-header" i]'),
+          document.querySelector('.apply-button-container'),
+          document.querySelector('[class*="apply-button-container" i]'),
+          document.querySelector('#apply-button')?.parentElement,
+          document.querySelector('main [class*="header" i]')
+        ].filter(Boolean);
+
+        let primaryBtn = null;
+        for (const container of headerContainers) {
+          const btns = Array.from(container.querySelectorAll('button, a, [role="button"]'))
+            .filter(element => visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true' && !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
+            .map(element => ({ element, label: normalize(element.innerText || element.getAttribute('aria-label')) }))
+            .filter(item => !isExcluded(item.label) && (externalPattern.test(item.label) || standardPattern.test(item.label)));
+          if (btns.length) { primaryBtn = btns[0]; break; }
+        }
+        if (!primaryBtn) {
+          const candidates = Array.from(document.querySelectorAll('main button, main a, main [role="button"], [class*="apply" i] button, [class*="apply" i] a, button, a, [role="button"]'))
+            .filter(element => visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true' && !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
+            .map(element => ({ element, label: normalize(element.innerText || element.getAttribute('aria-label')) }))
+            .filter(item => !isExcluded(item.label) && (externalPattern.test(item.label) || standardPattern.test(item.label)));
+          primaryBtn = candidates[0] || null;
+        }
+        if (primaryBtn && externalPattern.test(primaryBtn.label)) {
+          const link = primaryBtn.element instanceof HTMLAnchorElement ? primaryBtn.element : primaryBtn.element.closest('a');
+          return { matched: true, href: link?.href || '' };
+        }
+        return { matched: false, href: '' };
       }
     });
     return result?.matched ? result.href || true : false;
@@ -3758,19 +3854,42 @@ async function returnToJobAndClickApply(profileTabId = activeResumeWorkflow?.pro
       const isVisible = element => Boolean(element?.getClientRects().length)
         && getComputedStyle(element).visibility !== 'hidden'
         && getComputedStyle(element).display !== 'none';
-      const isExcluded = label => /send me jobs|job alert|save|share|report|login|sign in|register|view jobs/i.test(label);
+      const isExcluded = label => /send me jobs|job alert|save\b|share\b|report\b|login\b|sign in\b|register\b|view jobs\b/i.test(label);
       const externalApply = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i;
       const exactApply = /^(?:apply|apply now|apply for this job|apply on naukri)$/i;
-      const candidates = [...document.querySelectorAll('main button, main a, main [role="button"], [class*="apply" i] button, [class*="apply" i] a, button, a, [role="button"]')]
-        .filter(element => !element.closest('#__menixjobai_dock'))
-        .filter(element => isVisible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true')
-        .map(element => ({ element, label: normalize(element.innerText || element.getAttribute('aria-label')) }))
-        .filter(item => !isExcluded(item.label) && (externalApply.test(item.label) || exactApply.test(item.label)));
-      const external = candidates.filter(item => externalApply.test(item.label));
-      const selected = external.length ? external : candidates.filter(item => exactApply.test(item.label));
-      const unique = [...new Map(selected.map(item => [item.element, item])).values()];
-      if (!unique.length) return { clicked: false, count: 0 };
-      const choice = unique.find(item => item.element.closest('[class*="apply" i], [class*="jd-header" i], [class*="header" i], [data-testid*="apply" i]')) || unique[0];
+      const isInsideSidebar = el => Boolean(el.closest('aside, [class*="similar" i], [class*="recommended" i], [class*="interest" i], [class*="other-jobs" i], [class*="suggested" i], #suggestedJobs, [data-testid*="similar" i]'));
+
+      const headerContainers = [
+        document.querySelector('.styles_job-header-container'),
+        document.querySelector('.jd-top-head'),
+        document.querySelector('[class*="top-head" i]'),
+        document.querySelector('[class*="job-header" i]'),
+        document.querySelector('.apply-button-container'),
+        document.querySelector('[class*="apply-button-container" i]'),
+        document.querySelector('#apply-button')?.parentElement,
+        document.querySelector('main [class*="header" i]')
+      ].filter(Boolean);
+
+      let choice = null;
+      for (const container of headerContainers) {
+        const btns = Array.from(container.querySelectorAll('button, a, [role="button"]'))
+          .filter(element => !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
+          .filter(element => isVisible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true')
+          .map(element => ({ element, label: normalize(element.innerText || element.getAttribute('aria-label')) }))
+          .filter(item => !isExcluded(item.label) && (externalApply.test(item.label) || exactApply.test(item.label)));
+        if (btns.length) { choice = btns[0]; break; }
+      }
+
+      if (!choice) {
+        const candidates = [...document.querySelectorAll('main button, main a, main [role="button"], [class*="apply" i] button, [class*="apply" i] a, button, a, [role="button"]')]
+          .filter(element => !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
+          .filter(element => isVisible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true')
+          .map(element => ({ element, label: normalize(element.innerText || element.getAttribute('aria-label')) }))
+          .filter(item => !isExcluded(item.label) && (externalApply.test(item.label) || exactApply.test(item.label)));
+        choice = candidates[0] || null;
+      }
+
+      if (!choice) return { clicked: false, count: 0 };
       const href = choice.element instanceof HTMLAnchorElement ? choice.element.href : choice.element.closest('a')?.href || '';
       const isExternal = externalApply.test(choice.label) || Boolean(href && new URL(href, location.href).origin !== location.origin);
       choice.element.click();
@@ -4064,14 +4183,20 @@ async function handleNaukriDirectApply(tabId) {
         if (question === lastProcessedQuestion) {
           questionStuckCount++;
           if (questionStuckCount > 3) {
-            // Nudge: press Enter in active input if text exists
+            // Nudge: click chat send button or non-bubbling Enter if text exists
             await chrome.scripting.executeScript({
               target: { tabId },
               func: () => {
                 const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [class*="chatbot" i] input, [class*="chat" i] input');
                 if (input && input.value) {
-                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                  input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                  if (input.form) input.form.onsubmit = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+                  const sendBtn = input.parentElement?.querySelector('button, [class*="send" i], [aria-label*="send" i], svg')
+                    || input.closest('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i]')?.querySelector('button[class*="send" i], [class*="sendBtn" i], [class*="send-btn" i]');
+                  if (sendBtn) {
+                    try { sendBtn.click(); return; } catch {}
+                  }
+                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+                  input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
                 }
               }
             });
@@ -4101,17 +4226,38 @@ async function handleNaukriDirectApply(tabId) {
 
             const opts = { bubbles: true, cancelable: true, view: window };
 
-            // Helper to activate and click Save/Next button specifically INSIDE the active drawer/question
+            // Disarm job alert form so it can NEVER navigate to /alert/manage
+            document.querySelectorAll('form[action*="alert" i], form[action*="manage" i], form#jobAlertForm').forEach(f => {
+              f.onsubmit = (e) => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+            });
+
+            // Helper to activate and click Save/Next/Send button specifically INSIDE the active drawer/question
             const clickDrawerSave = async (rootEl) => {
-              const drawer = rootEl?.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], form')
+              const drawer = rootEl?.closest('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="chat_container" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], [role="dialog"]')
                 || document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="drawer" i]');
               if (!drawer) return false;
-              // Only look for step progression (Save & Next, Next, Send) — NEVER click final Submit prematurely
-              const savePattern = /^(?:save & next|save and next|next\b|send\b|continue\b)$/i;
-              const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], [class*="button" i]')].filter(visible);
+
+              // 1. In chatbot: prioritize dedicated send button
+              const chatBar = rootEl?.closest('[class*="chatInput" i], [class*="chat-input" i], [class*="input" i], [class*="message" i]') || rootEl?.parentElement;
+              const sendBtn = chatBar?.querySelector('button, [class*="send" i], [aria-label*="send" i], svg')
+                || drawer.querySelector('button[class*="send" i], [class*="sendBtn" i], [class*="send-btn" i], [class*="send" i] button');
+
+              if (sendBtn) {
+                sendBtn.dispatchEvent(new PointerEvent('pointerdown', opts));
+                sendBtn.dispatchEvent(new MouseEvent('mousedown', opts));
+                sendBtn.dispatchEvent(new PointerEvent('pointerup', opts));
+                sendBtn.dispatchEvent(new MouseEvent('mouseup', opts));
+                try { sendBtn.click(); } catch {}
+                return true;
+              }
+
+              // 2. Step progression button (Save & Next, Next, Continue)
+              const savePattern = /^(?:save & next|save and next|next|continue)$/i;
+              const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i]')].filter(visible);
               const saveBtn = allBtns.find(b => {
                 if (b === rootEl || b.closest('#__menixjobai_dock, .app')) return false;
                 const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
+                if (/send me jobs|job alert|save job/i.test(lbl)) return false;
                 return savePattern.test(lbl) || /chatbot.*save/i.test(b.className);
               });
 
@@ -4181,8 +4327,6 @@ async function handleNaukriDirectApply(tabId) {
                 targetChip.dispatchEvent(new MouseEvent('mouseup', opts));
                 targetChip.click();
                 await new Promise(r => setTimeout(r, 250));
-                // In chat interfaces, clicking a chip sends the response directly.
-                // Only click local step "Next" button if one exists right next to chip.
                 const nextBtn = targetChip.closest('[class*="card" i], [class*="bubble" i]')?.querySelector('button');
                 if (nextBtn && /^(?:next|save & next|continue)$/i.test(normalize(nextBtn.innerText || ''))) {
                   try { nextBtn.click(); } catch {}
@@ -4217,9 +4361,9 @@ async function handleNaukriDirectApply(tabId) {
               await new Promise(r => setTimeout(r, 250));
               const saved = await clickDrawerSave(input);
               if (!saved) {
-                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                if (input.form) input.form.onsubmit = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
               }
               return { success: true, method: 'input' };
             }
