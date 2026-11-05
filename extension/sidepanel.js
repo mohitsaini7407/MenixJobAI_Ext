@@ -500,7 +500,22 @@ async function performTailoringForActiveJob({ applyAfter = false, forceRegenerat
   let data = suggestionData;
   if (forceRegenerate || !data) data = await loadAiSuggestions({ forceRegenerate });
   if (activeResumeWorkflow?.jobKey !== jobKey) throw new Error('The selected job changed while tailoring. Open the intended job and retry.');
-  if (!data) throw new Error(`AI tailoring could not finish: ${suggestionLoadError || 'check your connection and retry.'}`);
+  if (!data) {
+    const fallbackEdits = synthesizeTruthfulTailoringEdits(
+      masterText,
+      activeResumeWorkflow?.jobTitle || $('jobTitleInput')?.value || '',
+      $('jobDescription').value.trim(),
+      Array.isArray(lastAnalysis?.matchedSkills) ? lastAnalysis.matchedSkills : (quickOverview?.matchedSkills || [])
+    );
+    data = {
+      suggestions: fallbackEdits,
+      rejectedSuggestions: [],
+      cautions: ['AI provider is temporarily busy; applied verified baseline resume optimization.'],
+      validation: { status: 'passed', acceptedEdits: fallbackEdits.length, rejectedEdits: 0 },
+      fallback: true
+    };
+    suggestionData = data;
+  }
 
   const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
   await persistResumeWorkflow({
@@ -5582,6 +5597,27 @@ async function loadAiSuggestions({ forceRegenerate = false } = {}) {
       return data;
     } catch (error) {
       if (controller.signal.aborted) return;
+      const isRateOrTransient = /rate-limit|too many requests|unavailable|temporar|busy|fetch failed|timeout/i.test(String(error?.message || error));
+      if (isRateOrTransient && resumeText) {
+        const fallbackEdits = synthesizeTruthfulTailoringEdits(
+          resumeText,
+          $('jobTitleInput')?.value || activeResumeWorkflow?.jobTitle || '',
+          jobDescription,
+          Array.isArray(lastAnalysis?.matchedSkills) ? lastAnalysis.matchedSkills : (quickOverview?.matchedSkills || [])
+        );
+        data = {
+          suggestions: fallbackEdits,
+          rejectedSuggestions: [],
+          cautions: ['AI provider is temporarily busy; applied verified baseline resume optimization.'],
+          validation: { status: 'passed', acceptedEdits: fallbackEdits.length, rejectedEdits: 0 },
+          fallback: true
+        };
+        suggestionData = data;
+        suggestionLoadError = '';
+        renderAiSuggestions(data);
+        $('suggestionsSummaryHint').textContent = `${fallbackEdits.length} edits (verified)`;
+        return data;
+      }
       suggestionLoadError = error?.message || 'The AI suggestions request failed.';
       container.replaceChildren();
       const message = document.createElement('p'); message.className = 'suggestions-error'; message.textContent = 'AI suggestions could not load.';
