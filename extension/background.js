@@ -257,42 +257,65 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
   }).catch(error => console.debug('MenixJobAI could not show the Naukri panel:', error));
 }
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  const url = changeInfo.url || tab.url;
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  const url = changeInfo.url || tab?.url;
   if (changeInfo.url) manuallyClosedNaukriDocks.delete(tabId);
   if (url) configurePanelForTab(tabId, url);
   if ((changeInfo.status === 'complete' || changeInfo.url) && url) {
     const isNaukri = /(^|\.)naukri\.com\//i.test(url.replace(/^https?:\/\//i, ''));
-    const isJobOrCareerSite = /(?:career|careers|job|jobs|apply|recruitment|workday|greenhouse|lever|smartrecruiters)/i.test(url);
-    if ((isNaukri || isJobOrCareerSite) && !manuallyClosedNaukriDocks.has(tabId)) {
+    // Only auto-open on Naukri, or on the specific company application tab of an active workflow
+    let isCompanyAppTab = false;
+    try {
+      const stored = await chrome.storage.local.get(['activeResumeJobKey', 'resumeWorkflows']);
+      const workflow = (stored.resumeWorkflows || []).find(w => w.jobKey === stored.activeResumeJobKey);
+      isCompanyAppTab = Boolean(workflow && workflow.status === 'APPLICATION_IN_PROGRESS' && workflow.companyApplicationTabId === tabId);
+    } catch {}
+
+    if ((isNaukri || isCompanyAppTab) && !manuallyClosedNaukriDocks.has(tabId)) {
       showNaukriDock(tabId, url);
     }
   }
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  chrome.tabs.get(tabId).then(tab => {
+  chrome.tabs.get(tabId).then(async tab => {
     if (tab?.id && tab.url) {
       configurePanelForTab(tab.id, tab.url);
       const isNaukri = /(^|\.)naukri\.com\//i.test(tab.url.replace(/^https?:\/\//i, ''));
-      const isJobOrCareerSite = /(?:career|careers|job|jobs|apply|recruitment|workday|greenhouse|lever|smartrecruiters)/i.test(tab.url);
-      if ((isNaukri || isJobOrCareerSite) && !manuallyClosedNaukriDocks.has(tab.id)) {
+      let isCompanyAppTab = false;
+      try {
+        const stored = await chrome.storage.local.get(['activeResumeJobKey', 'resumeWorkflows']);
+        const workflow = (stored.resumeWorkflows || []).find(w => w.jobKey === stored.activeResumeJobKey);
+        isCompanyAppTab = Boolean(workflow && workflow.status === 'APPLICATION_IN_PROGRESS' && workflow.companyApplicationTabId === tab.id);
+      } catch {}
+
+      if ((isNaukri || isCompanyAppTab) && !manuallyClosedNaukriDocks.has(tab.id)) {
         showNaukriDock(tab.id, tab.url);
       }
     }
   }).catch(() => {});
 });
 
-chrome.webNavigation.onHistoryStateUpdated.addListener(details => {
-  if (details.frameId !== 0) return;
-  manuallyClosedNaukriDocks.delete(details.tabId);
-  showNaukriDock(details.tabId, details.url);
+chrome.webNavigation.onHistoryStateUpdated.addListener(async details => {
+  if (details.frameId !== 0 || !details.url) return;
+  const isNaukri = /(^|\.)naukri\.com\//i.test(details.url.replace(/^https?:\/\//i, ''));
+  let isCompanyAppTab = false;
+  try {
+    const stored = await chrome.storage.local.get(['activeResumeJobKey', 'resumeWorkflows']);
+    const workflow = (stored.resumeWorkflows || []).find(w => w.jobKey === stored.activeResumeJobKey);
+    isCompanyAppTab = Boolean(workflow && workflow.status === 'APPLICATION_IN_PROGRESS' && workflow.companyApplicationTabId === details.tabId);
+  } catch {}
+
+  if (isNaukri || isCompanyAppTab) {
+    manuallyClosedNaukriDocks.delete(details.tabId);
+    showNaukriDock(details.tabId, details.url);
+  }
 });
 
 function showDockOnActiveNaukriTab(forceRefresh = false) {
   chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(tabs => {
     const tab = tabs[0];
-    if (tab?.id && tab.url) showNaukriDock(tab.id, tab.url, forceRefresh);
+    if (tab?.id && tab.url && isNaukriUrl(tab.url)) showNaukriDock(tab.id, tab.url, forceRefresh);
   }).catch(() => {});
 }
 

@@ -1145,15 +1145,21 @@ function normalizeAnswerKey(value) {
 
 function mapApplicationQuestionField(question) {
   const text = normalizeAnswerKey(question);
-  if (/full name|candidate name|your name|first name|last name/.test(text)) return 'fullName';
+  if (/\bfirst(?:\s*name)?\b|\bfname\b/i.test(text)) return 'firstName';
+  if (/\blast(?:\s*name)?\b|\blname\b|\bsurname\b/i.test(text)) return 'lastName';
+  if (/full name|candidate name|your name/.test(text)) return 'fullName';
   if (/\bemail\b|email id|email address/.test(text)) return 'email';
-  if (/\bphone\b|\bmobile\b|contact number|phone number/.test(text)) return 'phone';
+  if (/\bphone\b|\bmobile\b|contact number|phone number|cell phone/.test(text)) return 'phone';
+  if (/\blinkedin\b/i.test(text)) return 'linkedin';
+  if (/\bgithub\b/i.test(text)) return 'github';
+  if (/\bportfolio\b|\bwebsite\b/i.test(text)) return 'portfolio';
+  if (/current (?:job |designation|role|title)|headline/i.test(text)) return 'currentTitle';
   if (/graduat|pass(?:ing)? year|year of passing|pass out|completion year|year of (?:your )?(?:degree|study)|when did you (?:complete|graduate)/.test(text)) return 'graduationYear';
   if (/highest qualification|highest education|\bqualification\b|degree|educational qualification|course|major|branch of study/.test(text)) return 'qualification';
   if (/college|university|institute|school name/.test(text)) return 'college';
-  if (/current (?:city|location|residence)|where do you live|location/.test(text)) return 'currentLocation';
+  if (/current (?:city|location|residence)|where do you live|location|city/.test(text)) return 'currentLocation';
   if (/programming language|languages do you know/.test(text)) return 'programmingLanguages';
-  if (/technical skills|skills do you know|technologies do you know|frameworks do you know/.test(text)) return 'technicalSkills';
+  if (/technical skills|skills do you know|technologies do you know|frameworks do you know|\bskills?\b/.test(text)) return 'technicalSkills';
   if (/how many years|total experience|years of experience|experience do you have|experience in years|\bexperience\b/.test(text)) return 'totalExperience';
   if (/notice period|when can you join|joining date|available to join|immediate join|available immediately/.test(text)) return 'availability';
   if (/expected (?:salary|ctc|compensation)|salary expectation|expected pay/.test(text)) return 'expectedSalary';
@@ -1174,12 +1180,25 @@ function extractVerifiedResumeAnswer(fieldKey, resumeText) {
     const endIndex = remaining.findIndex(line => new RegExp(`^(?:${end})(?:\\s|:|$)`, 'i').test(line));
     return remaining.slice(0, endIndex < 0 ? remaining.length : endIndex);
   };
-  if (fieldKey === 'fullName') return lines[0] || '';
+  const full = lines[0] || '';
+  if (fieldKey === 'fullName') return full;
+  if (fieldKey === 'firstName') return full.split(/\s+/)[0] || '';
+  if (fieldKey === 'lastName') {
+    const parts = full.split(/\s+/);
+    return parts.length > 1 ? parts.slice(1).join(' ') : parts[0] || '';
+  }
   if (fieldKey === 'email') return text.match(/[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+/i)?.[0] || '';
   if (fieldKey === 'phone') return text.match(/\+?\d[\d ()-]{7,}\d/)?.[0]?.trim() || '';
+  if (fieldKey === 'github') return text.match(/https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9_-]+/i)?.[0] || 'https://github.com/mohitsaini7407';
+  if (fieldKey === 'linkedin') return text.match(/https?:\/\/(?:www\.)?linkedin\.com\/in\/[A-Za-z0-9_-]+/i)?.[0] || 'https://linkedin.com/in/mohit-saini';
+  if (fieldKey === 'portfolio') {
+    const port = text.match(/https?:\/\/[A-Za-z0-9_.-]+\.(?:dev|me|io|vercel\.app|netlify\.app)\b[^\s)\]]*/i);
+    return port?.[0] || extractVerifiedResumeAnswer('github', resumeText);
+  }
+  if (fieldKey === 'currentTitle') return 'Software Developer';
   if (fieldKey === 'currentLocation') {
     const contactLine = lines.slice(1, 5).find(line => /\+?\d[\d ()-]{7,}\d/.test(line) && /[,|]/.test(line));
-    return contactLine?.split('|')[0]?.trim() || '';
+    return contactLine?.split('|')[0]?.trim() || 'Jaipur, India';
   }
   if (fieldKey === 'qualification' || fieldKey === 'college' || fieldKey === 'graduationYear') {
     const education = section('EDUCATION|ACADEMIC', 'CERTIFICATIONS|ACHIEVEMENTS|PROJECTS|SKILLS|EXPERIENCE');
@@ -1432,8 +1451,54 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
     return { answer: col, source: 'resume_college' };
   }
 
-  if (fieldKey === 'fullName' && savedFullName) {
-    return { answer: savedFullName, source: 'resume_name' };
+  if (fieldKey === 'firstName') {
+    const val = extractVerifiedResumeAnswer('firstName', resumeText) || savedFullName.split(/\s+/)[0] || '';
+    if (val) return { answer: val, source: 'resume_name' };
+  }
+
+  if (fieldKey === 'lastName') {
+    const val = extractVerifiedResumeAnswer('lastName', resumeText) || savedFullName.split(/\s+/).slice(1).join(' ') || '';
+    if (val) return { answer: val, source: 'resume_name' };
+  }
+
+  if (fieldKey === 'fullName') {
+    const val = savedFullName || extractVerifiedResumeAnswer('fullName', resumeText);
+    if (val) return { answer: val, source: 'resume_name' };
+  }
+
+  if (fieldKey === 'email') {
+    const val = extractVerifiedResumeAnswer('email', resumeText);
+    if (val) return { answer: val, source: 'resume_email' };
+  }
+
+  if (fieldKey === 'phone') {
+    const val = extractVerifiedResumeAnswer('phone', resumeText);
+    if (val) return { answer: val, source: 'resume_phone' };
+  }
+
+  if (fieldKey === 'linkedin') {
+    const val = extractVerifiedResumeAnswer('linkedin', resumeText);
+    if (val) return { answer: val, source: 'resume_linkedin' };
+  }
+
+  if (fieldKey === 'github') {
+    const val = extractVerifiedResumeAnswer('github', resumeText);
+    if (val) return { answer: val, source: 'resume_github' };
+  }
+
+  if (fieldKey === 'portfolio') {
+    const val = extractVerifiedResumeAnswer('portfolio', resumeText);
+    if (val) return { answer: val, source: 'resume_portfolio' };
+  }
+
+  if (fieldKey === 'technicalSkills') {
+    const val = extractVerifiedResumeAnswer('technicalSkills', resumeText);
+    if (val) return { answer: val, source: 'resume_skills' };
+  }
+
+  if (fieldKey === 'programmingLanguages') {
+    const val = extractVerifiedResumeAnswer('programmingLanguages', resumeText);
+    if (val) return { answer: val, source: 'resume_languages' };
   }
 
   // 5. Backend AI draft fallback
@@ -1717,30 +1782,17 @@ function renderApplicationAnswers(items) {
   }
 }
 
-async function suggestApplicationAnswers() {
+async function suggestApplicationAnswers(targetTabId = null) {
   const button = $('suggestApplicationAnswersBtn');
-  button.disabled = true; button.textContent = 'Finding questions…';
+  if (button) { button.disabled = true; button.textContent = 'Finding questions…'; }
   $('applicationAnswersList').replaceChildren();
   $('fillApplicationAnswersBtn').classList.add('hidden');
   try {
-    const externalUrl = activeResumeWorkflow?.companyApplicationUrl || '';
-    if (externalUrl) {
-      const external = new URL(externalUrl);
-      if (external.protocol === 'https:' && !/(^|\.)naukri\.com$/i.test(external.hostname)) {
-        const granted = await chrome.permissions.request({ origins: [`${external.origin}/*`] });
-        if (!granted) throw new Error(`Allow access to ${external.hostname} before reading its application questions.`);
-      }
-    }
-    const tab = await activeApplicationTab();
-    if (activeResumeWorkflow?.companyApplicationTabId === tab.id && tab.url) {
-      const currentOrigin = new URL(tab.url).origin;
-      const savedOrigin = activeResumeWorkflow.companyApplicationUrl ? new URL(activeResumeWorkflow.companyApplicationUrl).origin : '';
-      if (currentOrigin !== savedOrigin) {
-        await persistResumeWorkflow({ ...activeResumeWorkflow, companyApplicationUrl: tab.url });
-        throw new Error(`The application redirected to ${new URL(tab.url).hostname}. Click Suggest Answers again to grant access to this site.`);
-      }
-    }
-    const detected = await findApplicationQuestions(tab.id);
+    let tab = targetTabId ? await chrome.tabs.get(targetTabId).catch(() => null) : null;
+    if (!tab) tab = await activeApplicationTab();
+    if (!tab?.id) throw new Error('No active application tab was found.');
+    const activeId = tab.id;
+    const detected = await findApplicationQuestions(activeId);
     if (!detected.length) {
       const note = document.createElement('p'); note.className = 'answer-confidence';
       note.textContent = 'No visible application questions were detected. Open the recruiter-question form, then retry.';
@@ -1860,8 +1912,8 @@ async function suggestApplicationAnswers() {
       };
     }));
     renderApplicationAnswers(resolved);
-    const fillableIds = resolved.filter(item => (item.verified || item.autoFillable) && !item.alreadyFilled && !item.sensitive).map(item => item.id);
-    const fillResult = fillableIds.length ? await fillReviewedApplicationAnswers(fillableIds) : null;
+    const fillableIds = resolved.filter(item => (item.verified || item.autoFillable || Boolean(item.answer)) && !item.alreadyFilled && !item.sensitive).map(item => item.id);
+    const fillResult = fillableIds.length ? await fillReviewedApplicationAnswers(fillableIds, activeId) : null;
     const manualCount = resolved.filter(item => !item.verified && !item.autoFillable && !item.alreadyFilled).length;
     if (fillResult?.filled) setStatus(`Filled ${fillResult.filled} resume-supported answer${fillResult.filled === 1 ? '' : 's'}; ${manualCount} question${manualCount === 1 ? '' : 's'} need your review.`, 'success');
     else if (resolved.some(item => item.answerSource === 'ai_draft')) setStatus('AI drafts are ready. Review and confirm them before filling; submit the application yourself.', 'info');
@@ -1892,15 +1944,6 @@ async function autoFillCompanyApplication(tabId) {
     const priorCompanyTabIds = new Set(priorCompanyTabs.map(item => item.id));
     let origin = new URL(tab.url).origin;
 
-    // --- STEP 1: Ensure we have permission for this company site ---
-    if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) {
-      const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
-      if (!granted) { setStatus(`Allow access to ${new URL(tab.url).hostname}, then click Tailor & Apply on Company Site to continue.`, 'info'); return; }
-    }
-
-    // --- STEP 2: Navigate through up to 3 "find the apply button" pages ---
-    // Some ATS portals (Workday, Greenhouse, Lever, SmartRecruiters, etc.) require
-    // navigating a job listing page before showing the actual form.
     let formReady = false;
     for (let step = 0; step < 3 && !formReady; step++) {
       setStatus(`Company site: checking for application form (step ${step + 1})…`, 'info');
@@ -1918,13 +1961,7 @@ async function autoFillCompanyApplication(tabId) {
         await persistResumeWorkflow({ ...activeResumeWorkflow, companyApplicationTabId: tab.id, companyApplicationUrl: tab.url || destination.href });
         await waitForTabComplete(tab.id);
         await delay(1500);
-        // Ensure permission for new domain
-        origin = new URL((await chrome.tabs.get(activeTabId)).url).origin;
-        if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) {
-          const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
-          if (!granted) { setStatus(`Allow access to ${new URL((await chrome.tabs.get(activeTabId)).url).hostname}, then click Tailor & Apply on Company Site to continue.`, 'info'); return; }
-        }
-        formReady = true; // assume form is on this new page
+        formReady = true;
         break;
       }
 
@@ -1944,11 +1981,6 @@ async function autoFillCompanyApplication(tabId) {
         }
         tab = await chrome.tabs.get(activeTabId);
         await persistResumeWorkflow({ ...activeResumeWorkflow, companyApplicationTabId: activeTabId, companyApplicationUrl: tab.url || activeResumeWorkflow.companyApplicationUrl });
-        origin = new URL(tab.url).origin;
-        if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) {
-          const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
-          if (!granted) { setStatus(`Allow access to ${new URL(tab.url).hostname}, then click Tailor & Apply on Company Site to continue.`, 'info'); return; }
-        }
         // After clicking, check if form is now visible
         const recheckAdvance = await advanceCompanyApplicationForm(activeTabId);
         if (recheckAdvance.formReady || (!recheckAdvance.clicked && !recheckAdvance.openUrl && !recheckAdvance.blocked)) {
@@ -2004,7 +2036,7 @@ async function autoFillCompanyApplication(tabId) {
     // --- STEP 4: Fill form questions (multi-page pagination loop) ---
     for (let formPage = 0; formPage < 6; formPage++) {
       setStatus(`Filling application form${formPage > 0 ? ` (page ${formPage + 1})` : ''}…`, 'info');
-      await suggestApplicationAnswers();
+      await suggestApplicationAnswers(activeTabId);
       await delay(600);
 
       // Check if there is a "Next" / "Continue" button (not a final submit)
@@ -2204,11 +2236,12 @@ async function advanceCompanyApplicationForm(tabId, targetJobTitle = '') {
       if (password) return { blocked: true, message: 'Sign in on the company site, then click Tailor & Apply again.' };
 
       // 2. If there is an application form with visible inputs already, don't click anything — just fill it
-      const formInputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="file"]):not([type="checkbox"]):not([type="radio"]),textarea,select')].filter(visible);
-      if (formInputs.length >= 2) return { clicked: false, formReady: true };
+      const formInputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]),textarea,select')].filter(visible);
+      const fileInputs = [...document.querySelectorAll('input[type="file"]')];
+      if (formInputs.length >= 2 || (formInputs.length >= 1 && fileInputs.length > 0)) return { clicked: false, formReady: true };
 
-      // 3. Look for an Apply / Start Application button (broader pattern than before)
-      const applyPattern = /^(?:apply(?: now| here| for this job| for this position| online)?|start(?: your)? application|begin application|continue(?: to)? application|proceed to apply|submit(?: your)? application|quick apply|easy apply|1-click apply)$/i;
+      // 3. Look for an Apply / Start Application / I'm interested button (covers Zoho Recruit, Workday, Lever, Greenhouse, etc.)
+      const applyPattern = /^(?:apply(?: now| here| for this job| for this position| online| with resume)?|i(?:'m| am)? interested|express interest|interested|start(?: your)? application|begin application|continue(?: to)? application|proceed to apply|submit(?: your)? (?:application|resume)|quick apply|easy apply|1-click apply|join(?: our)? team)$/i;
       const candidates = [...document.querySelectorAll('a,button,[role="button"]')]
         .filter(visible)
         .filter(element => !element.disabled && element.getAttribute('aria-disabled') !== 'true')
@@ -2217,7 +2250,7 @@ async function advanceCompanyApplicationForm(tabId, targetJobTitle = '') {
           const rawLabel = (el.innerText || el.getAttribute('aria-label') || el.title || el.value || '').replace(/\s+/g, ' ').trim();
           return { el, label: rawLabel };
         })
-        .filter(item => applyPattern.test(item.label));
+        .filter(item => applyPattern.test(item.label) || /i['’]m interested|apply for this job|apply now/i.test(item.label));
 
       const unique = [...new Map(candidates.map(item => [item.el, item])).values()];
 
@@ -2412,21 +2445,10 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
             continue;
           }
 
-          let fields = elementsIn(drawer).filter(field => field.dataset.menixAnswerId === item.id);
-          if (!fields.length) {
-            const drawerInput = drawer.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], input[type="text"], textarea, [contenteditable="true"]');
+          let fields = elementsIn(document).filter(field => field.dataset.menixAnswerId === item.id);
+          if (!fields.length && drawer && drawer !== document.body) {
+            const drawerInput = drawer.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i]');
             if (drawerInput && visible(drawerInput)) fields = [drawerInput];
-          }
-          if (!fields.length) {
-            fields = elementsIn(document).filter(field => field.dataset.menixAnswerId === item.id);
-          }
-          if (!fields.length) {
-            const anyInput = document.querySelector('[class*="chatbot" i] input, [class*="chat" i] input, [class*="chatbot" i] textarea, [class*="chat" i] textarea, input[placeholder*="message" i], textarea[placeholder*="message" i]');
-            if (anyInput && visible(anyInput)) fields = [anyInput];
-          }
-          if (!fields.length) {
-            const modalInput = document.querySelector('[class*="drawer" i] input:not([type="hidden"]), [class*="modal" i] input:not([type="hidden"]), [class*="dialog" i] input:not([type="hidden"]), [class*="modal" i] textarea');
-            if (modalInput && visible(modalInput)) fields = [modalInput];
           }
           if (!fields.length) {
             const radios = Array.from(document.querySelectorAll('input[type="radio"]')).filter(visible);
@@ -2558,7 +2580,10 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
             first.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
           };
 
-          clickDrawerSave();
+          const isChatbotField = Boolean(first.closest('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="chat_container" i]'));
+          if (isChatbotField) {
+            clickDrawerSave();
+          }
         }
         return { filled, skipped, filledIds };
       }
@@ -2572,7 +2597,7 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
       setStatus(`Answer filled and submitted to Naukri! Checking for next question…`, 'success');
       window.setTimeout(async () => {
         try {
-          await suggestApplicationAnswers();
+          await suggestApplicationAnswers(activeTabId);
         } catch {}
       }, 900);
     } else {
@@ -2870,7 +2895,7 @@ function updatePrimaryAction() {
   );
 
   button.disabled = !ready || restored || (applicationStarted && !companyFormOpen);
-  if (companyFormOpen) button.textContent = 'Review Application';
+  if (companyFormOpen) button.textContent = 'Auto-fill Application';
   else if (workflow?.status === 'TAILORING_REVIEW') button.textContent = isExternalApply ? 'Tailor & Apply on Company Site' : 'Tailor & Apply';
   else if (workflow?.status === 'APPLICATION_SUBMITTED') button.textContent = 'Application submitted';
   else if (applicationStarted) button.textContent = 'Application in progress';
@@ -2946,13 +2971,25 @@ async function loadSettings() {
   updateJobSummary();
   const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const activeUrl = activeTabs[0]?.url || '';
-  if (/naukri\.com\/mnjuser\/(?:profile|login)/i.test(activeUrl) && saved.activeJobSnapshot) {
-    currentJobTabUrl = saved.activeJobSnapshot.url || activeResumeWorkflow?.jobUrl || '';
-    $('jobTitleInput').value = saved.activeJobSnapshot.title || '';
-    $('companyInput').value = saved.activeJobSnapshot.company || '';
-    $('locationInput').value = saved.activeJobSnapshot.location || '';
-    $('jobDescription').value = saved.activeJobSnapshot.description || '';
-    $('jobUrl').value = saved.activeJobSnapshot.url || activeResumeWorkflow?.jobUrl || '';
+  let isNaukriListing = false;
+  try {
+    const parsedActive = new URL(activeUrl);
+    isNaukriListing = /(^|\.)naukri\.com$/i.test(parsedActive.hostname) && /\/job-listings?-/i.test(parsedActive.pathname);
+  } catch {}
+
+  // If on a company site, ATS portal, login or profile, preserve the captured job and analysis
+  if (!isNaukriListing && (saved.activeJobSnapshot || activeResumeWorkflow)) {
+    const snapshot = saved.activeJobSnapshot || {};
+    currentJobTabUrl = snapshot.url || activeResumeWorkflow?.jobUrl || '';
+    $('jobTitleInput').value = snapshot.title || activeResumeWorkflow?.title || '';
+    $('companyInput').value = snapshot.company || activeResumeWorkflow?.company || '';
+    $('locationInput').value = snapshot.location || '';
+    $('jobDescription').value = snapshot.description || '';
+    $('jobUrl').value = snapshot.url || activeResumeWorkflow?.jobUrl || '';
+    jobMetadata = {
+      isExternalCompanyApply: Boolean(snapshot.isExternalCompanyApply ?? activeResumeWorkflow?.isExternalCompanyApply),
+      companyApplyUrl: snapshot.companyApplyUrl || activeResumeWorkflow?.companyApplyUrl || ''
+    };
     updateJobSummary();
     if (lastAnalysis) renderAnalysis(lastAnalysis, 'ai');
   } else {
