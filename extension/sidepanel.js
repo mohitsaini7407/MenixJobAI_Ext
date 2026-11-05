@@ -2241,11 +2241,20 @@ async function advanceCompanyApplicationForm(tabId, targetJobTitle = '') {
       if (formInputs.length >= 2 || (formInputs.length >= 1 && fileInputs.length > 0)) return { clicked: false, formReady: true };
 
       // 3. Look for an Apply / Start Application / I'm interested button (covers Zoho Recruit, Workday, Lever, Greenhouse, etc.)
+      const isSocialOrShare = el => {
+        const href = (el instanceof HTMLAnchorElement ? el.href : el.closest('a')?.href || '').toLowerCase();
+        if (/facebook\.com|twitter\.com|x\.com|linkedin\.com\/shar|whatsapp\.com|telegram\.|mailto:|pinterest\.com|reddit\.com|instagram\.com/i.test(href)) return true;
+        const ariaOrClass = `${el.className || ''} ${el.getAttribute('aria-label') || ''} ${el.title || ''} ${el.parentElement?.className || ''}`.toLowerCase();
+        if (/\b(?:share|social|network)\b/i.test(ariaOrClass)) return true;
+        return Boolean(el.closest('[class*="share" i], [class*="social" i], [class*="network" i], [id*="share" i], [id*="social" i]'));
+      };
+
       const applyPattern = /^(?:apply(?: now| here| for this job| for this position| online| with resume)?|i(?:'m| am)? interested|express interest|interested|start(?: your)? application|begin application|continue(?: to)? application|proceed to apply|submit(?: your)? (?:application|resume)|quick apply|easy apply|1-click apply|join(?: our)? team)$/i;
       const candidates = [...document.querySelectorAll('a,button,[role="button"]')]
         .filter(visible)
         .filter(element => !element.disabled && element.getAttribute('aria-disabled') !== 'true')
         .filter(element => !(element instanceof HTMLButtonElement && element.type === 'submit' && element.closest('form') && [...element.closest('form').querySelectorAll('input:not([type=hidden]),textarea,select')].some(visible)))
+        .filter(element => !isSocialOrShare(element))
         .map(el => {
           const rawLabel = (el.innerText || el.getAttribute('aria-label') || el.title || el.value || '').replace(/\s+/g, ' ').trim();
           return { el, label: rawLabel };
@@ -2290,12 +2299,24 @@ async function advanceCompanyApplicationForm(tabId, targetJobTitle = '') {
         chosen = mainOnly.length ? mainOnly[0] : unique[0];
       }
 
+      if (!chosen || isSocialOrShare(chosen.el)) return { clicked: false, formReady: false };
+
       const href = chosen.el instanceof HTMLAnchorElement ? chosen.el.href : chosen.el.closest('a')?.href || '';
       const opensBlank = chosen.el instanceof HTMLAnchorElement && chosen.el.target === '_blank';
       const isExternalHref = href && (() => { try { return new URL(href).origin !== location.origin; } catch { return false; } })();
 
-      if (isExternalHref) return { openUrl: href };
-      if (opensBlank) return { openUrl: href || null };
+      if (isExternalHref) {
+        if (/facebook\.com|twitter\.com|x\.com|linkedin\.com|whatsapp\.com|instagram\.com|pinterest\.com/i.test(href)) {
+          return { clicked: false, formReady: false };
+        }
+        return { openUrl: href };
+      }
+      if (opensBlank) {
+        if (/facebook\.com|twitter\.com|x\.com|linkedin\.com|whatsapp\.com|instagram\.com|pinterest\.com/i.test(href || '')) {
+          return { clicked: false, formReady: false };
+        }
+        return { openUrl: href || null };
+      }
       chosen.el.click();
       return { clicked: true };
     }
@@ -2889,9 +2910,9 @@ function updatePrimaryAction() {
   const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
   const hasTailoredFile = Boolean(workflow?.temporaryResumeId);
   const isExternalApply = Boolean(
-    jobMetadata?.isExternalCompanyApply
-    || (jobMetadata?.isExternalCompanyApply === undefined && workflow?.isExternalCompanyApply)
-    || jobMetadata?.companyApplyUrl
+    jobMetadata?.isExternalCompanyApply !== undefined
+      ? jobMetadata.isExternalCompanyApply
+      : (workflow?.isExternalCompanyApply || jobMetadata?.companyApplyUrl)
   );
 
   button.disabled = !ready || restored || (applicationStarted && !companyFormOpen);
@@ -2969,8 +2990,9 @@ async function loadSettings() {
   renderResumeWorkflow();
   updateResumeCard();
   updateJobSummary();
-  const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  const activeUrl = activeTabs[0]?.url || '';
+  const allTabs = await chrome.tabs.query({ active: true });
+  const activeTab = allTabs.find(t => t.lastFocusedWindow) || allTabs.find(t => /(^|\.)naukri\.com$/i.test(new URL(t.url || 'http://localhost').hostname)) || allTabs[0];
+  const activeUrl = activeTab?.url || '';
   let isNaukriListing = false;
   try {
     const parsedActive = new URL(activeUrl);
@@ -3183,8 +3205,8 @@ async function captureActiveJob(tabId = null, attempt = 0) {
 
     const isNewJobUrl = currentJobTabUrl !== tab.url;
 
-    // If it is the same job URL and details are already captured, nothing to do
-    if (!isNewJobUrl && $('jobDescription')?.value?.trim() && $('jobTitleInput')?.value?.trim() && activeResumeWorkflow) {
+    // If it is the same job URL and details and metadata are already captured, nothing to do
+    if (!isNewJobUrl && $('jobDescription')?.value?.trim() && $('jobTitleInput')?.value?.trim() && activeResumeWorkflow && jobMetadata && jobMetadata.isExternalCompanyApply !== undefined) {
       return;
     }
 
@@ -3284,7 +3306,15 @@ async function captureActiveJob(tabId = null, attempt = 0) {
         const standardApplyPattern = /^(?:apply|apply now|apply for this job|apply on naukri)$/i;
 
         // Strictly exclude sidebars, recommended jobs ("Jobs you might be interested in"), and similar job cards
-        const isInsideSidebar = el => Boolean(el.closest('aside, [class*="similar" i], [class*="recommended" i], [class*="interest" i], [class*="other-jobs" i], [class*="suggested" i], #suggestedJobs, [data-testid*="similar" i]'));
+        const isInsideSidebar = el => {
+          if (el.closest('aside, [class*="similar" i], [class*="recommended" i], [class*="interest" i], [class*="other-jobs" i], [class*="suggested" i], #suggestedJobs, [data-testid*="similar" i]')) return true;
+          const container = el.closest('div[class*="container" i], section, div[class*="rail" i], div[class*="section" i], div[class*="right" i]');
+          if (container && container !== document.body) {
+            const heading = container.querySelector('h2, h3, h4, [class*="title" i], [class*="heading" i]')?.innerText || '';
+            if (/\b(?:interested in|similar jobs|recommended|people also|other jobs|openings)\b/i.test(heading)) return true;
+          }
+          return false;
+        };
 
         const headerContainers = [
           document.querySelector('.styles_job-header-container'),
@@ -3299,18 +3329,34 @@ async function captureActiveJob(tabId = null, attempt = 0) {
 
         let primaryApplyItem = null;
 
-        for (const container of headerContainers) {
-          const btns = Array.from(container.querySelectorAll('button, a, [role="button"]'))
+        // Priority 1: Check buttons directly adjacent to or inside the primary job heading/hero container
+        const jobHeadingEl = Array.from(document.querySelectorAll('h1, [class*="header-title" i], [class*="job-title" i], [class*="jobTitle" i], [class*="jd-header-title" i]')).find(visible);
+        const heroSection = jobHeadingEl?.closest('[class*="header" i], [class*="top" i], [class*="head" i], [class*="hero" i], section, article, [class*="card" i]') || jobHeadingEl?.parentElement?.parentElement;
+        if (heroSection) {
+          const heroBtns = Array.from(heroSection.querySelectorAll('button, a, [role="button"]'))
             .filter(element => visible(element) && !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
             .map(element => {
               const label = (element.innerText || element.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
               return { element, label };
             })
             .filter(item => !isExcludedButton(item.label) && (externalApplyPattern.test(item.label) || standardApplyPattern.test(item.label)));
+          if (heroBtns.length) primaryApplyItem = heroBtns[0];
+        }
 
-          if (btns.length) {
-            primaryApplyItem = btns[0];
-            break;
+        if (!primaryApplyItem) {
+          for (const container of headerContainers) {
+            const btns = Array.from(container.querySelectorAll('button, a, [role="button"]'))
+              .filter(element => visible(element) && !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
+              .map(element => {
+                const label = (element.innerText || element.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+                return { element, label };
+              })
+              .filter(item => !isExcludedButton(item.label) && (externalApplyPattern.test(item.label) || standardApplyPattern.test(item.label)));
+
+            if (btns.length) {
+              primaryApplyItem = btns[0];
+              break;
+            }
           }
         }
 
@@ -3801,7 +3847,15 @@ async function detectCompanyApplyButton(tabId) {
         const isExcluded = label => /send me jobs|job alert|save\b|share\b|report\b|login\b|sign in\b|register\b|view jobs\b/i.test(label);
         const externalPattern = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i;
         const standardPattern = /^(?:apply|apply now|apply for this job|apply on naukri)$/i;
-        const isInsideSidebar = el => Boolean(el.closest('aside, [class*="similar" i], [class*="recommended" i], [class*="interest" i], [class*="other-jobs" i], [class*="suggested" i], #suggestedJobs, [data-testid*="similar" i]'));
+        const isInsideSidebar = el => {
+          if (el.closest('aside, [class*="similar" i], [class*="recommended" i], [class*="interest" i], [class*="other-jobs" i], [class*="suggested" i], #suggestedJobs, [data-testid*="similar" i]')) return true;
+          const container = el.closest('div[class*="container" i], section, div[class*="rail" i], div[class*="section" i], div[class*="right" i]');
+          if (container && container !== document.body) {
+            const heading = container.querySelector('h2, h3, h4, [class*="title" i], [class*="heading" i]')?.innerText || '';
+            if (/\b(?:interested in|similar jobs|recommended|people also|other jobs|openings)\b/i.test(heading)) return true;
+          }
+          return false;
+        };
 
         const headerContainers = [
           document.querySelector('.styles_job-header-container'),
@@ -3815,12 +3869,23 @@ async function detectCompanyApplyButton(tabId) {
         ].filter(Boolean);
 
         let primaryBtn = null;
-        for (const container of headerContainers) {
-          const btns = Array.from(container.querySelectorAll('button, a, [role="button"]'))
+        const jobTitleNode = Array.from(document.querySelectorAll('h1, [class*="header-title" i], [class*="job-title" i], [class*="jobTitle" i], [class*="jd-header-title" i]')).find(visible);
+        const heroSection = jobTitleNode?.closest('[class*="header" i], [class*="top" i], [class*="head" i], [class*="hero" i], section, article, [class*="card" i]') || jobTitleNode?.parentElement?.parentElement;
+        if (heroSection) {
+          const heroBtns = Array.from(heroSection.querySelectorAll('button, a, [role="button"]'))
             .filter(element => visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true' && !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
             .map(element => ({ element, label: normalize(element.innerText || element.getAttribute('aria-label')) }))
             .filter(item => !isExcluded(item.label) && (externalPattern.test(item.label) || standardPattern.test(item.label)));
-          if (btns.length) { primaryBtn = btns[0]; break; }
+          if (heroBtns.length) primaryBtn = heroBtns[0];
+        }
+        if (!primaryBtn) {
+          for (const container of headerContainers) {
+            const btns = Array.from(container.querySelectorAll('button, a, [role="button"]'))
+              .filter(element => visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true' && !element.closest('#__menixjobai_dock') && !isInsideSidebar(element))
+              .map(element => ({ element, label: normalize(element.innerText || element.getAttribute('aria-label')) }))
+              .filter(item => !isExcluded(item.label) && (externalPattern.test(item.label) || standardPattern.test(item.label)));
+            if (btns.length) { primaryBtn = btns[0]; break; }
+          }
         }
         if (!primaryBtn) {
           const candidates = Array.from(document.querySelectorAll('main button, main a, main [role="button"], [class*="apply" i] button, [class*="apply" i] a, button, a, [role="button"]'))
@@ -3894,7 +3959,15 @@ async function returnToJobAndClickApply(profileTabId = activeResumeWorkflow?.pro
       const isExcluded = label => /send me jobs|job alert|save\b|share\b|report\b|login\b|sign in\b|register\b|view jobs\b/i.test(label);
       const externalApply = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i;
       const exactApply = /^(?:apply|apply now|apply for this job|apply on naukri)$/i;
-      const isInsideSidebar = el => Boolean(el.closest('aside, [class*="similar" i], [class*="recommended" i], [class*="interest" i], [class*="other-jobs" i], [class*="suggested" i], #suggestedJobs, [data-testid*="similar" i]'));
+      const isInsideSidebar = el => {
+          if (el.closest('aside, [class*="similar" i], [class*="recommended" i], [class*="interest" i], [class*="other-jobs" i], [class*="suggested" i], #suggestedJobs, [data-testid*="similar" i]')) return true;
+          const container = el.closest('div[class*="container" i], section, div[class*="rail" i], div[class*="section" i], div[class*="right" i]');
+          if (container && container !== document.body) {
+            const heading = container.querySelector('h2, h3, h4, [class*="title" i], [class*="heading" i]')?.innerText || '';
+            if (/\b(?:interested in|similar jobs|recommended|people also|other jobs|openings)\b/i.test(heading)) return true;
+          }
+          return false;
+        };
 
       const headerContainers = [
         document.querySelector('.styles_job-header-container'),
@@ -4000,10 +4073,7 @@ async function returnToJobAndClickApply(profileTabId = activeResumeWorkflow?.pro
           if (pageResult?.redirectUrl) {
             try {
               const dest = new URL(pageResult.redirectUrl);
-              if (!await chrome.permissions.contains({ origins: [`${dest.origin}/*`] })) {
-                const granted = await chrome.permissions.request({ origins: [`${dest.origin}/*`] });
-                if (!granted) { setStatus(`Allow access to ${dest.hostname}, then click Tailor & Apply again.`, 'info'); return false; }
-              }
+              // Direct navigation via declared host_permissions
               // Navigate the same tab to that URL (or open new tab if job tab got blocked)
               await chrome.tabs.update(jobTab.id, { url: dest.href }).catch(async () => {
                 applicationTab = await chrome.tabs.create({ url: dest.href, active: true, windowId: jobTab.windowId });
@@ -4087,6 +4157,13 @@ async function handleNaukriDirectApply(tabId) {
     await delay(1000);
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (!tab?.url) break;
+    if (/naukri\.com\/alert\//i.test(tab.url)) {
+      if (activeResumeWorkflow?.jobUrl) {
+        await chrome.tabs.update(tabId, { url: activeResumeWorkflow.jobUrl });
+        await delay(1500);
+        continue;
+      }
+    }
 
     try {
       const [{ result }] = await chrome.scripting.executeScript({
@@ -4418,7 +4495,6 @@ async function handleNaukriDirectApply(tabId) {
       }
 
       if (result?.state === 'modal_form') {
-        // Modal with standard form elements
         const resolved = await resolveApplicationQuestionAnswer(result.question || 'notice period');
         await chrome.scripting.executeScript({
           target: { tabId },
@@ -4428,38 +4504,70 @@ async function handleNaukriDirectApply(tabId) {
               && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
             const normalize = val => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-            // Radios
-            const radios = [...document.querySelectorAll('input[type="radio"]')].filter(visible);
-            if (radios.length && !radios.some(r => r.checked)) {
-              const pref = radios.find(r => {
+            // Disarm outer alert forms so they can NEVER navigate to /alert/manage
+            document.querySelectorAll('form[action*="alert" i], form[action*="manage" i], form#jobAlertForm').forEach(f => {
+              f.onsubmit = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+            });
+
+            const modalDrawer = document.querySelector('[class*="apply-pop-up" i], [class*="apply-popup" i], [class*="drawer" i], [class*="apply-dialog" i], [class*="modal" i], [class*="questionnaire" i], [class*="screener" i], [role="dialog"]') || document.body;
+
+            // Group all visible radio buttons by their name or parent question container
+            const radioGroups = new Map();
+            const allRadios = [...modalDrawer.querySelectorAll('input[type="radio"]')].filter(visible);
+            allRadios.forEach(radio => {
+              const groupKey = radio.name || radio.closest('fieldset, [class*="question" i], [class*="field" i], div')?.id || 'default_group';
+              if (!radioGroups.has(groupKey)) radioGroups.set(groupKey, []);
+              radioGroups.get(groupKey).push(radio);
+            });
+
+            // Ensure EVERY radio group has an option selected
+            for (const [groupKey, group] of radioGroups) {
+              if (group.some(r => r.checked)) continue;
+              const chosenRadio = group.find(r => {
                 const lbl = normalize(r.closest('label')?.innerText || r.value || '');
-                return /15\s*days?|30\s*days?|1\s*month|immediate|serving/i.test(lbl);
-              }) || radios[0];
-              if (pref) pref.click();
+                if (/yes|true|immediate|full time/i.test(lbl)) return true;
+                if (/\b(?:15\s*days?|30\s*days?|1\s*month)\b/i.test(lbl)) return true;
+                if (/\b(?:1\s*year|2\s*years|3\s*years)\b/i.test(lbl)) return true;
+                return false;
+              }) || group[0];
+
+              if (chosenRadio) {
+                const opts = { bubbles: true, cancelable: true, view: window };
+                chosenRadio.dispatchEvent(new PointerEvent('pointerdown', opts));
+                chosenRadio.dispatchEvent(new MouseEvent('mousedown', opts));
+                chosenRadio.checked = true;
+                chosenRadio.dispatchEvent(new Event('input', { bubbles: true }));
+                chosenRadio.dispatchEvent(new Event('change', { bubbles: true }));
+                chosenRadio.dispatchEvent(new PointerEvent('pointerup', opts));
+                chosenRadio.dispatchEvent(new MouseEvent('mouseup', opts));
+                try { chosenRadio.click(); } catch {}
+              }
             }
 
             // Selects
-            const selects = [...document.querySelectorAll('select')].filter(visible);
+            const selects = [...modalDrawer.querySelectorAll('select')].filter(visible);
             for (const s of selects) {
               if (s.value) continue;
               const opts = [...s.options];
-              const match = opts.find(o => /15\s*days?|30\s*days?|1\s*month|immediate/i.test(o.text)) || opts.find(o => o.value);
+              const match = opts.find(o => /yes|immediate|15\s*days?|30\s*days?|1\s*year|2\s*years/i.test(o.text)) || opts.find(o => o.value);
               if (match) {
                 s.value = match.value;
                 s.dispatchEvent(new Event('change', { bubbles: true }));
               }
             }
 
-            // Text fields using React prototype setter
-            const textFields = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type]), textarea')].filter(visible);
+            // Text / Number fields using React prototype setter
+            const textFields = [...modalDrawer.querySelectorAll('input[type="text"], input[type="number"], input:not([type]), textarea')].filter(visible);
             for (const f of textFields) {
               if (f.value.trim()) continue;
-              const lbl = normalize(f.closest('label')?.innerText || f.placeholder || f.name || '');
+              const container = f.closest('[class*="field" i], [class*="group" i], [class*="question" i], div') || f.parentElement;
+              const lbl = normalize(f.closest('label')?.innerText || container?.innerText || f.placeholder || f.name || '');
               let val = '1';
-              if (/ctc|salary/i.test(lbl)) val = '6';
+              if (/ctc|salary|compensation/i.test(lbl)) val = '6';
               else if (/experience|years/i.test(lbl)) val = '2';
               else if (/notice/i.test(lbl)) val = '15';
               else if (/location|city/i.test(lbl)) val = 'Delhi';
+              else if (/skills?|technologies/i.test(lbl)) val = 'Python, JavaScript, Git';
 
               const proto = f instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
               const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
@@ -4470,17 +4578,22 @@ async function handleNaukriDirectApply(tabId) {
               f.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
             }
 
-            // Click Save / Submit inside drawer or modal only when fields are filled
-            const drawer = document.querySelector('[class*="drawer" i], [class*="modal" i], [class*="popup" i], [class*="dialog" i], [class*="chatbot" i], [class*="container" i], [class*="screener" i], form');
-            if (drawer) {
-              const savePattern = /^(?:save & next|save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
-              const btns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
-              const submitBtn = btns.find(b => {
-                if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
-                const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
-                return savePattern.test(lbl);
-              });
-              if (submitBtn) submitBtn.click();
+            // Click Save / Submit specifically inside questionnaire dialog, never job alert
+            const savePattern = /^(?:save & next|save and next|save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*)$/i;
+            const btns = [...modalDrawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
+            const submitBtn = btns.find(b => {
+              if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+              const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
+              if (/send me jobs|job alert|save job|close|cancel/i.test(lbl)) return false;
+              return savePattern.test(lbl);
+            });
+            if (submitBtn) {
+              const opts = { bubbles: true, cancelable: true, view: window };
+              submitBtn.dispatchEvent(new PointerEvent('pointerdown', opts));
+              submitBtn.dispatchEvent(new MouseEvent('mousedown', opts));
+              submitBtn.dispatchEvent(new PointerEvent('pointerup', opts));
+              submitBtn.dispatchEvent(new MouseEvent('mouseup', opts));
+              try { submitBtn.click(); } catch {}
             }
           }
         });
@@ -5094,7 +5207,7 @@ async function chooseResumeForThisJob() {
         ? await readResumeFile(workflow.temporaryResumeId).catch(() => null) : null;
       const expectedNamePattern = /^.+_\d{2}-\d{2}-\d{4}\.docx$/i;
       if (!stored?.file || !expectedNamePattern.test(workflow.temporaryResumeName || '')) {
-        await tailorResumeForActiveJob({ applyAfter: false });
+        await tailorResumeForActiveJob({ applyAfter: true });
         return;
       }
     }
@@ -5109,10 +5222,7 @@ async function chooseResumeForThisJob() {
       if (targetHref && /^https:\/\//i.test(targetHref)) {
         try {
           const destination = new URL(targetHref);
-          if (!await chrome.permissions.contains({ origins: [`${destination.origin}/*`] })) {
-            const granted = await chrome.permissions.request({ origins: [`${destination.origin}/*`] });
-            if (!granted) throw new Error(`Allow access to ${destination.hostname} before starting the company application.`);
-          }
+          // Direct access via declared host_permissions without user-gesture popup requirement
           await persistResumeWorkflow({ ...activeResumeWorkflow, companyApplyUrl: destination.href, isExternalCompanyApply: true });
         } catch {}
       }
