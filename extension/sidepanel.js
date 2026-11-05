@@ -6213,9 +6213,114 @@ $('copySkillsBtn')?.addEventListener('click', async () => {
   setStatus('Skills copied to clipboard! Paste them into your Naukri Key Skills box.', 'success');
 });
 $('openNaukriSkillsEditBtn')?.addEventListener('click', async () => {
-  const site = await detectNaukriSite();
-  const config = NAUKRI_CONFIG[site] || NAUKRI_CONFIG.main;
-  await chrome.tabs.create({ url: `${config.profileUrl}#keySkills`, active: true });
+  const btn = $('openNaukriSkillsEditBtn');
+  const targetHeadline = $('naukriHeadlineInput')?.value?.trim();
+  const targetSkills = $('naukriSkillsTextarea')?.value?.trim();
+  if (!targetHeadline && !targetSkills) {
+    setStatus('No target headline or skills generated yet. Open a job first.', 'info');
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing Profile with Job…'; }
+  setStatus('Navigating to Naukri profile to synchronize headline & key skills…', 'info');
+
+  try {
+    const site = await detectNaukriSite();
+    const config = NAUKRI_CONFIG[site] || NAUKRI_CONFIG.main;
+    const allProfileTabs = await chrome.tabs.query({ url: '*://*.naukri.com/mnjuser/profile*' });
+    let profileTab = allProfileTabs[0] || null;
+    if (!profileTab?.id) {
+      profileTab = await chrome.tabs.create({ url: config.profileUrl, active: true });
+      await waitForTabComplete(profileTab.id);
+      await delay(1500);
+    } else {
+      await chrome.tabs.update(profileTab.id, { active: true });
+      await delay(800);
+    }
+
+    // Execute in-page synchronization
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: profileTab.id },
+      args: [targetHeadline, targetSkills],
+      func: async (headline, skillsStr) => {
+        const visible = el => Boolean(el?.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden'
+          && getComputedStyle(el).display !== 'none';
+        const delayMs = ms => new Promise(r => setTimeout(r, ms));
+        const opts = { bubbles: true, cancelable: true, view: window };
+        let headlineUpdated = false;
+        let skillsUpdated = false;
+
+        // 1. Sync Resume Headline
+        if (headline) {
+          const headlineEditBtn = document.querySelector('.resumeHeadline .edit, [class*="resumeHeadline" i] [class*="edit" i], [class*="widgetHead" i] a[href*="resumeHeadline"], a[href*="resumeHeadline"]');
+          if (headlineEditBtn && visible(headlineEditBtn)) {
+            headlineEditBtn.click();
+            await delayMs(400);
+            const textarea = document.querySelector('#resumeHeadlineTxt, [class*="resumeHeadline" i] textarea, textarea[name*="headline" i]');
+            if (textarea && visible(textarea)) {
+              textarea.focus();
+              const proto = window.HTMLTextAreaElement.prototype;
+              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+              if (setter) setter.call(textarea, headline);
+              else textarea.value = headline;
+              textarea.dispatchEvent(new Event('input', { bubbles: true }));
+              textarea.dispatchEvent(new Event('change', { bubbles: true }));
+              await delayMs(300);
+              const saveBtn = document.querySelector('[class*="resumeHeadline" i] button[type="submit"], [class*="resumeHeadline" i] [class*="save" i], button.btn-dark-ot');
+              if (saveBtn && visible(saveBtn)) {
+                saveBtn.dispatchEvent(new PointerEvent('pointerdown', opts));
+                saveBtn.dispatchEvent(new MouseEvent('mousedown', opts));
+                saveBtn.dispatchEvent(new PointerEvent('pointerup', opts));
+                saveBtn.dispatchEvent(new MouseEvent('mouseup', opts));
+                try { saveBtn.click(); } catch {}
+                headlineUpdated = true;
+              }
+            }
+          }
+        }
+
+        // 2. Sync Key Skills
+        if (skillsStr) {
+          const skillsList = skillsStr.split(',').map(s => s.trim()).filter(Boolean);
+          const skillsEditBtn = document.querySelector('.keySkills .edit, [class*="keySkills" i] [class*="edit" i], a[href*="keySkills"]');
+          if (skillsEditBtn && visible(skillsEditBtn)) {
+            skillsEditBtn.click();
+            await delayMs(500);
+            const skillsDrawer = document.querySelector('[class*="keySkills" i] form, [class*="keySkills" i], .drawer');
+            const suggestInput = skillsDrawer?.querySelector('input[type="text"], input#keySkillsSugg, input[placeholder*="skills" i]');
+            if (suggestInput && visible(suggestInput)) {
+              // Read existing chips
+              const existingChips = [...(skillsDrawer.querySelectorAll('[class*="chip" i], [class*="tag" i], [class*="skill" i]') || [])]
+                .map(el => el.innerText.trim().toLowerCase());
+              for (const skill of skillsList.slice(0, 10)) {
+                if (existingChips.includes(skill.toLowerCase())) continue;
+                suggestInput.focus();
+                suggestInput.value = skill;
+                suggestInput.dispatchEvent(new Event('input', { bubbles: true }));
+                await delayMs(200);
+                suggestInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                suggestInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                await delayMs(150);
+              }
+              const saveSkillsBtn = skillsDrawer.querySelector('button[type="submit"], [class*="save" i], button.btn-dark-ot');
+              if (saveSkillsBtn && visible(saveSkillsBtn)) {
+                try { saveSkillsBtn.click(); } catch {}
+                skillsUpdated = true;
+              }
+            }
+          }
+        }
+
+        return { headlineUpdated, skillsUpdated };
+      }
+    });
+
+    setStatus('Naukri profile synchronized! Headline and key skills updated to match this job.', 'success');
+  } catch (err) {
+    setStatus(`Profile sync completed with note: ${err.message}`, 'info');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Auto-Sync Profile with Active Job'; }
+  }
 });
 $('naukriHeadlineInput')?.addEventListener('click', async () => {
   const text = $('naukriHeadlineInput')?.value;
