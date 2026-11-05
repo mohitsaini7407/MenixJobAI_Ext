@@ -90,8 +90,8 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
   panelUrl.searchParams.set('tabId', String(tabId));
   chrome.scripting.executeScript({
     target: { tabId },
-    args: [true, panelUrl.href, token, dockVersion, forceRefresh],
-    func: (shouldShow, extensionPanelUrl, closeToken, version, refresh) => {
+    args: [true, panelUrl.href, token, dockVersion, forceRefresh, chrome.runtime.getURL('icons/icon48.png')],
+    func: (shouldShow, extensionPanelUrl, closeToken, version, refresh, iconUrl) => {
       const oldDock = document.getElementById('__menixjobai_dock');
       // Keep the existing iframe alive across tab activation and SPA navigation.
       // Recreating it discards its in-memory analysis while the user visits Profile.
@@ -181,20 +181,24 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
       expandBtn.id = '__menixjobai_expand_btn';
       expandBtn.setAttribute('aria-label', 'Open MenixJobAI');
       expandBtn.title = 'Click to open MenixJobAI';
-      expandBtn.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;display:none;align-items:center;justify-content:center;cursor:pointer;background:linear-gradient(135deg,#ff7900,#ff9a24);border-radius:28px 0 0 28px;box-shadow:-3px 4px 18px rgba(255,121,0,0.5);padding:0;outline:none;z-index:2147483647;';
-      expandBtn.innerHTML = '<span style="color:#ffffff;font-family:Inter,system-ui,sans-serif;font-weight:900;font-size:24px;line-height:1;margin-left:6px;user-select:none;display:block;">M</span>';
+      expandBtn.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;display:none;align-items:center;justify-content:center;cursor:pointer;background:#ffffff;border-radius:32px 0 0 32px;box-shadow:-4px 6px 24px rgba(0,0,0,0.3), 0 0 0 2px rgba(37,99,235,0.25);padding:0;outline:none;z-index:2147483647;transition:transform 0.15s ease,box-shadow 0.15s ease;';
+      expandBtn.innerHTML = `<img src="${iconUrl}" style="width:36px;height:36px;object-fit:contain;pointer-events:none;display:block;margin-left:6px;" alt="MenixJobAI" />`;
+      expandBtn.onmouseenter = () => { expandBtn.style.transform = 'translateX(-4px)'; expandBtn.style.boxShadow = '-6px 8px 28px rgba(0,0,0,0.35), 0 0 0 2.5px rgba(37,99,235,0.4)'; };
+      expandBtn.onmouseleave = () => { expandBtn.style.transform = 'none'; expandBtn.style.boxShadow = '-4px 6px 24px rgba(0,0,0,0.3), 0 0 0 2px rgba(37,99,235,0.25)'; };
 
       let isCollapsed = false;
       const toggleCollapse = () => {
         isCollapsed = !isCollapsed;
         if (isCollapsed) {
-          dock.style.width = '56px';
-          dock.style.height = '56px';
-          dock.style.top = '120px';
+          dock.style.width = '64px';
+          dock.style.height = '64px';
+          dock.style.top = '140px';
           dock.style.right = '0';
           dock.style.bottom = 'auto';
-          dock.style.borderRadius = '28px 0 0 28px';
-          dock.style.boxShadow = '-3px 4px 20px rgba(0,0,0,0.5), 0 0 0 2px rgba(255,121,0,0.6)';
+          dock.style.borderRadius = '32px 0 0 32px';
+          dock.style.boxShadow = 'none';
+          dock.style.background = 'transparent';
+          dock.style.border = 'none';
           dock.style.cursor = 'pointer';
           frame.style.display = 'none';
           expandBtn.style.display = 'flex';
@@ -207,6 +211,8 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
           dock.style.bottom = '0';
           dock.style.borderRadius = '0';
           dock.style.boxShadow = 'none';
+          dock.style.background = '#0b1017';
+          dock.style.borderLeft = '1px solid #dbe4f0';
           dock.style.cursor = 'default';
           expandBtn.style.display = 'none';
           frame.style.display = 'block';
@@ -214,13 +220,15 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
         }
       };
 
-      expandBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleCollapse();
-      });
-      expandBtn.addEventListener('pointerdown', (e) => {
-        e.stopPropagation();
-      });
+      const handleExpand = (e) => {
+        e?.stopPropagation?.();
+        e?.preventDefault?.();
+        if (isCollapsed) toggleCollapse();
+      };
+      expandBtn.addEventListener('click', handleExpand);
+      expandBtn.addEventListener('pointerdown', handleExpand);
+      expandBtn.addEventListener('mousedown', handleExpand);
+      expandBtn.addEventListener('touchstart', handleExpand, { passive: false });
 
       const onMessage = event => {
         if (event.source !== frame.contentWindow) return;
@@ -229,7 +237,10 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
           dock.remove();
         }
         if (event.data?.type === 'MENIX_MINIMIZE_PANEL' && event.data?.token === closeToken) {
-          toggleCollapse();
+          if (!isCollapsed) toggleCollapse();
+        }
+        if (event.data?.type === 'MENIX_EXPAND_PANEL' && event.data?.token === closeToken) {
+          if (isCollapsed) toggleCollapse();
         }
       };
       dock.__menixCleanup = () => {
@@ -237,11 +248,10 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
         restorePageLayout();
       };
       window.addEventListener('message', onMessage);
-      dock.addEventListener('click', () => {
-        if (isCollapsed) toggleCollapse();
-      });
+      dock.addEventListener('click', handleExpand);
+      dock.addEventListener('pointerdown', handleExpand);
       dock.append(frame);
-dock.append(expandBtn);
+      dock.append(expandBtn);
       document.documentElement.append(dock);
     }
   }).catch(error => console.debug('MenixJobAI could not show the Naukri panel:', error));

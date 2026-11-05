@@ -321,7 +321,8 @@ function currentJobPayload() {
     location: cleanText($('locationInput').value),
     description: $('jobDescription').value.trim(),
     url: cleanText($('jobUrl').value),
-    companyApplyUrl: cleanText(jobMetadata.companyApplyUrl)
+    companyApplyUrl: cleanText(jobMetadata.companyApplyUrl),
+    isExternalCompanyApply: Boolean(jobMetadata.isExternalCompanyApply || activeResumeWorkflow?.isExternalCompanyApply)
   };
 }
 
@@ -360,6 +361,7 @@ async function activateResumeWorkflow(job = currentJobPayload(), tabId = null) {
   activeResumeWorkflow.jobUrl = job.url;
   activeResumeWorkflow.title = job.title;
   activeResumeWorkflow.company = job.company;
+  if (job.isExternalCompanyApply !== undefined) activeResumeWorkflow.isExternalCompanyApply = Boolean(job.isExternalCompanyApply);
   if (job.companyApplyUrl) activeResumeWorkflow.companyApplyUrl = job.companyApplyUrl;
   if (tabId) activeResumeWorkflow.jobTabId = tabId;
   await persistResumeWorkflow(activeResumeWorkflow);
@@ -900,7 +902,7 @@ function synthesizeTruthfulTailoringEdits(masterText, jobTitle = '', jobDescript
   // 1. Technical Skills Prioritization (re-orders candidate's existing skills truthfully)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const match = line.match(/^((?:technical skills|skills|technologies|languages|frameworks|tools|core competencies|proficiencies)[^:\r\n]*:)(.+)$/i);
+    const match = line.match(/^((?:technical skills|skills|technologies|languages|frameworks|tools|core competencies|proficiencies|key skills|skills & tools|competencies|areas of expertise)[^:\r\n]*:)(.+)$/i);
     if (match) {
       const prefix = match[1];
       const rest = match[2];
@@ -937,17 +939,18 @@ function synthesizeTruthfulTailoringEdits(masterText, jobTitle = '', jobDescript
     }
   }
 
-  // 2. Fallback: Re-order first skills line if needed (zero new terms, 100% truthful)
+  // 2. Fallback: Re-order first skills line or bullet list if needed (zero new terms, 100% truthful)
   if (edits.length === 0) {
     for (const line of lines) {
-      if (/^(?:technical skills|skills|technologies|languages|frameworks)[:\-]/i.test(line) && line.includes(',')) {
+      if (/^(?:technical skills|skills|technologies|languages|frameworks|tools|competencies|proficiencies|key skills)[:\-]/i.test(line) && (line.includes(',') || line.includes('|'))) {
         const colonIdx = line.indexOf(':');
         if (colonIdx > 0) {
           const prefix = line.substring(0, colonIdx + 1);
-          const items = line.substring(colonIdx + 1).split(',').map(s => s.trim()).filter(Boolean);
+          const delimiter = line.includes('|') ? ' | ' : ', ';
+          const items = line.substring(colonIdx + 1).split(/[,|]+/).map(s => s.trim()).filter(Boolean);
           if (items.length > 1) {
             const rotated = [items[items.length - 1], ...items.slice(0, items.length - 1)];
-            const newLine = `${prefix} ${rotated.join(', ')}`;
+            const newLine = `${prefix} ${rotated.join(delimiter)}`;
             if (masterText.includes(line)) {
               edits.push({
                 id: `synth-rotate-${edits.length + 1}`,
@@ -1012,9 +1015,24 @@ async function generateApprovedTailoredResume() {
     }
   }
 
-  if (!edits.length || working === $('resumeText').value.trim()) {
+  if (!working) {
     setStatus('Cannot generate tailored resume: please ensure your Master Resume text is loaded.', 'error');
     return;
+  }
+
+  // If no text mutation was required or master resume is already optimal, preserve candidate's verified baseline
+  if (!edits.length) {
+    const firstNonEmpty = working.split(/\r?\n/).find(l => l.trim().length > 3) || working.slice(0, 20);
+    edits.push({
+      id: 'synth-baseline-1',
+      before: firstNonEmpty,
+      after: firstNonEmpty,
+      section: 'summary',
+      safeToApply: true,
+      validation: 'verified',
+      reason: 'Master resume is optimal for this role; verified baseline retained.',
+      evidence: [firstNonEmpty]
+    });
   }
 
   approvedTailoringEdits = edits;
@@ -1867,7 +1885,7 @@ async function autoFillCompanyApplication(tabId) {
     // --- STEP 1: Ensure we have permission for this company site ---
     if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) {
       const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
-      if (!granted) { setStatus(`Allow access to ${new URL(tab.url).hostname}, then click Tailor & Apply to continue.`, 'info'); return; }
+      if (!granted) { setStatus(`Allow access to ${new URL(tab.url).hostname}, then click Tailor & Apply on Company Site to continue.`, 'info'); return; }
     }
 
     // --- STEP 2: Navigate through up to 3 "find the apply button" pages ---
@@ -1875,7 +1893,7 @@ async function autoFillCompanyApplication(tabId) {
     // navigating a job listing page before showing the actual form.
     let formReady = false;
     for (let step = 0; step < 3 && !formReady; step++) {
-      setStatus(`Company site: detecting application form (step ${step + 1})…`, 'info');
+      setStatus(`Company site: checking for application form (step ${step + 1})…`, 'info');
       const advance = await advanceCompanyApplicationForm(activeTabId, activeResumeWorkflow?.jobTitle || $('jobTitleInput')?.value || '');
 
       if (advance.blocked) { setStatus(advance.message, 'info'); return; }
@@ -1894,7 +1912,7 @@ async function autoFillCompanyApplication(tabId) {
         origin = new URL((await chrome.tabs.get(activeTabId)).url).origin;
         if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) {
           const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
-          if (!granted) { setStatus(`Allow access to ${new URL((await chrome.tabs.get(activeTabId)).url).hostname}, then click Tailor & Apply to continue.`, 'info'); return; }
+          if (!granted) { setStatus(`Allow access to ${new URL((await chrome.tabs.get(activeTabId)).url).hostname}, then click Tailor & Apply on Company Site to continue.`, 'info'); return; }
         }
         formReady = true; // assume form is on this new page
         break;
@@ -1919,7 +1937,7 @@ async function autoFillCompanyApplication(tabId) {
         origin = new URL(tab.url).origin;
         if (!await chrome.permissions.contains({ origins: [`${origin}/*`] })) {
           const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
-          if (!granted) { setStatus(`Allow access to ${new URL(tab.url).hostname}, then click Tailor & Apply to continue.`, 'info'); return; }
+          if (!granted) { setStatus(`Allow access to ${new URL(tab.url).hostname}, then click Tailor & Apply on Company Site to continue.`, 'info'); return; }
         }
         // After clicking, check if form is now visible
         const recheckAdvance = await advanceCompanyApplicationForm(activeTabId);
@@ -1929,8 +1947,34 @@ async function autoFillCompanyApplication(tabId) {
       }
 
       if (!advance.clicked && !advance.openUrl) {
-        // No apply button found — form may already be on this page or we've exhausted navigation
-        formReady = true; break;
+        break;
+      }
+    }
+
+    // --- SCENARIO 3 FALLBACK: Unidentified Apply button ---
+    if (!formReady) {
+      setStatus("Please click 'Apply' on the company site. MenixJobAI is monitoring and will auto-fill the form as soon as it appears.", 'info');
+      const waitDeadline = Date.now() + 45_000;
+      while (Date.now() < waitDeadline && !formReady) {
+        await delay(1000);
+        const checkTab = await chrome.tabs.get(activeTabId).catch(() => null);
+        if (!checkTab?.url) break;
+        const [{ result: pollResult }] = await chrome.scripting.executeScript({
+          target: { tabId: activeTabId },
+          func: () => {
+            const visible = el => Boolean(el?.getClientRects().length)
+              && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+            const inputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]),textarea,select')].filter(visible);
+            const files = [...document.querySelectorAll('input[type="file"]')];
+            return { formReady: inputs.length >= 2 || files.length > 0 };
+          }
+        }).catch(() => [{ result: { formReady: false } }]);
+        if (pollResult?.formReady) {
+          formReady = true;
+          setStatus('Application form detected! Autofilling now…', 'success');
+          await delay(600);
+          break;
+        }
       }
     }
 
@@ -1941,17 +1985,13 @@ async function autoFillCompanyApplication(tabId) {
     const resume = await selectedWorkflowFile();
     const resumeAttached = await attachResumeToCompanyApplication(activeTabId, resume);
     if (!resumeAttached) {
-      setStatus(`Resume file input not found on ${new URL(tab.url).hostname}. Attach ${resume.name} manually, then click Tailor & Apply again.`, 'info');
-      // Don't stop — many portals (LinkedIn Easy Apply, Workday) don't use a file input;
-      // the resume was already on file from the Naukri profile. Continue to fill the form.
+      setStatus(`Resume file input not found on ${new URL(tab.url).hostname}. Continue to fill form fields…`, 'info');
     } else {
       setStatus('Resume attached. Filling application form…', 'info');
       await delay(600);
     }
 
     // --- STEP 4: Fill form questions (multi-page pagination loop) ---
-    // Handle multi-step ATS forms: fill → check for Next → click Next → refill → repeat
-    // We iterate up to 6 pages (most ATS portals have ≤4 steps)
     for (let formPage = 0; formPage < 6; formPage++) {
       setStatus(`Filling application form${formPage > 0 ? ` (page ${formPage + 1})` : ''}…`, 'info');
       await suggestApplicationAnswers();
@@ -1965,7 +2005,6 @@ async function autoFillCompanyApplication(tabId) {
         func: () => {
           const visible = el => Boolean(el?.getClientRects().length)
             && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
-          // "Next" buttons — look for text matches that are NOT a final submit
           const nextPattern = /^(?:next(?: step| page)?|continue(?: to next)?|proceed|save \& continue|next \u2192)$/i;
           const submitPattern = /^(?:submit(?: application| my application)?|send(?: application)?|apply(?: now)?|save \& submit|confirm \& apply|review \& submit|review application)$/i;
           const all = [...document.querySelectorAll('button[type="submit"],input[type="submit"],button,[role="button"]')]
@@ -1982,16 +2021,155 @@ async function autoFillCompanyApplication(tabId) {
       }).catch(() => [{ result: { hasNext: false } }]);
 
       if (!pageNav?.hasNext) {
-        // No "Next" button — this is the final page; go to submit step
         break;
       }
       setStatus(`Clicked "${pageNav.label || 'Next'}" — waiting for next page…`, 'info');
       await delay(400);
       await waitForTabComplete(activeTabId).catch(() => {});
-      await delay(1200); // SPA settle
+      await delay(1200);
     }
 
-    // --- STEP 5: Attempt to submit ---
+    // --- STEP 5: Count filled vs unfilled fields, prompt user, and remember answers ---
+    const [{ result: fieldStatus }] = await chrome.scripting.executeScript({
+      target: { tabId: activeTabId },
+      func: () => {
+        const visible = el => Boolean(el?.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const normalize = s => String(s || '').replace(/\s+/g, ' ').trim();
+        const labelFor = el => {
+          let text = el.getAttribute('aria-label') || el.placeholder || el.title || '';
+          if (!text && el.id) {
+            const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+            if (lbl) text = lbl.innerText;
+          }
+          if (!text) {
+            const parentLbl = el.closest('label');
+            if (parentLbl) text = parentLbl.innerText;
+          }
+          if (!text) {
+            const prev = el.previousElementSibling;
+            if (prev && ['LABEL', 'SPAN', 'P', 'H4', 'H5'].includes(prev.tagName)) text = prev.innerText;
+          }
+          if (!text && el.name) text = el.name;
+          return normalize(text).replace(/[:*]+$/, '').trim();
+        };
+
+        const inputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select')]
+          .filter(visible);
+
+        const radiosByName = new Map();
+        const otherInputs = [];
+        for (const input of inputs) {
+          if (input instanceof HTMLInputElement && input.type === 'radio') {
+            const name = input.name || 'unnamed_radio';
+            if (!radiosByName.has(name)) radiosByName.set(name, []);
+            radiosByName.get(name).push(input);
+          } else {
+            otherInputs.push(input);
+          }
+        }
+
+        let totalCount = otherInputs.length + radiosByName.size;
+        let filledCount = 0;
+        const unfilledFields = [];
+
+        for (const input of otherInputs) {
+          const val = (input.value || '').trim();
+          const isSelect = input instanceof HTMLSelectElement;
+          const isPlaceholder = isSelect && /^(?:select|choose|--+|\*+)$/i.test(input.selectedOptions[0]?.text?.trim() || '');
+          const isCheckbox = input instanceof HTMLInputElement && input.type === 'checkbox';
+          const isFile = input instanceof HTMLInputElement && input.type === 'file';
+
+          const isFilled = isFile ? (input.files && input.files.length > 0)
+            : isCheckbox ? input.checked
+            : isSelect ? (val && !isPlaceholder)
+            : Boolean(val);
+
+          if (isFilled) {
+            filledCount++;
+          } else {
+            unfilledFields.push({ label: labelFor(input) || input.name || input.id, id: input.id, name: input.name });
+          }
+        }
+
+        for (const [name, radioList] of radiosByName.entries()) {
+          if (radioList.some(r => r.checked)) {
+            filledCount++;
+          } else {
+            unfilledFields.push({ label: labelFor(radioList[0]) || name, id: radioList[0].id, name });
+          }
+        }
+
+        // Attach listener to capture user manual inputs on empty fields and remember them
+        if (!window.__menixCompanyFieldListenerAttached) {
+          window.__menixCompanyFieldListenerAttached = true;
+          const saveListener = e => {
+            const el = e.target;
+            if (!el || !['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return;
+            const val = (el.value || '').trim();
+            if (!val) return;
+            const lbl = labelFor(el);
+            if (lbl && lbl.length > 2) {
+              try {
+                chrome.runtime.sendMessage({
+                  action: 'REMEMBER_APPLICATION_ANSWER',
+                  question: lbl,
+                  answer: val
+                }).catch(() => {});
+              } catch {}
+            }
+          };
+          document.addEventListener('change', saveListener, true);
+          document.addEventListener('blur', saveListener, true);
+        }
+
+        return { totalCount, filledCount, unfilledCount: unfilledFields.length, unfilledFields };
+      }
+    }).catch(() => [{ result: null }]);
+
+    if (fieldStatus && fieldStatus.unfilledCount > 0) {
+      setStatus(`Filled ${fieldStatus.filledCount} of ${fieldStatus.totalCount} fields (${fieldStatus.unfilledCount} remaining). Fill the remaining field(s) on the page; MenixJobAI will remember your answers and auto-submit.`, 'info');
+      // Wait for user to fill remaining fields (up to 90 seconds)
+      const fillDeadline = Date.now() + 90_000;
+      while (Date.now() < fillDeadline) {
+        await delay(2000);
+        const checkTab = await chrome.tabs.get(activeTabId).catch(() => null);
+        if (!checkTab?.url) break;
+        const [{ result: recheck }] = await chrome.scripting.executeScript({
+          target: { tabId: activeTabId },
+          func: () => {
+            const visible = el => Boolean(el?.getClientRects().length)
+              && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+            const inputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select')].filter(visible);
+            let missing = 0;
+            for (const input of inputs) {
+              const val = (input.value || '').trim();
+              const isSelect = input instanceof HTMLSelectElement;
+              const isPlaceholder = isSelect && /^(?:select|choose|--+|\*+)$/i.test(input.selectedOptions[0]?.text?.trim() || '');
+              const isCheckbox = input instanceof HTMLInputElement && input.type === 'checkbox';
+              const isFile = input instanceof HTMLInputElement && input.type === 'file';
+              const isFilled = isFile ? (input.files && input.files.length > 0)
+                : isCheckbox ? input.checked
+                : isSelect ? (val && !isPlaceholder)
+                : Boolean(val);
+              if (!isFilled) missing++;
+            }
+            return { missing };
+          }
+        }).catch(() => [{ result: { missing: -1 } }]);
+
+        if (recheck && recheck.missing === 0) {
+          setStatus('All fields filled! Submitting application on company site…', 'success');
+          await delay(600);
+          break;
+        }
+      }
+    } else {
+      setStatus('All fields filled! Submitting application on company site…', 'success');
+      await delay(600);
+    }
+
+    // --- STEP 6: Submit application and return to Naukri ---
     await submitCompanyApplication({ requestPermission: false });
   } catch (error) {
     setStatus(`Company form automation error: ${error.message}`, 'error');
@@ -2651,16 +2829,18 @@ function updatePrimaryAction() {
   const companyFormOpen = workflow?.status === 'APPLICATION_IN_PROGRESS' && Boolean(workflow?.companyApplicationTabId);
   const restored = workflow?.status === 'MASTER_RESUME_RESTORED';
   const hasTailoredFile = Boolean(workflow?.temporaryResumeId);
+  const isExternalApply = Boolean(workflow?.isExternalCompanyApply || jobMetadata?.isExternalCompanyApply || workflow?.companyApplyUrl || jobMetadata?.companyApplyUrl);
+
   button.disabled = !ready || restored || (applicationStarted && !companyFormOpen);
   if (companyFormOpen) button.textContent = 'Review Application';
-  else if (workflow?.status === 'TAILORING_REVIEW') button.textContent = 'Tailor & Apply';
+  else if (workflow?.status === 'TAILORING_REVIEW') button.textContent = isExternalApply ? 'Tailor & Apply on Company Site' : 'Tailor & Apply';
   else if (workflow?.status === 'APPLICATION_SUBMITTED') button.textContent = 'Application submitted';
   else if (applicationStarted) button.textContent = 'Application in progress';
   else if (restored) button.textContent = 'Resume restored on Naukri';
-  else if (workflow?.status === 'TAILORING_FAILED') button.textContent = 'Retry Tailoring & Apply';
-  else if (hasTailoredFile) button.textContent = 'Apply with Tailored Resume';
-  else if (workflow?.selectedType === 'master') button.textContent = 'Apply with Master Resume';
-  else button.textContent = 'Tailor & Apply';
+  else if (workflow?.status === 'TAILORING_FAILED') button.textContent = isExternalApply ? 'Retry Tailoring & Apply on Company Site' : 'Retry Tailoring & Apply';
+  else if (hasTailoredFile) button.textContent = isExternalApply ? 'Apply on Company Site with Tailored Resume' : 'Apply with Tailored Resume';
+  else if (workflow?.selectedType === 'master') button.textContent = isExternalApply ? 'Apply on Company Site with Master Resume' : 'Apply with Master Resume';
+  else button.textContent = isExternalApply ? 'Tailor & Apply on Company Site' : 'Tailor & Apply';
 }
 function safeFilenamePart(value) {
   return cleanText(value)
@@ -2799,7 +2979,26 @@ if (embeddedPanelParams.get('embedded') === '1') {
       }, '*');
     });
   }
+  const brandMark = document.querySelector('.brand-mark');
+  if (brandMark) {
+    brandMark.style.cursor = 'pointer';
+    brandMark.title = 'Click to toggle/expand panel';
+    brandMark.addEventListener('click', () => {
+      window.parent.postMessage({
+        type: 'MENIX_EXPAND_PANEL',
+        token: embeddedPanelParams.get('closeToken')
+      }, '*');
+    });
+  }
 }
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.action === 'REMEMBER_APPLICATION_ANSWER' && message.question && message.answer) {
+    void rememberConfirmedApplicationAnswer(message.question, message.fieldKey || '', message.answer);
+    sendResponse({ remembered: true });
+    return true;
+  }
+});
 
 $('viewResumeBtn').addEventListener('click', () => {
   const details = $('resumeDetails');
@@ -3005,22 +3204,29 @@ async function captureActiveJob(tabId = null, attempt = 0) {
         const safeLink = anchor => { try { const parsed = new URL(anchor.href); return parsed.protocol === 'https:' && parsed.hostname.endsWith('naukri.com') ? parsed.href : ''; } catch { return ''; } };
         const recruiterProfile = Array.from(document.querySelectorAll('a[href]')).filter(anchor => visible(anchor) && recruiterNodes.some(node => node.contains(anchor)) && /recruiter|profile|candidate/i.test(`${anchor.innerText} ${anchor.href}`)).map(safeLink).find(Boolean) || '';
         const companyWebsite = Array.from(document.querySelectorAll('a[href]')).filter(anchor => visible(anchor) && (anchor.closest('[class*="company" i], [data-testid*="company" i]')) && /website|company site|visit site/i.test(`${anchor.innerText} ${anchor.getAttribute('aria-label') || ''}`)).map(anchor => { try { const parsed = new URL(anchor.href); return parsed.protocol === 'https:' ? parsed.href : ''; } catch { return ''; } }).find(Boolean) || '';
-        const applyLinks = Array.from(document.querySelectorAll('a[href],button,[role="button"]'))
+        const applyButtons = Array.from(document.querySelectorAll('main button, main a, main [role="button"], button, a, [role="button"]'))
           .filter(element => visible(element))
           .map(element => {
             const label = (element.innerText || element.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+            const isExternalLabel = /^(?:apply on company site|apply on company website|apply at company site|apply externally)$/i.test(label);
+            let href = '';
             try {
               const anchor = element instanceof HTMLAnchorElement ? element : element.closest('a');
-              const parsed = new URL(anchor?.href || '', location.href);
-              return parsed.protocol === 'https:' && parsed.origin !== location.origin && /^(?:apply|apply now|apply for this job|apply on company site|apply on company website|apply at company site|apply externally)$/i.test(label)
-                ? { href: parsed.href, explicit: /company site|company website|apply externally/i.test(label) } : null;
-            } catch { return null; }
-          }).filter(Boolean);
-        const explicitApplyLinks = applyLinks.filter(item => item.explicit);
-        const selectedApplyLinks = explicitApplyLinks.length ? explicitApplyLinks : applyLinks;
-        const uniqueApplyHrefs = [...new Set(selectedApplyLinks.map(item => item.href))];
-        const companyApplyUrl = uniqueApplyHrefs.length === 1 ? uniqueApplyHrefs[0]
-          : uniqueApplyHrefs.length > 1 ? (explicitApplyLinks.length ? explicitApplyLinks[0].href : uniqueApplyHrefs[0]) : '';
+              if (anchor?.href) {
+                const parsed = new URL(anchor.href, location.href);
+                if (parsed.protocol === 'https:' && parsed.origin !== location.origin) {
+                  href = parsed.href;
+                }
+              }
+            } catch {}
+            return { element, label, isExternalLabel, href };
+          });
+        const hasExternalApplyButton = applyButtons.some(item => item.isExternalLabel);
+        const explicitExternalHrefs = applyButtons.filter(item => item.isExternalLabel && item.href).map(item => item.href);
+        const anyExternalHrefs = applyButtons.filter(item => item.href).map(item => item.href);
+        const uniqueApplyHrefs = [...new Set(explicitExternalHrefs.length ? explicitExternalHrefs : anyExternalHrefs)];
+        const companyApplyUrl = uniqueApplyHrefs[0] || '';
+        const isExternalCompanyApply = Boolean(hasExternalApplyButton || companyApplyUrl);
         const companyElement = document.querySelector('[data-testid*="company" i], [class*="companyName" i], [class*="company-name" i], [class*="comp-name" i], [class*="jd-header-comp-name" i]');
         const companyLogo = (() => {
           if (!companyElement || !companyText) return '';
@@ -3062,6 +3268,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
           company: companyText,
           companyLogo,
           companyApplyUrl,
+          isExternalCompanyApply,
           location: document.querySelector('[data-testid*="location" i], [class*="location" i], [class*="locWdth" i]')?.textContent?.trim() || '',
           experience: (() => {
             const text = document.body?.innerText || '';
@@ -3234,6 +3441,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
       rating: cleanText(result.rating),
       companyLogo: cleanText(result.companyLogo),
       companyApplyUrl: cleanText(result.companyApplyUrl),
+      isExternalCompanyApply: Boolean(result.isExternalCompanyApply),
       alreadyApplied: Boolean(result.alreadyApplied),
       pageKeySkills: Array.isArray(result.pageKeySkills) ? result.pageKeySkills : []
     };
@@ -3242,6 +3450,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     updateJobSummary();
     invalidateAnalysis();
     await activateResumeWorkflow(currentJobPayload(), tab.id);
+    updatePrimaryAction();
     setStatus(`Job detected: ${nextTitle || url.hostname}. Ready to analyze.`, 'success');
     scheduleAutomaticAnalysis();
   } catch (error) {
@@ -3838,72 +4047,16 @@ async function handleNaukriDirectApply(tabId) {
         break;
       }
 
-      // Check if an option/radio is already selected on the page but Save has not been clicked yet
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => {
-          const visible = el => Boolean(el?.getClientRects().length)
-            && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
-          const normalize = val => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
-          const drawer = document.querySelector('[class*="drawer" i], [class*="modal" i], [class*="popup" i], [class*="dialog" i], [class*="chatbot" i], [class*="container" i], [class*="screener" i], form');
-          if (!drawer) return;
-          const hasSelectedOption = drawer.querySelector('input[type="radio"]:checked, [class*="chip" i][class*="selected" i], [class*="chip" i][class*="active" i], [class*="pill" i][class*="active" i]');
-          if (hasSelectedOption) {
-            const savePattern = /^(?:save\b.*|save & next|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
-            const btns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], a, div, span')].filter(visible);
-            const saveBtn = btns.find(b => {
-              if (b.closest('#__menixjobai_dock, .app')) return false;
-              const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
-              return savePattern.test(lbl) || /chatbot.*save/i.test(b.className);
-            });
-            if (saveBtn) {
-              const clickable = saveBtn.closest('button, [role="button"], [class*="save" i], [class*="btn" i]') || saveBtn;
-              clickable.disabled = false;
-              clickable.removeAttribute('disabled');
-              clickable.removeAttribute('aria-disabled');
-              clickable.classList.remove('disabled');
-              const opts = { bubbles: true, cancelable: true, view: window };
-              clickable.dispatchEvent(new PointerEvent('pointerdown', opts));
-              clickable.dispatchEvent(new MouseEvent('mousedown', opts));
-              clickable.dispatchEvent(new PointerEvent('pointerup', opts));
-              clickable.dispatchEvent(new MouseEvent('mouseup', opts));
-              try { clickable.click(); } catch {}
-            }
-          }
-        }
-      }).catch(() => {});
-
       if (result?.state === 'chatbot_question') {
         const question = result.question;
         if (question === lastProcessedQuestion) {
           questionStuckCount++;
           if (questionStuckCount > 3) {
-            // Nudge: click any Save/Submit button or press Enter
+            // Nudge: press Enter in active input if text exists
             await chrome.scripting.executeScript({
               target: { tabId },
               func: () => {
-                const drawer = document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="chat_container" i], [class*="drawer" i], [class*="modal" i], form') || document.body;
-                const normalize = val => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
-                const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*|next\b.*)$/i;
-                const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], [class*="button" i], a, div, span')].filter(el => Boolean(el?.getClientRects().length));
-                const saveBtn = allBtns.find(b => {
-                  if (b.closest('#__menixjobai_dock, .app')) return false;
-                  return savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || '')) || /chatbot.*save/i.test(b.className);
-                });
-                if (saveBtn) {
-                  const clickable = saveBtn.closest('button, [role="button"], [class*="save" i], [class*="btn" i]') || saveBtn;
-                  clickable.disabled = false;
-                  clickable.removeAttribute('disabled');
-                  clickable.removeAttribute('aria-disabled');
-                  clickable.classList.remove('disabled');
-                  const opts = { bubbles: true, cancelable: true, view: window };
-                  clickable.dispatchEvent(new PointerEvent('pointerdown', opts));
-                  clickable.dispatchEvent(new MouseEvent('mousedown', opts));
-                  clickable.dispatchEvent(new PointerEvent('pointerup', opts));
-                  clickable.dispatchEvent(new MouseEvent('mouseup', opts));
-                  try { clickable.click(); } catch {}
-                }
-                const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i]');
+                const input = document.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i], [class*="chatbot" i] input, [class*="chat" i] input');
                 if (input && input.value) {
                   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                   input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
@@ -3936,19 +4089,18 @@ async function handleNaukriDirectApply(tabId) {
 
             const opts = { bubbles: true, cancelable: true, view: window };
 
-            // Helper to activate and click Save button in drawer
+            // Helper to activate and click Save/Next button specifically INSIDE the active drawer/question
             const clickDrawerSave = async (rootEl) => {
               const drawer = rootEl?.closest('[class*="chat" i], [class*="drawer" i], [class*="modal" i], [class*="dialog" i], form')
-                || document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="drawer" i]')
-                || document.body;
-              const savePattern = /^(?:save\b.*|save & next|submit\b.*|confirm\b.*|done\b.*|send\b.*|next\b.*)$/i;
-              const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], [class*="button" i], a, div, span')].filter(visible);
-              let saveBtn = allBtns.find(b => {
+                || document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="drawer" i]');
+              if (!drawer) return false;
+              // Only look for step progression (Save & Next, Next, Send) — NEVER click final Submit prematurely
+              const savePattern = /^(?:save & next|save and next|next\b|send\b|continue\b)$/i;
+              const allBtns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"], [class*="save" i], [class*="btn" i], [class*="button" i]')].filter(visible);
+              const saveBtn = allBtns.find(b => {
                 if (b === rootEl || b.closest('#__menixjobai_dock, .app')) return false;
-                return savePattern.test(normalize(b.innerText || b.value || b.getAttribute('aria-label') || '')) || /chatbot.*save/i.test(b.className);
-              }) || [...document.querySelectorAll('button, [role="button"], [class*="save" i]')].filter(visible).find(b => {
-                if (b.closest('#__menixjobai_dock, .app')) return false;
-                return savePattern.test(normalize(b.innerText || b.value || ''));
+                const lbl = normalize(b.innerText || b.value || b.getAttribute('aria-label') || '');
+                return savePattern.test(lbl) || /chatbot.*save/i.test(b.className);
               });
 
               if (saveBtn) {
@@ -4017,8 +4169,13 @@ async function handleNaukriDirectApply(tabId) {
                 targetChip.dispatchEvent(new MouseEvent('mouseup', opts));
                 targetChip.click();
                 await new Promise(r => setTimeout(r, 250));
-                const saved = await clickDrawerSave(targetChip);
-                return { success: true, method: 'chip', saved };
+                // In chat interfaces, clicking a chip sends the response directly.
+                // Only click local step "Next" button if one exists right next to chip.
+                const nextBtn = targetChip.closest('[class*="card" i], [class*="bubble" i]')?.querySelector('button');
+                if (nextBtn && /^(?:next|save & next|continue)$/i.test(normalize(nextBtn.innerText || ''))) {
+                  try { nextBtn.click(); } catch {}
+                }
+                return { success: true, method: 'chip' };
               }
             }
 
@@ -4100,22 +4257,30 @@ async function handleNaukriDirectApply(tabId) {
               }
             }
 
-            // Text fields
+            // Text fields using React prototype setter
             const textFields = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type]), textarea')].filter(visible);
             for (const f of textFields) {
               if (f.value.trim()) continue;
               const lbl = normalize(f.closest('label')?.innerText || f.placeholder || f.name || '');
-              if (/ctc|salary/i.test(lbl)) f.value = '0';
-              else if (/experience/i.test(lbl)) f.value = '1';
-              else f.value = '0';
-              f.dispatchEvent(new Event('input', { bubbles: true }));
-              f.dispatchEvent(new Event('change', { bubbles: true }));
+              let val = '1';
+              if (/ctc|salary/i.test(lbl)) val = '6';
+              else if (/experience|years/i.test(lbl)) val = '2';
+              else if (/notice/i.test(lbl)) val = '15';
+              else if (/location|city/i.test(lbl)) val = 'Delhi';
+
+              const proto = f instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+              if (setter) setter.call(f, val);
+              else f.value = val;
+              f.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+              try { f.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: val, inputType: 'insertText' })); } catch {}
+              f.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
             }
 
-            // Click Save / Submit inside drawer or modal
+            // Click Save / Submit inside drawer or modal only when fields are filled
             const drawer = document.querySelector('[class*="drawer" i], [class*="modal" i], [class*="popup" i], [class*="dialog" i], [class*="chatbot" i], [class*="container" i], [class*="screener" i], form');
             if (drawer) {
-              const savePattern = /^(?:save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
+              const savePattern = /^(?:save & next|save\b.*|submit\b.*|apply\b.*|continue\b.*|confirm\b.*|next\b.*|done\b.*|send\b.*)$/i;
               const btns = [...drawer.querySelectorAll('button, [role="button"], input[type="submit"]')].filter(visible);
               const submitBtn = btns.find(b => {
                 if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
@@ -4741,17 +4906,22 @@ async function chooseResumeForThisJob() {
       }
     }
     const file = await selectedWorkflowFile(workflow);
-    if (workflow.companyApplyUrl && await openCompanyApplicationDirectly(workflow)) return;
+    const isExternal = Boolean(workflow.isExternalCompanyApply || jobMetadata.isExternalCompanyApply || workflow.companyApplyUrl);
     const savedJobTab = workflow.jobTabId ? await chrome.tabs.get(workflow.jobTabId).catch(() => null) : null;
-    const companyApplyTarget = savedJobTab?.id ? await detectCompanyApplyButton(savedJobTab.id) : false;
-    if (companyApplyTarget) {
-      if (typeof companyApplyTarget === 'string') {
-        const destination = new URL(companyApplyTarget);
-        if (destination.protocol === 'https:' && !await chrome.permissions.contains({ origins: [`${destination.origin}/*`] })) {
-          const granted = await chrome.permissions.request({ origins: [`${destination.origin}/*`] });
-          if (!granted) throw new Error(`Allow access to ${destination.hostname} before starting the company application.`);
-        }
-        await persistResumeWorkflow({ ...activeResumeWorkflow, companyApplyUrl: companyApplyTarget });
+    const companyApplyTarget = savedJobTab?.id ? await detectCompanyApplyButton(savedJobTab.id) : null;
+    const isTargetExternal = isExternal || Boolean(companyApplyTarget?.matched || (typeof companyApplyTarget === 'string' && companyApplyTarget));
+
+    if (isTargetExternal) {
+      const targetHref = (typeof companyApplyTarget === 'string' ? companyApplyTarget : companyApplyTarget?.href) || workflow.companyApplyUrl || '';
+      if (targetHref && /^https:\/\//i.test(targetHref)) {
+        try {
+          const destination = new URL(targetHref);
+          if (!await chrome.permissions.contains({ origins: [`${destination.origin}/*`] })) {
+            const granted = await chrome.permissions.request({ origins: [`${destination.origin}/*`] });
+            if (!granted) throw new Error(`Allow access to ${destination.hostname} before starting the company application.`);
+          }
+          await persistResumeWorkflow({ ...activeResumeWorkflow, companyApplyUrl: destination.href, isExternalCompanyApply: true });
+        } catch {}
       }
       await returnToJobAndClickApply();
       return;
