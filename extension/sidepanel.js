@@ -6364,9 +6364,8 @@ function renderSkillBreakdown(result) {
   }
   $('matchedSkillsHeading').textContent = `Matched Skills (${tech.length})`;
   renderChipList($('matchedSkillsList'), tech, 'matched', 'No direct technical skills matched.');
-  renderChipList($('softSkillsList'), soft, 'soft');
-  $('softSkillSummary').textContent = `+${soft.length} soft skill${soft.length === 1 ? '' : 's'}`;
-  // softSkillsDetails removed
+  if ($('softSkillsList')) renderChipList($('softSkillsList'), soft, 'soft');
+  if ($('softSkillSummary')) $('softSkillSummary').textContent = `+${soft.length} soft skill${soft.length === 1 ? '' : 's'}`;
   const equivalents = (Array.isArray(result.equivalentSkills) ? result.equivalentSkills : [])
     .filter(item => item && typeof item === 'object')
     .map(item => [item.required, item.evidence].filter(Boolean).join(' — '))
@@ -6413,6 +6412,7 @@ function isNonSkillLabel(value) {
 
 function renderRequirementEvidence(requirements) {
   const root = $('matchEvidenceList');
+  if (!root) return;
   root.replaceChildren();
   const checked = requirements.filter(item => item?.name).slice(0, 30);
   const details = document.createElement('details'); details.className = 'match-evidence';
@@ -6433,6 +6433,7 @@ function renderRequirementEvidence(requirements) {
 }
 
 function renderChipList(list, values, tone, emptyText = 'None found') {
+  if (!list) return;
   list.replaceChildren();
   if (!values.length) {
     if (!emptyText) return;
@@ -6474,13 +6475,13 @@ function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') {
   $('aiAssessment').textContent = '';
   renderFitChecks([]);
   renderImprovementAreas({ missingSkills: [], missingKeywords: [] });
-  ['matchedSkillsList', 'softSkillsList', 'equivalentSkillsList', 'missingSkillsList', 'missingKeywordsList'].forEach(id => $(id).replaceChildren());
-  $('matchEvidenceList').replaceChildren();
-  $('matchedSkillsHeading').textContent = 'Matched Skills (0)';
-  $('missingSkillsHeading').textContent = 'Missing Skills (0)';
-  $('relatedKeywordsGroup').classList.add('hidden');
-  $('equivalentSkillsGroup').classList.add('hidden');
-  $('softSkillsDetails').classList.add('hidden');
+  ['matchedSkillsList', 'equivalentSkillsList', 'missingSkillsList', 'missingKeywordsList'].forEach(id => $(id)?.replaceChildren());
+  $('matchEvidenceList')?.replaceChildren();
+  if ($('matchedSkillsHeading')) $('matchedSkillsHeading').textContent = 'Matched Skills (0)';
+  if ($('missingSkillsHeading')) $('missingSkillsHeading').textContent = 'Missing Skills (0)';
+  $('relatedKeywordsGroup')?.classList.add('hidden');
+  $('equivalentSkillsGroup')?.classList.add('hidden');
+  $('softSkillsDetails')?.classList.add('hidden');
   $('suggestionsSummaryHint').textContent = 'Open to load';
 }
 
