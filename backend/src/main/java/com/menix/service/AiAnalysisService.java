@@ -47,7 +47,7 @@ public class AiAnalysisService {
     private final Set<String> profilesInFlight = ConcurrentHashMap.newKeySet();
 
     @Value("${menix.gemini.api-key:}") private String apiKey;
-    @Value("${menix.gemini.model:gemini-2.5-flash}") private String model = "gemini-2.5-flash";
+    @Value("${menix.gemini.model:gemini-flash-lite-latest}") private String model = "gemini-flash-lite-latest";
     @Value("${menix.gemini.diagnostics-token:}") private String diagnosticsToken;
 
     public AiAnalysisService(RestClient restClient, ObjectMapper mapper,
@@ -543,8 +543,9 @@ public class AiAnalysisService {
         }
         List<String> modelsToTry = new ArrayList<>();
         modelsToTry.add(model);
-        if (!"gemini-2.5-flash-lite".equalsIgnoreCase(model)) modelsToTry.add("gemini-2.5-flash-lite");
-        if (!"gemini-1.5-flash".equalsIgnoreCase(model)) modelsToTry.add("gemini-1.5-flash");
+        if (!"gemini-flash-lite-latest".equalsIgnoreCase(model)) modelsToTry.add("gemini-flash-lite-latest");
+        if (!"gemini-3.5-flash-lite".equalsIgnoreCase(model)) modelsToTry.add("gemini-3.5-flash-lite");
+        if (!"gemini-3.5-flash".equalsIgnoreCase(model)) modelsToTry.add("gemini-3.5-flash");
 
         Map<String, Object> generation = generationConfig(schema, maxTokens, true, true, overview);
         Map<String, Object> payload = buildGeminiRequest(prompt, generation);

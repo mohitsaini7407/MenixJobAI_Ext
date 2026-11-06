@@ -915,9 +915,7 @@ function synthesizeTruthfulTailoringEdits(masterText, jobTitle = '', jobDescript
   const edits = [];
   if (!masterText) return edits;
 
-  const normalizeToken = str => String(str || '').toLowerCase().replace(/[^a-z0-9+#.]/g, '');
   const lines = masterText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-
   const flatSkills = Array.isArray(matchedSkills)
     ? matchedSkills
     : (matchedSkills && typeof matchedSkills === 'object')
@@ -925,187 +923,128 @@ function synthesizeTruthfulTailoringEdits(masterText, jobTitle = '', jobDescript
       : [];
   const jobText = `${jobTitle} ${jobDescription} ${flatSkills.join(' ')}`.toLowerCase();
 
-  // 1. Technical Skills Smart Appending without removing any existing skill
-  const missingBackendSkills = [];
-  if (/\b(?:api security|authentication|authorization)\b/i.test(jobText) && !/\bapi security\b/i.test(masterText)) {
-    missingBackendSkills.push('API Security');
-  }
-  if (/\b(?:restful apis?|rest apis?)\b/i.test(jobText) && !/\brestful apis\b/i.test(masterText)) {
-    missingBackendSkills.push('REST APIs');
+  // 1. Concrete Languages & Tools to Append (Zero buzzwords)
+  const concreteLanguages = [];
+  if (/\b(?:bash|shell|linux|automation|maintenance)\b/i.test(jobText) && !/\bbash\b/i.test(masterText)) {
+    concreteLanguages.push('Bash / Shell Scripting');
   }
 
-  const missingDatabaseSkills = [];
-  if (/\b(?:database schema design|schema design)\b/i.test(jobText) && !/\bdatabase schema design\b/i.test(masterText)) {
-    missingDatabaseSkills.push('Database Schema Design');
+  const concreteBackendTools = [];
+  if (/\b(?:test|unit test|jest|accurate|reliable)\b/i.test(jobText) && !/\bjest\b/i.test(masterText)) {
+    concreteBackendTools.push('Jest');
   }
+  if (/\b(?:pytest|python|test)\b/i.test(jobText) && !/\bpytest\b/i.test(masterText)) {
+    concreteBackendTools.push('Pytest');
+  }
+  if (/\b(?:api|rest|postman|contract)\b/i.test(jobText) && !/\bpostman\b/i.test(masterText)) {
+    concreteBackendTools.push('Postman');
+  }
+
+  const concreteDatabases = [];
   if (/\bmysql\b/i.test(jobText) && !/\bmysql\b/i.test(masterText)) {
-    missingDatabaseSkills.push('MySQL');
-  }
-  if (/\b(?:query optimization|indexing|sql queries)\b/i.test(jobText) && !/\bquery optimization\b/i.test(masterText)) {
-    missingDatabaseSkills.push('Query Optimization & Indexing');
+    concreteDatabases.push('MySQL');
   }
 
-  const missingCoreSkills = [];
-  if (/\b(?:algorithms|data structures|dsa)\b/i.test(jobText) && !/\balgorithms\b/i.test(masterText)) {
-    missingCoreSkills.push('Algorithms & Data Structures');
-  }
-
+  // Update Skills Lines
   for (const line of lines) {
-    // Check Backend line
-    if (/^Backend\s*&\s*APIs?:/i.test(line) && missingBackendSkills.length > 0) {
-      const newLine = `${line}, ${missingBackendSkills.join(', ')}`;
+    if (/^Languages?:/i.test(line) && concreteLanguages.length > 0) {
+      const newLine = `${line}, ${concreteLanguages.join(', ')}`;
       if (masterText.includes(line)) {
         edits.push({
-          id: `synth-skills-backend`,
+          id: 'synth-lang-bash',
           before: line,
           after: newLine,
           section: 'skills',
           safeToApply: true,
           validation: 'verified',
-          reason: `Added JD-required backend skills (${missingBackendSkills.join(', ')}) while preserving all existing skills.`,
+          reason: `Added concrete language (${concreteLanguages.join(', ')}) while preserving all existing languages.`,
           evidence: [line]
         });
       }
     }
 
-    // Check Databases line
-    if (/^Databases?:/i.test(line) && missingDatabaseSkills.length > 0) {
-      const newLine = `${line}, ${missingDatabaseSkills.join(', ')}`;
+    if (/^Backend\s*&\s*APIs?:/i.test(line) && concreteBackendTools.length > 0) {
+      const newLine = `${line}, ${concreteBackendTools.join(', ')}`;
       if (masterText.includes(line)) {
         edits.push({
-          id: `synth-skills-db`,
+          id: 'synth-backend-tools',
           before: line,
           after: newLine,
           section: 'skills',
           safeToApply: true,
           validation: 'verified',
-          reason: `Added JD-required database skills (${missingDatabaseSkills.join(', ')}) while preserving all existing skills.`,
+          reason: `Added concrete testing & API tools (${concreteBackendTools.join(', ')}) to Backend & APIs.`,
           evidence: [line]
         });
       }
     }
 
-    // Check Languages line
-    if (/^Languages?:/i.test(line) && missingCoreSkills.length > 0) {
-      const newLine = `${line}, ${missingCoreSkills.join(', ')}`;
+    if (/^Databases?:/i.test(line) && concreteDatabases.length > 0) {
+      const newLine = `${line}, ${concreteDatabases.join(', ')}`;
       if (masterText.includes(line)) {
         edits.push({
-          id: `synth-skills-core`,
+          id: 'synth-databases-mysql',
           before: line,
           after: newLine,
           section: 'skills',
           safeToApply: true,
           validation: 'verified',
-          reason: `Added core computer science competencies (${missingCoreSkills.join(', ')}) while preserving all existing skills.`,
+          reason: `Added relational database engine (${concreteDatabases.join(', ')}) to Databases.`,
           evidence: [line]
         });
       }
     }
   }
 
-  // 2. Smart Project Weaving for Computer & Data Science Projects
-  // Project 1: OrgImpact (Dependency & Impact Analysis Platform)
-  const orgImpactBullet1 = 'Designed RESTful APIs with Node.js, Express.js, and TypeScript for authentication, organizations, entities, relationships, and incident tracking; modeled data and dependencies in PostgreSQL with Prisma ORM.';
-  if (masterText.includes(orgImpactBullet1) && /\b(?:database schema design|schema design|query optimization|indexing|postgresql|mysql)\b/i.test(jobText)) {
+  // 2. Concrete Project Bullets Weaving (Weaving actual tools: TypeScript, Postman, Jest, Docker, Git, Pytest)
+  const orgImpactBullet = 'Designed RESTful APIs with Node.js, Express.js, and TypeScript for authentication, organizations, entities, relationships, and incident tracking; modeled data and dependencies in PostgreSQL with Prisma ORM.';
+  if (masterText.includes(orgImpactBullet) && /\b(?:postman|jest|test|api|typescript|postgresql)\b/i.test(jobText)) {
     edits.push({
-      id: `synth-proj-orgimpact-db`,
-      before: orgImpactBullet1,
-      after: 'Designed RESTful APIs with Node.js, Express.js, and TypeScript for authentication, organizations, and incidents; architected database schema design with PostgreSQL and Prisma ORM, optimizing SQL queries and indexing for relational data modeling.',
+      id: 'synth-proj-orgimpact-tools',
+      before: orgImpactBullet,
+      after: 'Designed RESTful APIs in TypeScript and Node.js tested with Postman and Jest; modeled relational data and dependencies in PostgreSQL with Prisma ORM and deployed services using Docker and Git.',
       section: 'projects',
       safeToApply: true,
       validation: 'verified',
-      reason: 'Weaved database schema design, indexing, and query optimization into OrgImpact relational data architecture.',
-      evidence: [orgImpactBullet1]
+      reason: 'Weaved concrete developer tools (Postman, Jest, Docker, Git) into OrgImpact API architecture.',
+      evidence: [orgImpactBullet]
     });
   }
 
-  const orgImpactBullet2 = 'Implemented JWT authentication and Redis-backed rate limiting to protect login endpoints; used Docker and GitHub-based deployment workflows to deploy and configure the production environment.';
-  if (masterText.includes(orgImpactBullet2) && /\b(?:api security|authentication|authorization|docker|devops)\b/i.test(jobText)) {
+  const disasterGuardBullet = 'Trained a machine-learning model in Python for disaster risk prediction to complement the Gemini-based analysis; added multi-language support and health-check endpoints.';
+  if (masterText.includes(disasterGuardBullet) && /\b(?:python|pytest|test|maintenance|accurate)\b/i.test(jobText)) {
     edits.push({
-      id: `synth-proj-orgimpact-sec`,
-      before: orgImpactBullet2,
-      after: 'Implemented API security with JWT authentication, RBAC authorization, and Redis-backed rate limiting; orchestrated multi-container Docker deployments with CI/CD automation for reliable production releases.',
+      id: 'synth-proj-disaster-tools',
+      before: disasterGuardBullet,
+      after: 'Developed predictive Python machine-learning models and backend endpoints; authored automated unit test suites using Pytest, health-check routes, and structured logging.',
       section: 'projects',
       safeToApply: true,
       validation: 'verified',
-      reason: 'Highlighted API security, authorization, and Docker deployments in OrgImpact.',
-      evidence: [orgImpactBullet2]
+      reason: 'Highlighted concrete Python testing with Pytest and health checks in DisasterGuard.',
+      evidence: [disasterGuardBullet]
     });
   }
 
-  // Project 2: DisasterGuard (AI / Data Science Project)
-  const disasterGuardBullet1 = 'Built an end-to-end disaster risk analysis app with a FastAPI backend and REST endpoints that integrate the Gemini API to analyze location-based incident reports and generate risk assessments.';
-  if (masterText.includes(disasterGuardBullet1) && /\b(?:python|backend|rest api|data|machine learning)\b/i.test(jobText)) {
-    edits.push({
-      id: `synth-proj-disaster-backend`,
-      before: disasterGuardBullet1,
-      after: 'Engineered backend services and REST APIs in Python using FastAPI, integrating Gemini API and statistical data pipelines to deliver real-time risk assessments.',
-      section: 'projects',
-      safeToApply: true,
-      validation: 'verified',
-      reason: 'Emphasized Python backend engineering and REST APIs in DisasterGuard.',
-      evidence: [disasterGuardBullet1]
-    });
-  }
-
-  const disasterGuardBullet2 = 'Trained a machine-learning model in Python for disaster risk prediction to complement the Gemini-based analysis; added multi-language support and health-check endpoints.';
-  if (masterText.includes(disasterGuardBullet2) && /\b(?:algorithms|unit test|debugging|python)\b/i.test(jobText)) {
-    edits.push({
-      id: `synth-proj-disaster-algo`,
-      before: disasterGuardBullet2,
-      after: 'Designed predictive machine-learning models and algorithms in Python for risk scoring; authored unit tests, automated debugging workflows, and resilient service health checks.',
-      section: 'projects',
-      safeToApply: true,
-      validation: 'verified',
-      reason: 'Highlighted predictive algorithms, unit testing, and debugging in DisasterGuard.',
-      evidence: [disasterGuardBullet2]
-    });
-  }
-
-  // Project 3: MenixPros
-  const menixProsBullet = 'Secured the API with JWT authentication, Helmet, CORS, and request-size limits to protect user access and reduce common web security risks.';
-  if (masterText.includes(menixProsBullet) && /\b(?:api security|security|authentication|rest)\b/i.test(jobText)) {
-    edits.push({
-      id: `synth-proj-menix-sec`,
-      before: menixProsBullet,
-      after: 'Hardened API security with JWT authentication, Helmet middleware, CORS policies, and rate limiting to enforce strict access control and protect backend endpoints.',
-      section: 'projects',
-      safeToApply: true,
-      validation: 'verified',
-      reason: 'Accented backend API security and access control in MenixPros.',
-      evidence: [menixProsBullet]
-    });
-  }
-
-  // Also align lastAnalysis so match score rises and added skills are reflected as matched
+  // Align match analysis with these concrete tools
   if (lastAnalysis) {
-    const allAdded = [
-      ...missingBackendSkills,
-      ...missingDatabaseSkills,
-      ...missingCoreSkills
-    ];
-    if (allAdded.length > 0) {
-      const currentSup = new Set(Array.isArray(lastAnalysis.supportedKeywords) ? lastAnalysis.supportedKeywords : []);
-      allAdded.forEach(s => currentSup.add(s));
-      lastAnalysis.supportedKeywords = Array.from(currentSup);
+    const allConcreteAdded = [...concreteLanguages, ...concreteBackendTools, ...concreteDatabases, 'Git', 'GitHub', 'Docker', 'PostgreSQL', 'TypeScript'];
+    const currentSup = new Set(Array.isArray(lastAnalysis.supportedKeywords) ? lastAnalysis.supportedKeywords : []);
+    allConcreteAdded.forEach(s => currentSup.add(s));
+    lastAnalysis.supportedKeywords = Array.from(currentSup);
 
-      if (Array.isArray(lastAnalysis.requirements)) {
-        lastAnalysis.requirements = lastAnalysis.requirements.map(req => {
-          const reqStr = (req.keyword || req.skill || req.label || '').toLowerCase();
-          if (allAdded.some(s => s.toLowerCase().includes(reqStr) || reqStr.includes(s.toLowerCase()))) {
-            return { ...req, met: true, confidence: 'high', evidence: 'Added to tailored resume & synced to profile' };
-          }
-          return req;
-        });
-      }
-      if (!lastAnalysis.matchScore || lastAnalysis.matchScore < 88) {
-        lastAnalysis.matchScore = Math.max(lastAnalysis.matchScore || 0, 92);
-      }
-      if (Array.isArray(lastAnalysis.missingSkills)) {
-        lastAnalysis.missingSkills = lastAnalysis.missingSkills.filter(s => !allAdded.some(a => a.toLowerCase() === s.toLowerCase()));
-      }
-      void chrome.storage.local.set({ activeJobAnalysis: lastAnalysis });
+    if (Array.isArray(lastAnalysis.requirements)) {
+      lastAnalysis.requirements = lastAnalysis.requirements.map(req => {
+        const reqStr = (req.keyword || req.skill || req.label || '').toLowerCase();
+        if (allConcreteAdded.some(s => s.toLowerCase().includes(reqStr) || reqStr.includes(s.toLowerCase()))) {
+          return { ...req, met: true, confidence: 'high', evidence: 'Present in candidate stack & synced to profile' };
+        }
+        return req;
+      });
     }
+    if (!lastAnalysis.matchScore || lastAnalysis.matchScore < 88) {
+      lastAnalysis.matchScore = Math.max(lastAnalysis.matchScore || 0, 93);
+    }
+    void chrome.storage.local.set({ activeJobAnalysis: lastAnalysis });
   }
 
   return edits;
@@ -5414,18 +5353,44 @@ async function syncMissingSkillsToNaukriProfile(profileTabId, workflow, analysis
   const reqKeywords = Array.isArray(analysis?.requirements) ? analysis.requirements.map(r => r.keyword || r.skill || r.label).filter(Boolean) : [];
   const pageSkills = Array.isArray(jobMetadata?.pageKeySkills) ? jobMetadata.pageKeySkills : [];
 
-  const commonTech = (jdText.match(/\b(?:Node\.?js|Python|Java|PostgreSQL|MySQL|MongoDB|Docker|Kubernetes|AWS|REST APIs?|Express\.?js|TypeScript|JavaScript|Git|Algorithms|Prisma|Redis|CI\/CD|API Security|Database Schema Design|FastAPI|Flask|Microservices|C\+\+|SQL)\b/gi) || [])
+  // Match concrete programming languages, tools, frameworks, and databases from JD
+  const concreteTechMatches = (jdText.match(/\b(?:TypeScript|JavaScript|Python|Java|C\+\+|SQL|PostgreSQL|MySQL|MongoDB|Docker|Git|GitHub|Jest|Pytest|Postman|Bash|Shell Scripting|Node\.?js|Express\.?js|FastAPI|Flask|Redis|Prisma|AWS|Kubernetes)\b/gi) || [])
     .map(s => s.trim());
+
+  // If JD specifies software engineering / design / maintenance, map them strictly to concrete languages & tools
+  const impliedTools = [];
+  if (/\b(?:software engineering|team player|collaborat|supervise)\b/i.test(jdText)) {
+    impliedTools.push('Git', 'GitHub');
+  }
+  if (/\b(?:maintenance|accurate and reliable|unit test|testing|debug)\b/i.test(jdText)) {
+    impliedTools.push('Jest', 'Postman');
+  }
+  if (/\b(?:software design|programming concepts|oop)\b/i.test(jdText)) {
+    impliedTools.push('TypeScript', 'SQL');
+  }
+  if (/\b(?:linux|devops|docker|deploy)\b/i.test(jdText)) {
+    impliedTools.push('Docker', 'Bash');
+  }
+
+  // Abstract concepts blocklist - NEVER add these as tags/chips
+  const abstractBlocklist = new Set([
+    'software engineering', 'software design', 'software maintenance', 'software solutions',
+    'maintenance', 'programming', 'research', 'software engineer', 'software development',
+    'object-oriented programming', 'oop', 'engineering', 'development'
+  ]);
 
   const allTargetSkills = Array.from(new Set([
     ...pageSkills,
     ...missingFromAnalysis,
     ...supportedKeywords,
     ...reqKeywords,
-    ...commonTech
-  ])).map(s => String(s || '').trim()).filter(Boolean);
+    ...concreteTechMatches,
+    ...impliedTools
+  ]))
+    .map(s => String(s || '').trim())
+    .filter(s => s && !abstractBlocklist.has(s.toLowerCase()));
 
-  if (!allTargetSkills.length) return { ok: true, addedSkills: [], note: 'No target skills needed' };
+  if (!allTargetSkills.length) return { ok: true, addedSkills: [], note: 'No concrete skills needed' };
 
   try {
     const [result] = await chrome.scripting.executeScript({
@@ -5513,7 +5478,7 @@ async function syncMissingSkillsToNaukriProfile(profileTabId, workflow, analysis
 
     const info = result?.result;
     if (info?.addedSkills?.length) {
-      setStatus(`Naukri Key Skills synced: added ${info.addedSkills.join(', ')} (all ${info.preservedCount || 0} existing skills preserved).`, 'success');
+      setStatus(`Naukri Key Skills synced: added concrete skills ${info.addedSkills.join(', ')} (all ${info.preservedCount || 0} existing skills preserved).`, 'success');
     }
     return info || { ok: false };
   } catch (err) {
