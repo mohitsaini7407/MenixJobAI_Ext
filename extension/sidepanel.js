@@ -6269,7 +6269,7 @@ function renderAnalysis(data, source = 'ai') {
     overview.append(unmatchedContainer);
   }
 
-  $('aiAssessment').textContent = result.verdict || 'No overall assessment was returned.';
+  if ($('aiAssessment')) $('aiAssessment').textContent = result.verdict || 'No overall assessment was returned.';
   renderAtsAssessment(result.atsAssessment);
   renderImprovementAreas(result);
   renderFitChecks(result.fitChecks || []);
@@ -6284,6 +6284,7 @@ function renderAnalysis(data, source = 'ai') {
 
 function renderAtsAssessment(assessment) {
   const root = $('atsAssessment');
+  if (!root) return;
   root.replaceChildren();
   const entries = [
     ['Job match', assessment?.jobMatchScore],
@@ -6385,7 +6386,9 @@ function hasFitValue(value) {
 }
 
 function renderImprovementAreas(result) {
-  const list = $('areasToImproveList'); list.replaceChildren();
+  const list = $('areasToImproveList');
+  if (!list) return;
+  list.replaceChildren();
   const missing = normalizeAnalysisItems(result.missingSkills);
   const keywords = meaningfulMissingKeywords(result.missingKeywords, missing);
   const items = [...new Set([...missing, ...keywords])].slice(0, 5);
@@ -6413,8 +6416,8 @@ function renderSkillBreakdown(result) {
     const candidateCoreTech = ['TypeScript', 'JavaScript', 'Python', 'Java', 'C++', 'SQL', 'React', 'Node.js', 'REST APIs', 'Docker', 'Git', 'PostgreSQL'];
     tech = candidateCoreTech.filter(t => resumeText.includes(t.toLowerCase()));
   }
-  $('matchedSkillsHeading').textContent = `Matched Skills (${tech.length})`;
-  renderChipList($('matchedSkillsList'), tech, 'matched', 'No direct technical skills matched.');
+  if ($('matchedSkillsHeading')) $('matchedSkillsHeading').textContent = `Matched Skills (${tech.length})`;
+  if ($('matchedSkillsList')) renderChipList($('matchedSkillsList'), tech, 'matched', 'No direct technical skills matched.');
   if ($('softSkillsList')) renderChipList($('softSkillsList'), soft, 'soft');
   if ($('softSkillSummary')) $('softSkillSummary').textContent = `+${soft.length} soft skill${soft.length === 1 ? '' : 's'}`;
   const equivalents = (Array.isArray(result.equivalentSkills) ? result.equivalentSkills : [])
@@ -6424,13 +6427,15 @@ function renderSkillBreakdown(result) {
   $('equivalentSkillsGroup').classList.toggle('hidden', !equivalents.length);
   renderChipList($('equivalentSkillsList'), equivalents, 'equivalent');
   const missing = cleanSkillLabels(result.missingSkills);
-  $('missingSkillsHeading').textContent = `Missing Skills (${missing.length})`;
-  if (missing.length) renderChipList($('missingSkillsList'), missing, 'missing');
-  else renderChipList($('missingSkillsList'), [], 'empty', 'No important missing technical skills identified.');
+  if ($('missingSkillsHeading')) $('missingSkillsHeading').textContent = `Missing Skills (${missing.length})`;
+  if ($('missingSkillsList')) {
+    if (missing.length) renderChipList($('missingSkillsList'), missing, 'missing');
+    else renderChipList($('missingSkillsList'), [], 'empty', 'No important missing technical skills identified.');
+  }
   const keywords = meaningfulMissingKeywords(result.missingKeywords, missing);
-  $('relatedKeywordsGroup').classList.toggle('hidden', !keywords.length);
-  $('relatedKeywordsHeading').textContent = `Related Keywords (${keywords.length})`;
-  renderChipList($('missingKeywordsList'), keywords, 'keyword');
+  if ($('relatedKeywordsGroup')) $('relatedKeywordsGroup').classList.toggle('hidden', !keywords.length);
+  if ($('relatedKeywordsHeading')) $('relatedKeywordsHeading').textContent = `Related Keywords (${keywords.length})`;
+  if ($('missingKeywordsList')) renderChipList($('missingKeywordsList'), keywords, 'keyword');
   // renderRequirementEvidence removed
 
   // Populate Naukri Recruiter Visibility Booster
@@ -6523,7 +6528,7 @@ function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') {
   state.textContent = stateLabel;
   header.append(titleStack, state);
   overview.append(header);
-  $('aiAssessment').textContent = '';
+  if ($('aiAssessment')) $('aiAssessment').textContent = '';
   renderFitChecks([]);
   renderImprovementAreas({ missingSkills: [], missingKeywords: [] });
   ['matchedSkillsList', 'equivalentSkillsList', 'missingSkillsList', 'missingKeywordsList'].forEach(id => $(id)?.replaceChildren());
