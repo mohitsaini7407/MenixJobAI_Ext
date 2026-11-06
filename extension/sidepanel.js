@@ -6249,31 +6249,25 @@ function renderAnalysis(data, source = 'ai') {
 
   breakdown.append(chipsContainer);
 
-  // Show unmatched fit checks right below skills chips in the top card
+  layout.append(scoreColumn, breakdown);
+  overview.append(layout);
+
+  // Unmatched fit checks: outside skills section, placed directly below both score circle & skills in the same Match Analysis section
   const fitChecks = Array.isArray(result.fitChecks) ? result.fitChecks : [];
-  const topUnmatched = fitChecks
+  const unmatched = fitChecks
     .map(item => createFitCheckElement(item))
     .filter(res => res.isMismatch);
 
-  if (topUnmatched.length > 0) {
-    const summaryBox = document.createElement('div');
-    summaryBox.className = 'unmatched-fit-summary';
-    summaryBox.style.cssText = 'margin-top:8px;padding:6px 10px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;display:grid;gap:3px;';
-    const alertHead = document.createElement('div');
-    alertHead.style.cssText = 'font-size:11px;font-weight:700;color:#dc2626;display:flex;align-items:center;gap:4px;';
-    alertHead.innerHTML = `<span>⚠️ ${topUnmatched.length} Unmatched Fit Check${topUnmatched.length > 1 ? 's' : ''}:</span>`;
-    summaryBox.append(alertHead);
-    topUnmatched.forEach(u => {
-      const line = document.createElement('div');
-      line.style.cssText = 'font-size:11px;color:#991b1b;line-height:1.35;';
-      line.innerHTML = `<strong>${u.typeLabel}</strong>: ${u.note || (u.required ? 'Req: ' + u.required : 'Does not match')}`;
-      summaryBox.append(line);
+  if (unmatched.length > 0) {
+    const unmatchedContainer = document.createElement('div');
+    unmatchedContainer.className = 'overview-unmatched-fit-checks fit-checks-list';
+    unmatchedContainer.style.cssText = 'margin-top: 10px; display: grid; gap: 8px; width: 100%;';
+    unmatched.forEach(u => {
+      const element = createFitCheckElement(u.item).row;
+      unmatchedContainer.append(element);
     });
-    breakdown.append(summaryBox);
+    overview.append(unmatchedContainer);
   }
-
-  layout.append(scoreColumn, breakdown);
-  overview.append(layout);
 
   $('aiAssessment').textContent = result.verdict || 'No overall assessment was returned.';
   renderAtsAssessment(result.atsAssessment);
@@ -6353,7 +6347,7 @@ function createFitCheckElement(item) {
   candidateLine.append(candidateLabel, document.createTextNode(hasCandidate ? candidate : 'Not specified'));
   const requiredLine = document.createElement('p');
   const requiredLabel = document.createElement('strong');
-  requiredLabel.textContent = 'Job requirement: ';
+  requiredLabel.textContent = 'Job Requirement: ';
   requiredLine.append(requiredLabel, document.createTextNode(hasRequired ? required : 'Not specified'));
   const note = document.createElement('p');
   note.className = 'fit-result-note';
@@ -6362,14 +6356,12 @@ function createFitCheckElement(item) {
   body.append(title, candidateLine, requiredLine, note);
   row.append(icon, body);
 
-  return { row, status, rawStatus, isMismatch, typeLabel, note: note.textContent, candidate: hasCandidate ? candidate : '', required: hasRequired ? required : '' };
+  return { row, status, rawStatus, isMismatch, typeLabel, note: note.textContent, candidate: hasCandidate ? candidate : '', required: hasRequired ? required : '', item };
 }
 
 function renderFitChecks(items) {
   const list = $('fitChecksList');
   if (list) list.replaceChildren();
-  const unmatchedList = $('unmatchedFitChecksList');
-  if (unmatchedList) unmatchedList.replaceChildren();
 
   items = Array.isArray(items) ? items.filter(item => item && typeof item === 'object') : [];
   if (!items.length) {
@@ -6378,34 +6370,13 @@ function renderFitChecks(items) {
       empty.textContent = 'Fit checks will appear when the analysis includes eligibility details.';
       list.append(empty);
     }
-    if ($('unmatchedFitChecksSection')) $('unmatchedFitChecksSection').classList.add('hidden');
     return;
   }
-
-  const unmatchedItems = [];
 
   items.forEach(item => {
     const res = createFitCheckElement(item);
     if (list) list.append(res.row);
-    if (res.isMismatch) {
-      unmatchedItems.push(item);
-      if (unmatchedList) {
-        const unmatchedRow = createFitCheckElement(item).row;
-        unmatchedList.append(unmatchedRow);
-      }
-    }
   });
-
-  const section = $('unmatchedFitChecksSection');
-  if (section) {
-    if (unmatchedItems.length > 0) {
-      section.classList.remove('hidden');
-      const badge = $('unmatchedFitChecksBadge');
-      if (badge) badge.textContent = `${unmatchedItems.length}`;
-    } else {
-      section.classList.add('hidden');
-    }
-  }
 }
 
 function hasFitValue(value) {
