@@ -2197,7 +2197,7 @@ async function autoFillCompanyApplication(tabId) {
     // --- STEP 4: Fill form questions (multi-page pagination loop) ---
     for (let formPage = 0; formPage < 6; formPage++) {
       setStatus(`Filling application form${formPage > 0 ? ` (page ${formPage + 1})` : ''}…`, 'info');
-      await suggestApplicationAnswers(activeTabId);
+      await suggestApplicationAnswers(activeTabId); await delay(300); const afs = [...$('applicationAnswersList').querySelectorAll('textarea[data-answer-id]')]; const fids = afs.map(f => f.dataset.answerId).filter(Boolean); if (fids.length) await fillReviewedApplicationAnswers(fids);
       await delay(600);
 
       // Check if there is a "Next" / "Continue" button (not a final submit)
@@ -2603,21 +2603,20 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           return found;
         };
         for (const item of values) {
-          const drawer = document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="chat_container" i], [class*="drawer" i], [class*="apply-message" i], [class*="modal" i], [role="dialog"]') || document.body;
+          const drawer = document.querySelector('[class*="chatbot_Drawer" i], [class*="chatbot" i], [class*="chat-container" i], [class*="chat_container" i], [class*="drawer" i], [class*="apply-message" i], [class*="modal" i], [role="dialog"]') || document.body; const isChatbot = Boolean(drawer && (drawer.matches?.('[class*="chatbot" i], [class*="chat" i]') || drawer.querySelector?.('[class*="bot-msg" i], [class*="chatbot" i], [class*="chatInput" i]')));
           
           // Check for quick-reply option chips in chat drawer
-          const chips = [...drawer.querySelectorAll('[class*="chip" i], [class*="pill" i], [class*="option" i], [class*="quick-reply" i], button')]
-            .filter(visible)
-            .filter(el => !el.closest('#__menixjobai_dock, .app'));
+          const chips = isChatbot ? [...drawer.querySelectorAll('[class*="chip" i], [class*="pill" i], [class*="option" i], [class*="quick-reply" i], button')].filter(visible).filter(el => !el.closest('#__menixjobai_dock, .app')) : [];
           const targetAnswer = normalize(item.answer);
           const yrMatch = targetAnswer.match(/\b(20\d\d)\b/);
-          const matchedChip = chips.find(c => {
+          const matchedChip = isChatbot ? chips.find(c => {
             const t = normalize(c.innerText || c.value || '');
-            return t === targetAnswer || t.includes(targetAnswer) || targetAnswer.includes(t)
+            if (!t || t.length < 2) return false;
+            return t === targetAnswer || (targetAnswer.length < 35 && (t.includes(targetAnswer) || targetAnswer.includes(t)))
               || (yrMatch && t.includes(yrMatch[1]))
               || (/15\s*days?|immediate/i.test(targetAnswer) && /15\s*days?|immediate/i.test(t))
               || (/^0\b/.test(targetAnswer) && /^(?:0|no|none|no practical)\b/i.test(t));
-          });
+          }) : null;
           if (matchedChip) {
             const opts = { bubbles: true, cancelable: true, view: window };
             matchedChip.dispatchEvent(new PointerEvent('pointerdown', opts));
@@ -2656,9 +2655,32 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           }
 
           let fields = elementsIn(document).filter(field => field.dataset.menixAnswerId === item.id);
-          if (!fields.length && drawer && drawer !== document.body) {
+          if (!fields.length && isChatbot && drawer && drawer !== document.body) {
             const drawerInput = drawer.querySelector('input[placeholder*="message" i], textarea[placeholder*="message" i]');
             if (drawerInput && visible(drawerInput)) fields = [drawerInput];
+          }
+          if (!fields.length) {
+            const allInputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select, [contenteditable="true"]')].filter(visible);
+            const qNorm = normalize(item.question);
+            const keyNorm = normalize(item.fieldKey);
+            const matched = allInputs.find(input => {
+              if (input.closest('#__menixjobai_dock, .app')) return false;
+              const labelEl = input.closest('label') || (input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null);
+              const parentLabel = input.parentElement?.querySelector('label, [class*="label" i], span, strong');
+              const lText = normalize(labelEl?.innerText || parentLabel?.innerText || input.getAttribute('aria-label') || input.placeholder || input.name || input.id || input.parentElement?.innerText || '');
+              if (!lText) return false;
+              if (qNorm && (lText === qNorm || lText.includes(qNorm) || qNorm.includes(lText))) return true;
+              if (keyNorm && (lText.includes(keyNorm) || keyNorm.includes(lText))) return true;
+              if (/name/i.test(keyNorm || qNorm) && /name/i.test(lText) && !/company|college|user/i.test(lText)) return true;
+              if (/email/i.test(keyNorm || qNorm) && /email/i.test(lText)) return true;
+              if (/phone|mobile/i.test(keyNorm || qNorm) && /phone|mobile/i.test(lText)) return true;
+              if (/college|university/i.test(keyNorm || qNorm) && /college|university|institute/i.test(lText)) return true;
+              if (/location|city/i.test(keyNorm || qNorm) && /location|city/i.test(lText)) return true;
+              if (/availab|start/i.test(keyNorm || qNorm) && /availab|start|join/i.test(lText)) return true;
+              if (/why|select|cover/i.test(keyNorm || qNorm) && /why|select|cover|about/i.test(lText)) return true;
+              return false;
+            });
+            if (matched) fields = [matched];
           }
           if (!fields.length) {
             const radios = Array.from(document.querySelectorAll('input[type="radio"]')).filter(visible);
@@ -2731,6 +2753,7 @@ async function fillReviewedApplicationAnswers(onlyIds = null) {
           try { first.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, composed: true, data: item.answer, inputType: 'insertText' })); } catch {}
           first.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
           first.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+          first.dispatchEvent(new Event('blur', { bubbles: true }));
 
           filled++; filledIds.push(item.id);
 

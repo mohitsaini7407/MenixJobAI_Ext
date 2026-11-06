@@ -144,11 +144,11 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
       const layoutStyle = document.createElement('style');
       layoutStyle.id = '__menixjobai_layout_fix';
       layoutStyle.textContent = `
-        html { width: calc(100vw - ${dockWidth}px) !important; max-width: calc(100vw - ${dockWidth}px) !important; overflow-x: hidden !important; }
-        body { width: 100% !important; max-width: 100% !important; min-width: 0 !important; overflow-x: hidden !important; margin-left: 0 !important; margin-right: 0 !important; }
+        html { overflow-x: hidden !important; }
+        body { width: auto !important; max-width: calc(100vw - ${dockWidth}px) !important; margin-right: ${dockWidth}px !important; margin-left: 0 !important; box-sizing: border-box !important; overflow-x: hidden !important; }
         /* keep page layout natural without squishing navbar */
         /* no universal min-width override */
-        div.chatbot_Drawer, [class*="chatbot_Drawer" i], div[class*="drawerRight" i], div[class*="rightDrawer" i], div[class*="RightDrawer" i] { right: ${dockWidth}px !important; z-index: 100000 !important; }
+        div.drawer, [class*="drawer" i], [class*="nI-gNb-drawer" i], [class*="profile-drawer" i], [class*="user-profile" i], .layer[class*="user" i], .naukri-drawer, div.chatbot_Drawer, [class*="chatbot_Drawer" i], div[class*="drawerRight" i], div[class*="rightDrawer" i], div[class*="RightDrawer" i] { right: ${dockWidth}px !important; z-index: 100000 !important; }
         [role="dialog"], .modal-container, .modal, .lightbox, [class*="modal-content" i] { z-index: 100000 !important; max-width: calc(100vw - ${dockWidth}px) !important; }
       `;
       document.documentElement.append(layoutStyle);
@@ -166,14 +166,14 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
         // Keep page content beside the right dock
         body.style.setProperty('box-sizing', 'border-box', 'important');
         root.style.setProperty('box-sizing', 'border-box', 'important');
-        root.style.setProperty('width', `calc(100vw - ${dockWidth}px)`, 'important');
-        root.style.setProperty('max-width', `calc(100vw - ${dockWidth}px)`, 'important');
-        body.style.setProperty('width', '100%', 'important');
+        root.style.removeProperty('width');
+        root.style.removeProperty('max-width');
+        body.style.setProperty('width', 'auto', 'important');
         body.style.setProperty('max-width', '100%', 'important');
         body.style.setProperty('min-width', '0', 'important');
         body.style.setProperty('overflow-x', 'hidden', 'important');
         body.style.setProperty('margin-left', '0', 'important');
-        body.style.setProperty('margin-right', '0', 'important');
+        body.style.setProperty('margin-right', `${dockWidth}px`, 'important');
         fixedHeaderStyles.forEach(({ element }) => {
           element.style.setProperty('left', '0', 'important');
           element.style.setProperty('right', `${dockWidth}px`, 'important');
@@ -239,7 +239,7 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
           frame.style.display = 'block';
           if (body) {
             body.style.setProperty('width', `calc(100vw - ${dockWidth}px)`, 'important');
-            root.style.setProperty('width', `calc(100vw - ${dockWidth}px)`, 'important');
+            root.style.removeProperty('width');
           }
         }
       };
