@@ -1215,7 +1215,7 @@ function renderResumeWorkflow() {
   );
   $('applicationAnswersSection').classList.toggle('hidden', !canAnswerQuestions);
   $('tailoredResumeSection').classList.toggle('hidden', !hasResumeSelection && !tailoring);
-  $('activeWorkflowHeading').textContent = workflow?.selectedType === 'master' ? 'Master Resume for This Job' : 'Tailored Resume';
+  if ($('activeWorkflowHeading')) $('activeWorkflowHeading').textContent = workflow?.selectedType === 'master' ? 'Master Resume for This Job' : 'Tailored Resume';
   $('applyResumePreview').classList.toggle('hidden', !hasResumeSelection && !tailoring);
   renderTailoringReview(workflow);
   $('activeResumePreview').classList.toggle('hidden', !hasResumeSelection);
@@ -2861,12 +2861,12 @@ async function responseError(response) {
 }
 
 function updateResumeCard(fileName = resumeFileName) {
-  resumeFileName = fileName || '';
+  resumeFileName = fileName || resumeFileName || ''; const hasResumeCheck = Boolean($('resumeText').value.trim()); if (!resumeFileName && hasResumeCheck) resumeFileName = 'Master_Resume.pdf';
   const hasResume = Boolean($('resumeText').value.trim());
-  $('resumeName').textContent = resumeFileName || (hasResume ? 'Saved master resume' : 'No resume uploaded');
+  $('resumeName').textContent = resumeFileName || (hasResume ? 'Master_Resume.pdf' : 'No resume uploaded');
   const fileExtension = (resumeFileName.split('.').pop() || '').toLowerCase();
   const fileIcon = $('resumeFileIcon');
-  const iconType = fileExtension === 'pdf' ? 'PDF' : ['doc', 'docx'].includes(fileExtension) ? 'DOC' : '';
+  const iconType = fileExtension === 'pdf' ? 'PDF' : ['doc', 'docx'].includes(fileExtension) ? 'DOC' : (hasResume ? 'PDF' : '');
   fileIcon.classList.toggle('pdf-file-icon', iconType === 'PDF');
   fileIcon.classList.toggle('doc-file-icon', iconType === 'DOC');
   fileIcon.classList.toggle('unknown-file-icon', !iconType);
@@ -2876,7 +2876,7 @@ function updateResumeCard(fileName = resumeFileName) {
   $('resumeStatus').textContent = !hasResume
     ? 'Choose your master resume'
     : resumeIsSaved
-      ? `${sizeLabel}Saved in this browser`
+      ? `${sizeLabel}Saved master resume`
       : 'Unsaved changes · Save from resume details';
   $('masterResumeBadge').textContent = !hasResume
     ? 'Not saved'
@@ -3037,24 +3037,24 @@ function invalidateAnalysis() {
     window.clearTimeout(automaticAnalysisTimer);
     automaticAnalysisTimer = null;
   }
-  $('analysis').replaceChildren();
-  $('aiSuggestionsDetails').open = false;
+  if ($('analysis')) $('analysis').replaceChildren();
+  if ($('aiSuggestionsDetails')) $('aiSuggestionsDetails').open = false;
   if ($('suggestionsSummaryHint')) $('suggestionsSummaryHint').textContent = 'Open to load';
-  activateAnalysisTab('skillsTab');
+  if ($('skillsTab')) activateAnalysisTab('skillsTab');
   renderAnalysisPlaceholders();
-  $('generateBtn').disabled = true;
+  if ($('generateBtn')) $('generateBtn').disabled = true;
   updatePrimaryAction();
   updateActionBar();
 }
 
-function scheduleAutomaticAnalysis() {
+function scheduleAutomaticAnalysis(immediate = false) {
   const resumeText = $('resumeText').value.trim();
   const jobDescription = $('jobDescription').value.trim();
   if (!resumeText || !jobDescription || lastAnalysis) return;
 
   const inputKey = JSON.stringify([resumeText, jobDescription]);
   if (inputKey === lastAutomaticAnalysisInput) return;
-  if (automaticAnalysisTimer) window.clearTimeout(automaticAnalysisTimer);
+  if (automaticAnalysisTimer) window.clearTimeout(automaticAnalysisTimer); if (immediate) { automaticAnalysisTimer = null; lastAutomaticAnalysisInput = inputKey; void analyzeCurrentMatch(true); return; }
   automaticAnalysisTimer = window.setTimeout(() => {
     automaticAnalysisTimer = null;
     if (inputKey !== JSON.stringify([
@@ -3170,7 +3170,7 @@ async function loadSettings() {
       if (masterStored.file?.size) resumeFileSize = masterStored.file.size;
     }
   } catch {}
-  resumeIsSaved = Boolean(masterText);
+  if (!resumeFileName && masterText) resumeFileName = 'Master_Resume.pdf'; resumeIsSaved = Boolean(masterText);
   generatedResumes = Array.isArray(saved.generatedResumes) ? saved.generatedResumes : [];
   resumeWorkflows = Array.isArray(saved.resumeWorkflows) ? saved.resumeWorkflows : [];
   activeResumeWorkflow = resumeWorkflows.find(item => item.jobKey === saved.activeResumeJobKey) || null;
@@ -3186,8 +3186,8 @@ async function loadSettings() {
   renderResumeWorkflow();
   updateResumeCard();
   updateJobSummary();
-  const allTabs = await chrome.tabs.query({ active: true });
-  const activeTab = allTabs.find(t => t.lastFocusedWindow) || allTabs.find(t => /(^|\.)naukri\.com$/i.test(new URL(t.url || 'http://localhost').hostname)) || allTabs[0];
+  const embeddedTabId = parseInt(new URLSearchParams(window.location.search).get('tabId') || '0', 10) || null; let activeTab = null; if (embeddedTabId) activeTab = await safeGetTab(embeddedTabId); if (!activeTab) { const allTabs = await chrome.tabs.query({ active: true }); activeTab = allTabs.find(t => t.lastFocusedWindow) || allTabs.find(t => /(^|\.)naukri\.com$/i.test(new URL(t.url || 'http://localhost').hostname)) || allTabs[0]; }
+  // activeTab resolved above
   const activeUrl = activeTab?.url || '';
   let isNaukriListing = false;
   try {
@@ -3211,7 +3211,7 @@ async function loadSettings() {
     updateJobSummary();
     if (lastAnalysis) renderAnalysis(lastAnalysis, 'ai');
   } else {
-    await captureActiveJob();
+    await captureActiveJob(embeddedTabId || activeTab?.id);
   }
   if (activeResumeWorkflow) await loadWorkflowResumePreview();
   renderResumeWorkflow();
@@ -3819,7 +3819,7 @@ async function captureActiveJob(tabId = null, attempt = 0) {
     await activateResumeWorkflow(currentJobPayload(), tab.id);
     updatePrimaryAction();
     setStatus(`Job detected: ${nextTitle || url.hostname}. Ready to analyze.`, 'success');
-    scheduleAutomaticAnalysis();
+    scheduleAutomaticAnalysis(true);
   } catch (error) {
     if (requestId !== captureRequestId) return;
     if (attempt < 4 && !/cannot access contents|manifest must request permission|does not allow/i.test(error.message || '')) {
@@ -3899,7 +3899,7 @@ $('resumeFile').addEventListener('change', async (event) => {
       'Resume text extracted. Check it for accuracy.',
       'success'
     );
-    scheduleAutomaticAnalysis();
+    scheduleAutomaticAnalysis(true);
 
   } catch (error) {
     setStatus(
@@ -5713,7 +5713,7 @@ async function verifyActiveResumeUpload() {
 async function requestMasterResumeRestore() {
   if (!activeResumeWorkflow) return setStatus('No active job resume.', 'error');
   if (!activeResumeWorkflow.restoreConfirmed) {
-    $('restoreConfirmDialog').showModal();
+    if ($('restoreConfirmDialog')) $('restoreConfirmDialog').showModal(); else activeResumeWorkflow.restoreConfirmed = true;
     return;
   }
   await runMasterRestorePipeline();
@@ -5855,7 +5855,7 @@ $('saveResumeBtn').addEventListener('click', async () => {
       'Master resume saved locally.',
       'success'
     );
-    scheduleAutomaticAnalysis();
+    scheduleAutomaticAnalysis(true);
 
   } catch (error) {
     setStatus(
@@ -5882,7 +5882,7 @@ async function loadAiSuggestions({ forceRegenerate = false } = {}) {
   const controller = new AbortController();
   suggestionController = controller;
   if ($('suggestionsSummaryHint')) $('suggestionsSummaryHint').textContent = 'Loading…';
-  const container = $('analysis'); container.replaceChildren();
+  const container = $('analysis'); if (!container) return; container.replaceChildren();
   for (let index = 0; index < 3; index++) {
     const skeleton = document.createElement('div'); skeleton.className = 'suggestion-skeleton'; skeleton.setAttribute('aria-hidden', 'true'); container.append(skeleton);
   }
@@ -5966,7 +5966,7 @@ async function loadAiSuggestions({ forceRegenerate = false } = {}) {
 }
 
 function renderAiSuggestions(data) {
-  const container = $('analysis'); container.replaceChildren();
+  const container = $('analysis'); if (!container) return; container.replaceChildren();
   const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
   if (!suggestions.length) {
     const empty = document.createElement('p'); empty.className = 'suggestions-empty'; empty.textContent = 'No resume edits were suggested for this job.'; container.append(empty);
@@ -6175,7 +6175,7 @@ function renderAnalysis(data, source = 'ai') {
   const result = normalizeOverviewResult(data);
   const totalScore = result?.matchScore ?? null;
   const quick = source === 'quick';
-  const overview = $('matchOverview');
+  const overview = $('matchOverview'); if (!overview) return;
   overview.replaceChildren();
 
   const header = document.createElement('div');
@@ -6270,7 +6270,7 @@ function renderAnalysis(data, source = 'ai') {
     unmatchedContainer.className = 'overview-unmatched-fit-checks fit-checks-list';
     unmatchedContainer.style.cssText = 'margin-top: 10px; display: grid; gap: 8px; width: 100%;';
     unmatched.forEach(u => {
-      const element = createFitCheckElement(u.item).row;
+      const element = u.row || createFitCheckElement(u.item || u).row;
       unmatchedContainer.append(element);
     });
     overview.append(unmatchedContainer);
@@ -6305,8 +6305,8 @@ function renderAtsAssessment(assessment) {
     const name = document.createElement('span'); name.textContent = label;
     row.append(value, name); root.append(row);
   });
-  $('atsAssessmentNote').textContent = assessment?.label || 'Internal estimates only; no employer ATS score or hiring result is guaranteed.';
-  if (assessment?.readabilityNote) $('atsAssessmentNote').title = assessment.readabilityNote;
+  if ($('atsAssessmentNote')) $('atsAssessmentNote').textContent = assessment?.label || 'Internal estimates only; no employer ATS score or hiring result is guaranteed.';
+  if ($('atsAssessmentNote') && assessment?.readabilityNote) $('atsAssessmentNote').title = assessment.readabilityNote;
 }
 
 function scoreBand(value) {
@@ -6431,8 +6431,8 @@ function renderSkillBreakdown(result) {
     .filter(item => item && typeof item === 'object')
     .map(item => [item.required, item.evidence].filter(Boolean).join(' — '))
     .filter(Boolean);
-  $('equivalentSkillsGroup').classList.toggle('hidden', !equivalents.length);
-  renderChipList($('equivalentSkillsList'), equivalents, 'equivalent');
+  if ($('equivalentSkillsGroup')) $('equivalentSkillsGroup').classList.toggle('hidden', !equivalents.length);
+  if ($('equivalentSkillsList')) renderChipList($('equivalentSkillsList'), equivalents, 'equivalent');
   const missing = cleanSkillLabels(result.missingSkills);
   if ($('missingSkillsHeading')) $('missingSkillsHeading').textContent = `Missing Skills (${missing.length})`;
   if ($('missingSkillsList')) {
@@ -6522,8 +6522,8 @@ function normalizeScore(value) {
   return Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : null;
 }
 
-function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') {
-  const overview = $('matchOverview');
+function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') { const rText = $('resumeText')?.value?.trim(); const jText = $('jobDescription')?.value?.trim(); if (rText && jText) { try { const quick = localQuickScore(rText, jText); if (quick) { renderAnalysis(quick, 'quick'); return; } } catch {} }
+  const overview = $('matchOverview'); if (!overview) return;
   overview.replaceChildren();
   const header = document.createElement('div');
   header.className = 'match-heading';
