@@ -43,7 +43,13 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["sidepanel.html"],
+      "resources": [
+        "sidepanel.html",
+        "icons/icon16.png",
+        "icons/icon32.png",
+        "icons/icon48.png",
+        "icons/icon128.png"
+      ],
       "matches": ["https://*/*", "http://*/*"]
     }
   ]

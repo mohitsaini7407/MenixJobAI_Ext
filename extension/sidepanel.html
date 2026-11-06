@@ -26,6 +26,19 @@
     </section>
 
     <div id="applyView" class="view">
+      <section id="manualAutofillSection" class="section quick-autofill-section">
+        <button id="manualAutofillBtn" class="btn primary full autofill-main-btn" type="button">
+          ⚡ Smart Autofill Active Form
+        </button>
+        <div id="autofillLiveStatus" class="autofill-live-status hidden">
+          <div class="autofill-progress-bar"><div id="autofillProgressFill" class="autofill-progress-fill" style="width:0%"></div></div>
+          <div class="autofill-meta">
+            <span id="autofillCountLabel">0 / 0 fields filled</span>
+            <span id="autofillMemoryIndicator" class="memory-badge" title="Answers you type are automatically learned">🧠 Auto-learning active</span>
+          </div>
+          <p id="autofillNotice" class="autofill-notice"></p>
+        </div>
+      </section>
       <section class="job-card">
         <div class="job-title-row">
           <div id="companyMark" class="company-mark" aria-hidden="true">J</div>

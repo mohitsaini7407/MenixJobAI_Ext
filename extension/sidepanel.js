@@ -1329,6 +1329,22 @@ async function resolveApplicationQuestionAnswer(questionText, options = []) {
     return { answer: confirmed[fieldKey].value, source: 'user_confirmed' };
   }
 
+  // 2a. Fuzzy matching on confirmed application answers
+  const qWords = normQ.split(/\s+/).filter(w => w.length > 2);
+  if (qWords.length) {
+    for (const [key, item] of Object.entries(confirmed)) {
+      if (!item?.value) continue;
+      const storedQ = normalizeAnswerKey(item.question || key.replace(/^question:/, ''));
+      const storedWords = storedQ.split(/\s+/).filter(w => w.length > 2);
+      if (!storedWords.length) continue;
+      const common = qWords.filter(w => storedWords.includes(w));
+      const score = common.length / Math.max(qWords.length, storedWords.length);
+      if (score >= 0.65 || (common.length >= 2 && qWords.length <= 4)) {
+        return { answer: item.value, source: 'user_confirmed' };
+      }
+    }
+  }
+
   // 2b. Practical project & framework experience questions (e.g. "How much practical experience do you have in developing responsive web pages using modern frameworks?")
   if (/practical experience|experience do you have (?:in|with|developing)|independent projects|academic projects/i.test(questionText)) {
     if (options && options.length) {
@@ -1575,12 +1591,10 @@ async function rememberConfirmedApplicationAnswer(question, fieldKey, answer) {
   const value = cleanText(answer);
   if (!value) return;
   const saved = await readConfirmedApplicationAnswers();
-  const updated = {
-    ...saved,
-    [fieldKey || `question:${normalizeAnswerKey(question)}`]: {
-      question: cleanText(question), value, source: 'user_confirmed', verified: true, updatedAt: Date.now()
-    }
-  };
+  const qKey = `question:${normalizeAnswerKey(question)}`;
+  const record = { question: cleanText(question), value, source: 'user_confirmed', verified: true, updatedAt: Date.now() };
+  const updated = { ...saved, [qKey]: record };
+  if (fieldKey) updated[fieldKey] = record;
   await chrome.storage.local.set({ [CONFIRMED_ANSWER_PROFILE_KEY]: updated });
 }
 
@@ -1607,9 +1621,8 @@ async function activeApplicationTab() {
   }
   const companyTab = activeResumeWorkflow?.companyApplicationTabId
     ? await chrome.tabs.get(activeResumeWorkflow.companyApplicationTabId).catch(() => null) : null;
-  const isNaukri = candidate => /(^|\.)naukri\.com$/i.test(new URL(candidate?.url || 'https://invalid.local').hostname);
-  if (!tab?.url || (!isNaukri(tab) && tab.id !== companyTab?.id)) tab = companyTab || tab;
-  if (!tab?.id || !/^https:\/\//i.test(tab.url || '')) throw new Error('Open the application form to find its questions.');
+  if (!tab?.url && companyTab) tab = companyTab;
+  if (!tab?.id || !/^https?:\/\//i.test(tab.url || '')) throw new Error('Open the application form in your browser to autofill.');
   return tab;
 }
 
@@ -1650,7 +1663,12 @@ async function findApplicationQuestions(tabId) {
         };
         const intent = /\?|\b(?:full name|candidate name|first name|last name|email|email id|phone|mobile|contact number|graduat|passing year|year of passing|pass out|qualification|degree|college|university|institute|current (?:city|location)|where do you live|experience|salary|CTC|notice period|when can you join|available to join|relocat|work arrangement|work mode|work from|programming language|technical skills|technologies do you know|highest education|expected|select your|write a message|message|cover letter|pitch|about yourself|why should we hire)\b/i;
         const questionLike = element => intent.test(labelFor(element));
-        const candidates = supported.filter(element => questionLike(element));
+        const candidates = supported.filter(element => {
+          if (element instanceof HTMLInputElement && element.type === 'search') return false;
+          const nameOrId = `${element.name || ''} ${element.id || ''} ${element.placeholder || ''}`;
+          if (/csrf|recaptcha|turnstile|authenticity_token/i.test(nameOrId)) return false;
+          return true;
+        });
         const output = [];
         const grouped = new Set();
         candidates.forEach(element => {
@@ -2391,7 +2409,24 @@ async function attachResumeToCompanyApplication(tabId, resume) {
         selected = [...compatible].sort((a, b) => score(b) - score(a))[0] || (controls.length === 1 ? controls[0] : null);
         if (!selected && attempt < 7) await new Promise(resolve => setTimeout(resolve, 400));
       }
-      if (!selected) return { attached: false, message: 'No resume upload field was found on this page.' };
+      if (!selected) {
+        const dropzone = document.querySelector('[class*="dropzone" i], [class*="drop-zone" i], [class*="file-drop" i], [data-testid*="resume" i], [data-testid*="dropzone" i], [aria-label*="resume" i], [aria-label*="upload" i]');
+        if (dropzone) {
+          try {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const file = new File([bytes], fileName, { type: mime, lastModified: Date.now() });
+            const transfer = new DataTransfer();
+            transfer.items.add(file);
+            dropzone.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+            dropzone.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+            dropzone.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+            return { attached: true, message: `Dropped ${fileName} onto resume dropzone.` };
+          } catch (e) { return { attached: false, message: e.message }; }
+        }
+        return { attached: false, message: 'No resume upload field was found on this page.' };
+      }
       try {
         const binary = atob(base64);
         const bytes = new Uint8Array(binary.length);
@@ -2413,6 +2448,17 @@ async function attachResumeToCompanyApplication(tabId, resume) {
             selected.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
           }
         } catch { /* Best-effort: Workday-specific hack */ }
+        try {
+          const dropzones = [
+            selected.closest('[class*="dropzone" i], [class*="upload" i], [class*="drop" i], [class*="file" i], form, section, div'),
+            ...document.querySelectorAll('[class*="dropzone" i], [class*="drop-zone" i], [class*="file-drop" i], [data-testid*="resume" i], [data-testid*="dropzone" i]')
+          ].filter(Boolean);
+          for (const dz of dropzones) {
+            dz.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+            dz.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+            dz.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+          }
+        } catch {}
         await new Promise(resolve => setTimeout(resolve, 300));
         const attached = selected.files?.[0]?.name === fileName;
         return { attached, message: attached ? `Attached ${fileName}.` : 'The company form did not accept the selected resume.' };
@@ -3129,6 +3175,15 @@ if (embeddedPanelParams.get('embedded') === '1') {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.action === 'REMEMBER_APPLICATION_ANSWER' && message.question && message.answer) {
     void rememberConfirmedApplicationAnswer(message.question, message.fieldKey || '', message.answer);
+    const noticeEl = $('autofillNotice');
+    if (noticeEl) {
+      noticeEl.textContent = `🧠 Learned: "${cleanText(message.question).slice(0, 45)}" = "${cleanText(message.answer).slice(0, 30)}…"`;
+    }
+    const indicator = $('autofillMemoryIndicator');
+    if (indicator) {
+      indicator.textContent = '🧠 Answer saved!';
+      setTimeout(() => { if (indicator) indicator.textContent = '🧠 Auto-learning active'; }, 3000);
+    }
     sendResponse({ remembered: true });
     return true;
   }
@@ -6383,3 +6438,162 @@ loadSettings().catch(error => {
     'error'
   );
 });
+
+
+// -------------------------------------------------------------
+// UNIVERSAL SMART AUTOFILL & FORM LEARNING ENGINE
+// -------------------------------------------------------------
+
+function attachLiveFormLearningListeners(tabId) {
+  return chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => {
+      if (window.__menixLiveLearningAttached) return;
+      window.__menixLiveLearningAttached = true;
+
+      const normalize = s => String(s || '').replace(/\s+/g, ' ').trim();
+      const getFieldLabel = el => {
+        let label = el.getAttribute('aria-label') || el.placeholder || el.title || '';
+        if (!label && el.id) {
+          const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+          if (l) label = l.innerText;
+        }
+        if (!label) {
+          const pl = el.closest('label');
+          if (pl) label = pl.innerText;
+        }
+        if (!label) {
+          const fs = el.closest('fieldset');
+          const lg = fs?.querySelector('legend');
+          if (lg) label = lg.innerText;
+        }
+        if (!label) {
+          let prev = el.previousElementSibling;
+          while (prev && !label) {
+            const t = (prev.innerText || prev.textContent || '').trim();
+            if (t.length >= 2 && t.length <= 150) label = t;
+            prev = prev.previousElementSibling;
+          }
+        }
+        if (!label && el.name) label = el.name.replace(/[_-]+/g, ' ');
+        return normalize(label).replace(/[:*]+$/, '').trim();
+      };
+
+      const recordInput = e => {
+        const el = e.target;
+        if (!el || !['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return;
+        if (el.type === 'password' || el.type === 'hidden' || el.type === 'submit' || el.type === 'button') return;
+        
+        let val = '';
+        if (el instanceof HTMLInputElement && el.type === 'checkbox') val = el.checked ? 'true' : 'false';
+        else if (el instanceof HTMLInputElement && el.type === 'radio') {
+          if (!el.checked) return;
+          val = el.value || el.closest('label')?.innerText?.trim() || '';
+        } else {
+          val = (el.value || '').trim();
+        }
+        if (!val) return;
+
+        const label = getFieldLabel(el);
+        if (label && label.length >= 2 && !/search|filter/i.test(label)) {
+          try {
+            chrome.runtime.sendMessage({
+              action: 'REMEMBER_APPLICATION_ANSWER',
+              question: label,
+              answer: val
+            }).catch(() => {});
+          } catch {}
+        }
+      };
+
+      document.addEventListener('change', recordInput, true);
+      document.addEventListener('blur', recordInput, true);
+    }
+  }).catch(() => {});
+}
+
+async function executeUniversalSmartAutofill() {
+  const autofillBtn = $('manualAutofillBtn');
+  const liveStatus = $('autofillLiveStatus');
+  const countLabel = $('autofillCountLabel');
+  const progressFill = $('autofillProgressFill');
+  const noticeEl = $('autofillNotice');
+
+  if (autofillBtn) {
+    autofillBtn.disabled = true;
+    autofillBtn.textContent = '⏳ Scanning & Autofilling…';
+  }
+  if (liveStatus) liveStatus.classList.remove('hidden');
+  if (progressFill) progressFill.style.width = '20%';
+  if (countLabel) countLabel.textContent = 'Scanning active page…';
+  if (noticeEl) noticeEl.textContent = 'Analyzing application form fields and resume dropzones…';
+
+  try {
+    const tab = await activeApplicationTab();
+    if (!tab?.id) throw new Error('No active application tab found. Open your application form in Chrome and retry.');
+
+    // 1. Attach live form learning listener so any corrections/new inputs are remembered
+    await attachLiveFormLearningListeners(tab.id);
+
+    // 2. Attach resume if file input or drag-and-drop dropzone is present
+    if (progressFill) progressFill.style.width = '45%';
+    if (countLabel) countLabel.textContent = 'Checking resume upload / dropzone…';
+    const resume = await selectedWorkflowFile().catch(() => null);
+    let resumeAttached = false;
+    if (resume?.blob && resume?.name) {
+      const attachRes = await attachResumeToCompanyApplication(tab.id, resume).catch(() => null);
+      resumeAttached = Boolean(attachRes?.attached);
+      if (resumeAttached && noticeEl) {
+        noticeEl.textContent = `Attached resume: ${resume.name}. Resolving form questions…`;
+      }
+    }
+
+    // 3. Scan for form questions on the page
+    if (progressFill) progressFill.style.width = '65%';
+    if (countLabel) countLabel.textContent = 'Reading form questions…';
+    const detected = await findApplicationQuestions(tab.id);
+
+    if (!detected || !detected.length) {
+      if (progressFill) progressFill.style.width = '100%';
+      if (countLabel) countLabel.textContent = resumeAttached ? 'Resume attached (no text fields found)' : 'No form fields found';
+      if (noticeEl) noticeEl.textContent = 'If the application is inside a modal or multi-step wizard, click Apply or Next on the page, then click Autofill again.';
+      setStatus(resumeAttached ? 'Resume attached to page.' : 'No application form fields detected on active tab.', 'info');
+      return;
+    }
+
+    // 4. Resolve answers using Memory -> Resume -> AI
+    if (progressFill) progressFill.style.width = '80%';
+    if (countLabel) countLabel.textContent = `Resolving answers for ${detected.length} questions…`;
+    await suggestApplicationAnswers(tab.id);
+
+    // 5. Fill all resolved answers
+    if (progressFill) progressFill.style.width = '95%';
+    const answerFields = [...$('applicationAnswersList').querySelectorAll('textarea[data-answer-id]')];
+    const fillableIds = answerFields.map(f => f.dataset.answerId).filter(Boolean);
+    const fillResult = fillableIds.length ? await fillReviewedApplicationAnswers(fillableIds) : { filled: 0 };
+
+    if (progressFill) progressFill.style.width = '100%';
+    const filledCount = fillResult?.filled || 0;
+    const totalCount = detected.length;
+    const unfilledCount = Math.max(0, totalCount - filledCount);
+
+    if (countLabel) countLabel.textContent = `${filledCount} of ${totalCount} fields filled`;
+    if (unfilledCount > 0) {
+      if (noticeEl) noticeEl.textContent = `Filled ${filledCount} fields! Please fill the remaining ${unfilledCount} field(s) on the page. MenixJobAI will automatically remember your answers for next time.`;
+      setStatus(`Autofilled ${filledCount} of ${totalCount} fields. Remaining fields will be remembered as you type them.`, 'info');
+    } else {
+      if (noticeEl) noticeEl.textContent = `All ${totalCount} fields successfully filled! Review and submit your application.`;
+      setStatus(`All ${totalCount} fields filled!`, 'success');
+    }
+  } catch (err) {
+    if (noticeEl) noticeEl.textContent = `Autofill: ${err.message}`;
+    setStatus(`Autofill error: ${err.message}`, 'error');
+  } finally {
+    if (autofillBtn) {
+      autofillBtn.disabled = false;
+      autofillBtn.textContent = '⚡ Smart Autofill Active Form';
+    }
+  }
+}
+
+$('manualAutofillBtn')?.addEventListener('click', executeUniversalSmartAutofill);

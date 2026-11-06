@@ -182,7 +182,7 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
       expandBtn.setAttribute('aria-label', 'Open MenixJobAI');
       expandBtn.title = 'Click to open MenixJobAI';
       expandBtn.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;display:none;align-items:center;justify-content:center;cursor:pointer;background:#ffffff;border-radius:32px 0 0 32px;box-shadow:-4px 6px 24px rgba(0,0,0,0.3), 0 0 0 2px rgba(37,99,235,0.25);padding:0;outline:none;z-index:2147483647;transition:transform 0.15s ease,box-shadow 0.15s ease;';
-      expandBtn.innerHTML = `<img src="${iconUrl}" style="width:36px;height:36px;object-fit:contain;pointer-events:none;display:block;margin-left:6px;" alt="MenixJobAI" />`;
+      expandBtn.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#1d4ed8);box-shadow:0 3px 10px rgba(37,99,235,0.4);margin-left:6px;pointer-events:none;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 19V5L12 13L20 5V19" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>`;
       expandBtn.onmouseenter = () => { expandBtn.style.transform = 'translateX(-4px)'; expandBtn.style.boxShadow = '-6px 8px 28px rgba(0,0,0,0.35), 0 0 0 2.5px rgba(37,99,235,0.4)'; };
       expandBtn.onmouseleave = () => { expandBtn.style.transform = 'none'; expandBtn.style.boxShadow = '-4px 6px 24px rgba(0,0,0,0.3), 0 0 0 2px rgba(37,99,235,0.25)'; };
 
