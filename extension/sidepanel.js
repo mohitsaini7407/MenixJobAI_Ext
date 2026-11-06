@@ -5396,50 +5396,36 @@ async function syncMissingSkillsToNaukriProfile(profileTabId, workflow, analysis
   const profileTab = await safeGetTab(profileTabId);
   if (!profileTab?.id) return { ok: false, message: 'Naukri profile tab not available.' };
 
-  const jdText = `${workflow?.jobTitle || ''} ${workflow?.jobDescription || $('jobDescription')?.value || ''}`;
+  // Collect missing skills directly from analysis, JD, and metadata
   const missingFromAnalysis = Array.isArray(analysis?.missingSkills) ? analysis.missingSkills : [];
-  const supportedKeywords = Array.isArray(analysis?.supportedKeywords) ? analysis.supportedKeywords : [];
-  const reqKeywords = Array.isArray(analysis?.requirements) ? analysis.requirements.map(r => r.keyword || r.skill || r.label).filter(Boolean) : [];
+  const reqKeywords = Array.isArray(analysis?.requirements) 
+    ? analysis.requirements.filter(r => r && (r.met === false || r.status === 'gap' || !r.evidence)).map(r => r.keyword || r.skill || r.label || r.name).filter(Boolean)
+    : [];
   const pageSkills = Array.isArray(jobMetadata?.pageKeySkills) ? jobMetadata.pageKeySkills : [];
+  const jdText = `${workflow?.jobTitle || ''} ${workflow?.jobDescription || $('jobDescription')?.value || ''}`;
 
-  // Match concrete programming languages, tools, frameworks, and databases from JD
-  const concreteTechMatches = (jdText.match(/\b(?:TypeScript|JavaScript|Python|Java|C\+\+|SQL|PostgreSQL|MySQL|MongoDB|Docker|Git|GitHub|Jest|Pytest|Postman|Bash|Shell Scripting|Node\.?js|Express\.?js|FastAPI|Flask|Redis|Prisma|AWS|Kubernetes)\b/gi) || [])
+  const concreteMatches = (jdText.match(/\b(?:Scala|Spark|Snowflake|Unix scripting|TypeScript|JavaScript|Python|Java|C\+\+|SQL|PostgreSQL|MySQL|MongoDB|Docker|Git|GitHub|Jest|Pytest|Postman|Bash|Shell Scripting|Node\.?js|Express\.?js|FastAPI|Flask|Redis|Prisma|AWS|Kubernetes|Jenkins)\b/gi) || [])
     .map(s => s.trim());
 
-  // If JD specifies software engineering / design / maintenance, map them strictly to concrete languages & tools
-  const impliedTools = [];
-  if (/\b(?:software engineering|team player|collaborat|supervise)\b/i.test(jdText)) {
-    impliedTools.push('Git', 'GitHub');
-  }
-  if (/\b(?:maintenance|accurate and reliable|unit test|testing|debug)\b/i.test(jdText)) {
-    impliedTools.push('Jest', 'Postman');
-  }
-  if (/\b(?:software design|programming concepts|oop)\b/i.test(jdText)) {
-    impliedTools.push('TypeScript', 'SQL');
-  }
-  if (/\b(?:linux|devops|docker|deploy)\b/i.test(jdText)) {
-    impliedTools.push('Docker', 'Bash');
-  }
-
-  // Abstract concepts blocklist - NEVER add these as tags/chips
+  // Block abstract words
   const abstractBlocklist = new Set([
     'software engineering', 'software design', 'software maintenance', 'software solutions',
     'maintenance', 'programming', 'research', 'software engineer', 'software development',
-    'object-oriented programming', 'oop', 'engineering', 'development'
+    'object-oriented programming', 'oop', 'engineering', 'development', 'concepts', 'principles',
+    'more', 'than', 'solid', 'understanding', 'she', 'he', 'responsible', 'practice', 'highlighted', 'keyskills'
   ]);
 
+  // Target skills: prioritize missing skills identified for this job
   const allTargetSkills = Array.from(new Set([
-    ...pageSkills,
     ...missingFromAnalysis,
-    ...supportedKeywords,
     ...reqKeywords,
-    ...concreteTechMatches,
-    ...impliedTools
+    ...concreteMatches,
+    ...pageSkills
   ]))
     .map(s => String(s || '').trim())
     .filter(s => s && !abstractBlocklist.has(s.toLowerCase()));
 
-  if (!allTargetSkills.length) return { ok: true, addedSkills: [], note: 'No concrete skills needed' };
+  if (!allTargetSkills.length) return { ok: true, addedSkills: [], note: 'No target skills needed' };
 
   try {
     const [result] = await chrome.scripting.executeScript({
@@ -5447,61 +5433,73 @@ async function syncMissingSkillsToNaukriProfile(profileTabId, workflow, analysis
       args: [allTargetSkills],
       func: async (skillsToSync) => {
         const delayMs = ms => new Promise(res => setTimeout(res, ms));
-        const visible = el => el && el.getClientRects().length > 0 && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
         const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
-        const skillsSection = document.querySelector('.keySkills, [class*="keySkills" i]');
-        let editBtn = skillsSection?.querySelector('.edit, [class*="edit" i], a, button');
-        if (!editBtn) {
-          const headings = [...document.querySelectorAll('span, div, h2, h3, h4, p')];
-          const ksHeading = headings.find(el => el.innerText && el.innerText.trim().toLowerCase() === 'key skills');
-          if (ksHeading) {
-            editBtn = ksHeading.parentElement?.querySelector('.edit, [class*="edit" i], svg, a, button')
-                   || ksHeading.closest('div')?.querySelector('.edit, [class*="edit" i], a, button');
-          }
+        // 1. Locate the edit button for Key skills
+        const headings = [...document.querySelectorAll('span, div, h2, h3, h4, p, a')];
+        const ksHeading = headings.find(el => el.innerText && el.innerText.trim().toLowerCase() === 'key skills');
+        let editBtn = null;
+        if (ksHeading) {
+          const parent = ksHeading.parentElement;
+          const card = ksHeading.closest('.card, [class*="card" i], [class*="section" i], .widgetHead') || parent;
+          editBtn = card?.querySelector('.icon.edit, [class*="edit" i], svg, em, a, button') || parent?.querySelector('.icon.edit, [class*="edit" i], a, button');
         }
         if (!editBtn) {
-          editBtn = document.querySelector('a[href*="keySkills" i], [data-section="keySkills"] [class*="edit" i]');
+          editBtn = document.querySelector('.keySkills .edit, [class*="keySkills" i] [class*="edit" i], a[href*="keySkills" i], .key-skills .edit');
         }
 
         if (!editBtn) return { ok: false, error: 'Could not find Key Skills edit button on Naukri profile.' };
 
+        // Read current existing chips before clicking edit
         const readChips = (container) => {
           if (!container) return [];
           const items = [...container.querySelectorAll('.chip, .tag, [class*="chip" i], [class*="tag" i], [class*="skill" i]')];
           return items.map(c => (c.innerText || '').replace(/[\u00d7\u2715xX]/g, '').trim()).filter(Boolean);
         };
 
-        const existingProfileChips = readChips(skillsSection);
+        const existingProfileChips = readChips(ksHeading?.closest('.card, [class*="card" i]') || document.querySelector('.keySkills'));
         const existingNormSet = new Set(existingProfileChips.map(norm));
 
+        // Click edit to open the modal
         editBtn.click();
-        await delayMs(700);
+        await delayMs(800);
 
-        const drawer = document.querySelector('[class*="keySkills" i] form, [class*="keySkills" i], .drawer, [role="dialog"], .modal-content, body');
-        const suggestInput = drawer.querySelector('input#keySkillsSugg, input[placeholder*="skills" i], input[type="text"]');
-        if (!suggestInput) return { ok: false, error: 'Key skills input field not found.' };
+        // Find modal container and input
+        const modal = document.querySelector('.modal-content, [role="dialog"], .drawer, [class*="keySkills" i] form, body');
+        const suggestInput = modal.querySelector('input#keySkillsSugg, input[placeholder*="skills" i], input[placeholder*="skill" i], input[type="text"]');
+        if (!suggestInput) return { ok: false, error: 'Key skills input field (#keySkillsSugg) not found in modal.' };
 
-        const drawerChips = readChips(drawer);
-        drawerChips.forEach(c => existingNormSet.add(norm(c)));
+        // Read chips inside modal
+        const modalChips = readChips(modal);
+        modalChips.forEach(c => existingNormSet.add(norm(c)));
 
         const addedSkills = [];
         for (const skill of skillsToSync) {
           const nSkill = norm(skill);
           if (!nSkill || existingNormSet.has(nSkill)) continue;
-          const alreadyMatches = [...existingNormSet].some(ex => (ex.length > 3 && (ex.includes(nSkill) || nSkill.includes(ex))));
-          if (alreadyMatches) continue;
+          const alreadyPresent = [...existingNormSet].some(ex => ex.length > 2 && (ex === nSkill || ex.includes(nSkill) || nSkill.includes(ex)));
+          if (alreadyPresent) continue;
 
+          // Focus input and type skill
           suggestInput.focus();
           suggestInput.value = skill;
           suggestInput.dispatchEvent(new Event('input', { bubbles: true }));
-          await delayMs(250);
+          await delayMs(300);
 
-          const suggList = document.querySelector('.sugg-list, [class*="sugItem" i], [class*="suggestion" i], .layer ul');
-          const firstItem = suggList?.querySelector('li, div, a');
-          if (firstItem && visible(firstItem)) {
-            firstItem.click();
+          // Check if suggestion dropdown appeared and click matching item
+          const suggList = document.querySelector('.sugg-list, [class*="sugg" i], .dropdown-menu, .layer');
+          const suggItems = suggList ? [...suggList.querySelectorAll('li, div, a, span')] : [];
+          const matchingItem = suggItems.find(el => {
+            const txt = (el.innerText || '').trim().toLowerCase();
+            return txt === skill.toLowerCase() || txt.startsWith(skill.toLowerCase());
+          }) || suggItems[0];
+
+          if (matchingItem) {
+            matchingItem.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            matchingItem.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+            matchingItem.click();
           } else {
+            // Press Enter to add
             suggestInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
             suggestInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
           }
@@ -5511,12 +5509,17 @@ async function syncMissingSkillsToNaukriProfile(profileTabId, workflow, analysis
           addedSkills.push(skill);
         }
 
+        // Click Save button in modal
         let saved = false;
         if (addedSkills.length > 0) {
-          const saveBtn = drawer.querySelector('button[type="submit"], [class*="save" i], button.btn-dark-ot, button.saveBtn');
+          const saveBtn = [...document.querySelectorAll('button, input[type="button"], [role="button"]')].find(el => {
+            const t = (el.innerText || el.value || '').trim().toLowerCase();
+            return t === 'save';
+          }) || modal.querySelector('button[type="submit"], [class*="save" i], button.btn-dark-ot');
+
           if (saveBtn) {
             saveBtn.click();
-            await delayMs(800);
+            await delayMs(1000);
             saved = true;
           }
         }
@@ -5527,7 +5530,7 @@ async function syncMissingSkillsToNaukriProfile(profileTabId, workflow, analysis
 
     const info = result?.result;
     if (info?.addedSkills?.length) {
-      setStatus(`Naukri Key Skills synced: added concrete skills ${info.addedSkills.join(', ')} (all ${info.preservedCount || 0} existing skills preserved).`, 'success');
+      setStatus(`Naukri Key Skills updated: added ${info.addedSkills.join(', ')} (all ${info.preservedCount || 0} existing skills preserved).`, 'success');
     }
     return info || { ok: false };
   } catch (err) {
@@ -5560,18 +5563,6 @@ async function chooseResumeForThisJob() {
     const companyApplyTarget = savedJobTab?.id ? await detectCompanyApplyButton(savedJobTab.id) : null;
     const isTargetExternal = isExternal || Boolean(companyApplyTarget?.matched || (typeof companyApplyTarget === 'string' && companyApplyTarget));
 
-    if (isTargetExternal) {
-      const targetHref = (typeof companyApplyTarget === 'string' ? companyApplyTarget : companyApplyTarget?.href) || workflow.companyApplyUrl || '';
-      if (targetHref && /^https:\/\//i.test(targetHref)) {
-        try {
-          const destination = new URL(targetHref);
-          // Direct access via declared host_permissions without user-gesture popup requirement
-          await persistResumeWorkflow({ ...activeResumeWorkflow, companyApplyUrl: destination.href, isExternalCompanyApply: true });
-        } catch {}
-      }
-      await returnToJobAndClickApply();
-      return;
-    }
     await persistResumeWorkflow({ ...activeResumeWorkflow, pipelineStep: 1, lastError: '' });
     await delay(RESUME_UPLOAD_DELAY_MS);
     const site = await detectNaukriSite(activeResumeWorkflow);
@@ -5591,18 +5582,30 @@ async function chooseResumeForThisJob() {
     await waitForTabComplete(profileTabId);
     await delay(RESUME_UPLOAD_DELAY_MS);
     const profileTab = await safeGetTab(profileTabId);
-    if (profileIsLoggedOut(profileTab.url || '', config)) {
+    if (profileIsLoggedOut(profileTab?.url || '', config)) {
       const message = 'Log in to Naukri first.';
       await persistResumeWorkflow({ ...activeResumeWorkflow, profileTabId, naukriSite: site, lastError: message });
       setStatus(message, 'error');
       return;
     }
-    // EXTRA STEP: Automatically synchronize missing skills from JD to Naukri profile Key Skills section
+    // Automatically synchronize missing skills from JD to Naukri profile Key Skills section
     setStatus('Checking and syncing missing JD skills to Naukri profile Key Skills...', 'info');
     try {
       await syncMissingSkillsToNaukriProfile(profileTabId, activeResumeWorkflow, lastAnalysis);
     } catch (syncErr) {
       console.warn('Auto-sync profile skills note:', syncErr);
+    }
+
+    if (isTargetExternal) {
+      const targetHref = (typeof companyApplyTarget === 'string' ? companyApplyTarget : companyApplyTarget?.href) || workflow.companyApplyUrl || '';
+      if (targetHref && /^https:\/\//i.test(targetHref)) {
+        try {
+          const destination = new URL(targetHref);
+          await persistResumeWorkflow({ ...activeResumeWorkflow, companyApplyUrl: destination.href, isExternalCompanyApply: true });
+        } catch {}
+      }
+      await returnToJobAndClickApply();
+      return;
     }
 
     await persistResumeWorkflow({ ...activeResumeWorkflow, pipelineStep: 3, status: 'UPLOADING_RESUME', manualUploadNeeded: false, lastError: '' });
@@ -6212,12 +6215,8 @@ function renderAnalysis(data, source = 'ai') {
   titleWrap.className = 'combined-skills-header';
   titleWrap.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
 
-  const title = document.createElement('h3');
-  title.textContent = `Skills (${tech.length} matched · ${missing.length} unmatched)`;
-  title.style.cssText = 'margin:0;font-size:12px;font-weight:700;color:#1e293b;';
+  // Header removed per user request - clean chips directly displayed
 
-  titleWrap.append(title);
-  breakdown.append(titleWrap);
 
   const chipsContainer = document.createElement('div');
   chipsContainer.className = 'skill-chip-list combined-chip-list';
@@ -6367,7 +6366,7 @@ function renderSkillBreakdown(result) {
   renderChipList($('matchedSkillsList'), tech, 'matched', 'No direct technical skills matched.');
   renderChipList($('softSkillsList'), soft, 'soft');
   $('softSkillSummary').textContent = `+${soft.length} soft skill${soft.length === 1 ? '' : 's'}`;
-  $('softSkillsDetails').classList.toggle('hidden', !soft.length);
+  // softSkillsDetails removed
   const equivalents = (Array.isArray(result.equivalentSkills) ? result.equivalentSkills : [])
     .filter(item => item && typeof item === 'object')
     .map(item => [item.required, item.evidence].filter(Boolean).join(' — '))
@@ -6382,7 +6381,7 @@ function renderSkillBreakdown(result) {
   $('relatedKeywordsGroup').classList.toggle('hidden', !keywords.length);
   $('relatedKeywordsHeading').textContent = `Related Keywords (${keywords.length})`;
   renderChipList($('missingKeywordsList'), keywords, 'keyword');
-  renderRequirementEvidence((result.requirements || []).filter(item => item?.name && !isNonSkillLabel(item.name)));
+  // renderRequirementEvidence removed
 
   // Populate Naukri Recruiter Visibility Booster
   const allJobSkills = [...tech, ...missing];
