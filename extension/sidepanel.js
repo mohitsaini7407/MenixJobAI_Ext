@@ -6197,36 +6197,58 @@ function renderAnalysis(data, source = 'ai') {
   ring.append(ringValue);
   scoreColumn.append(ring);
 
-  const breakdown = document.createElement('section'); breakdown.className = 'overview-column breakdown-column';
-  const breakdownTitle = document.createElement('h3'); breakdownTitle.textContent = 'Match Breakdown'; breakdown.append(breakdownTitle);
-  const breakdownLabels = {
-    requiredSkills: 'Required skills', relevantExperience: 'Relevant experience',
-    projectsResponsibilities: 'Projects & responsibilities', preferredSkills: 'Preferred skills',
-    keywords: 'Keywords', educationCertifications: 'Education & certifications'
-  };
-  const rows = result.scoreBreakdown
-    ? Object.entries(breakdownLabels).map(([key, label]) => [label,
-      normalizeScore(result.scoreBreakdown[key]?.score),
-      `${result.scoreBreakdown[key]?.weight ?? 0}% category weight. Evidence-based requirement score.`])
-    : [
-      ['Skills', result.scores?.skills, 'Explicit technical requirements supported by the resume.'],
-      ['Keywords', result.scores?.keywords, 'Required job terms found in the resume.']
-    ];
-  const metrics = document.createElement('div'); metrics.className = 'component-scores';
-  rows.forEach(([label, value, reason]) => {
-    const row = document.createElement('div'); row.className = `component-score ${scoreBand(value)}`; row.title = value === null || value === undefined ? reason : `${label}: ${value}%`;
-    const top = document.createElement('div'); top.className = 'component-score-label';
-    const name = document.createElement('span'); name.textContent = label;
-    const amount = document.createElement('strong'); amount.textContent = value === null || value === undefined ? 'N/A' : `${value}%`;
-    top.append(name, amount);
-    const track = document.createElement('div'); track.className = 'component-track';
-    const bar = document.createElement('span'); bar.className = 'component-fill'; bar.style.width = value === null || value === undefined ? '0%' : `${value}%`;
-    if (value === null || value === undefined) track.setAttribute('aria-label', reason);
-    else { track.setAttribute('role', 'progressbar'); track.setAttribute('aria-valuemin', '0'); track.setAttribute('aria-valuemax', '100'); track.setAttribute('aria-valuenow', String(value)); track.setAttribute('aria-label', `${label} ${value}%`); }
-    track.append(bar); row.append(top, track); metrics.append(row);
-  });
-  breakdown.append(metrics);
+  const breakdown = document.createElement('section'); breakdown.className = 'overview-column breakdown-column combined-skills-box';
 
+  const matched = result.matchedSkills || {};
+  let tech = cleanSkillLabels(matched.technical);
+  if (!tech.length && $('resumeText')?.value) {
+    const resumeText = $('resumeText').value.toLowerCase();
+    const candidateCoreTech = ['TypeScript', 'JavaScript', 'Python', 'Java', 'C++', 'SQL', 'React', 'Node.js', 'REST APIs', 'Docker', 'Git', 'PostgreSQL'];
+    tech = candidateCoreTech.filter(t => resumeText.includes(t.toLowerCase()));
+  }
+  const missing = cleanSkillLabels(result.missingSkills);
+
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'combined-skills-header';
+  titleWrap.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
+
+  const title = document.createElement('h3');
+  title.textContent = `Skills (${tech.length} matched · ${missing.length} unmatched)`;
+  title.style.cssText = 'margin:0;font-size:12px;font-weight:700;color:#1e293b;';
+
+  titleWrap.append(title);
+  breakdown.append(titleWrap);
+
+  const chipsContainer = document.createElement('div');
+  chipsContainer.className = 'skill-chip-list combined-chip-list';
+  chipsContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:5px;max-height:165px;overflow-y:auto;align-content:flex-start;margin:0;padding:2px;list-style:none;';
+
+  // 1. Matched skills (blue chips)
+  tech.forEach(skill => {
+    const chip = document.createElement('span');
+    chip.className = 'skill-chip matched';
+    chip.textContent = skill;
+    chip.title = 'Matched in your resume';
+    chipsContainer.append(chip);
+  });
+
+  // 2. Unmatched skills (red chips)
+  missing.forEach(skill => {
+    const chip = document.createElement('span');
+    chip.className = 'skill-chip missing';
+    chip.textContent = skill;
+    chip.title = 'Unmatched for this job';
+    chipsContainer.append(chip);
+  });
+
+  if (!tech.length && !missing.length) {
+    const empty = document.createElement('span');
+    empty.className = 'skill-chip empty';
+    empty.textContent = 'No technical skills identified.';
+    chipsContainer.append(empty);
+  }
+
+  breakdown.append(chipsContainer);
   layout.append(scoreColumn, breakdown);
   overview.append(layout);
 
