@@ -6248,6 +6248,30 @@ function renderAnalysis(data, source = 'ai') {
   }
 
   breakdown.append(chipsContainer);
+
+  // Show unmatched fit checks right below skills chips in the top card
+  const fitChecks = Array.isArray(result.fitChecks) ? result.fitChecks : [];
+  const topUnmatched = fitChecks
+    .map(item => createFitCheckElement(item))
+    .filter(res => res.isMismatch);
+
+  if (topUnmatched.length > 0) {
+    const summaryBox = document.createElement('div');
+    summaryBox.className = 'unmatched-fit-summary';
+    summaryBox.style.cssText = 'margin-top:8px;padding:6px 10px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;display:grid;gap:3px;';
+    const alertHead = document.createElement('div');
+    alertHead.style.cssText = 'font-size:11px;font-weight:700;color:#dc2626;display:flex;align-items:center;gap:4px;';
+    alertHead.innerHTML = `<span>⚠️ ${topUnmatched.length} Unmatched Fit Check${topUnmatched.length > 1 ? 's' : ''}:</span>`;
+    summaryBox.append(alertHead);
+    topUnmatched.forEach(u => {
+      const line = document.createElement('div');
+      line.style.cssText = 'font-size:11px;color:#991b1b;line-height:1.35;';
+      line.innerHTML = `<strong>${u.typeLabel}</strong>: ${u.note || (u.required ? 'Req: ' + u.required : 'Does not match')}`;
+      summaryBox.append(line);
+    });
+    breakdown.append(summaryBox);
+  }
+
   layout.append(scoreColumn, breakdown);
   overview.append(layout);
 
@@ -6292,40 +6316,96 @@ function scoreBand(value) {
   return 'score-strong';
 }
 
+function createFitCheckElement(item) {
+  const candidate = item.candidate || '';
+  const required = item.required || '';
+  const hasCandidate = hasFitValue(candidate);
+  const hasRequired = hasFitValue(required);
+  const rawStatus = ['ok', 'warn', 'gap'].includes(item.status) ? item.status : 'warn';
+  const status = !hasCandidate || !hasRequired ? 'unspecified' : rawStatus;
+  const isMismatch = status === 'gap' || rawStatus === 'gap' || status === 'warn';
+
+  const row = document.createElement('article');
+  row.className = `fit-check-row ${status}`;
+  const icon = document.createElement('span');
+  icon.className = 'fit-status-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = status === 'ok' ? '✓' : status === 'gap' ? '×' : status === 'warn' ? '!' : '–';
+  const body = document.createElement('div');
+  body.className = 'fit-check-copy';
+  const title = document.createElement('h3');
+  const typeLabel = ({
+    location: 'Location',
+    workMode: 'Work Mode',
+    education: 'Education',
+    experience: 'Experience',
+    noticePeriod: 'Notice Period',
+    employmentType: 'Employment Type',
+    seniority: 'Seniority',
+    certification: 'Certification',
+    workAuthorization: 'Work Authorization',
+    industry: 'Industry'
+  })[item.type] || item.type || 'Eligibility';
+  title.textContent = typeLabel;
+  const candidateLine = document.createElement('p');
+  const candidateLabel = document.createElement('strong');
+  candidateLabel.textContent = 'Resume: ';
+  candidateLine.append(candidateLabel, document.createTextNode(hasCandidate ? candidate : 'Not specified'));
+  const requiredLine = document.createElement('p');
+  const requiredLabel = document.createElement('strong');
+  requiredLabel.textContent = 'Job requirement: ';
+  requiredLine.append(requiredLabel, document.createTextNode(hasRequired ? required : 'Not specified'));
+  const note = document.createElement('p');
+  note.className = 'fit-result-note';
+  note.textContent = !hasCandidate || !hasRequired ? 'Insufficient information'
+    : item.note || ({ ok: 'Match', gap: 'Does not match', warn: 'Review required' })[rawStatus];
+  body.append(title, candidateLine, requiredLine, note);
+  row.append(icon, body);
+
+  return { row, status, rawStatus, isMismatch, typeLabel, note: note.textContent, candidate: hasCandidate ? candidate : '', required: hasRequired ? required : '' };
+}
+
 function renderFitChecks(items) {
   const list = $('fitChecksList');
-  list.replaceChildren();
+  if (list) list.replaceChildren();
+  const unmatchedList = $('unmatchedFitChecksList');
+  if (unmatchedList) unmatchedList.replaceChildren();
+
   items = Array.isArray(items) ? items.filter(item => item && typeof item === 'object') : [];
   if (!items.length) {
-    const empty = document.createElement('p'); empty.className = 'fit-check-empty';
-    empty.textContent = 'Fit checks will appear when the analysis includes eligibility details.';
-    list.append(empty);
+    if (list) {
+      const empty = document.createElement('p'); empty.className = 'fit-check-empty';
+      empty.textContent = 'Fit checks will appear when the analysis includes eligibility details.';
+      list.append(empty);
+    }
+    if ($('unmatchedFitChecksSection')) $('unmatchedFitChecksSection').classList.add('hidden');
     return;
   }
+
+  const unmatchedItems = [];
+
   items.forEach(item => {
-    const candidate = item.candidate || '';
-    const required = item.required || '';
-    const hasCandidate = hasFitValue(candidate);
-    const hasRequired = hasFitValue(required);
-    const rawStatus = ['ok', 'warn', 'gap'].includes(item.status) ? item.status : 'warn';
-    const status = !hasCandidate || !hasRequired ? 'unspecified' : rawStatus;
-    const row = document.createElement('article'); row.className = `fit-check-row ${status}`;
-    const icon = document.createElement('span'); icon.className = 'fit-status-icon'; icon.setAttribute('aria-hidden', 'true');
-    icon.textContent = status === 'ok' ? '✓' : status === 'gap' ? '×' : status === 'warn' ? '!' : '–';
-    const body = document.createElement('div'); body.className = 'fit-check-copy';
-    const title = document.createElement('h3');
-    title.textContent = ({ location: 'Location', workMode: 'Work Mode', education: 'Education', experience: 'Experience', noticePeriod: 'Notice Period', employmentType: 'Employment Type', seniority: 'Seniority', certification: 'Certification', workAuthorization: 'Work Authorization', industry: 'Industry' })[item.type] || item.type || 'Eligibility';
-    const candidateLine = document.createElement('p');
-    const candidateLabel = document.createElement('strong'); candidateLabel.textContent = 'Resume: ';
-    candidateLine.append(candidateLabel, document.createTextNode(hasCandidate ? candidate : 'Not specified'));
-    const requiredLine = document.createElement('p');
-    const requiredLabel = document.createElement('strong'); requiredLabel.textContent = 'Job requirement: ';
-    requiredLine.append(requiredLabel, document.createTextNode(hasRequired ? required : 'Not specified'));
-    const note = document.createElement('p'); note.className = 'fit-result-note';
-    note.textContent = !hasCandidate || !hasRequired ? 'Insufficient information'
-      : item.note || ({ ok: 'Match', gap: 'Does not match', warn: 'Review required' })[rawStatus];
-    body.append(title, candidateLine, requiredLine, note); row.append(icon, body); list.append(row);
+    const res = createFitCheckElement(item);
+    if (list) list.append(res.row);
+    if (res.isMismatch) {
+      unmatchedItems.push(item);
+      if (unmatchedList) {
+        const unmatchedRow = createFitCheckElement(item).row;
+        unmatchedList.append(unmatchedRow);
+      }
+    }
   });
+
+  const section = $('unmatchedFitChecksSection');
+  if (section) {
+    if (unmatchedItems.length > 0) {
+      section.classList.remove('hidden');
+      const badge = $('unmatchedFitChecksBadge');
+      if (badge) badge.textContent = `${unmatchedItems.length}`;
+    } else {
+      section.classList.add('hidden');
+    }
+  }
 }
 
 function hasFitValue(value) {
