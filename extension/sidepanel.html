@@ -67,10 +67,11 @@
 
       <section id="analysisSection" class="section analysis-section">
         <div id="matchOverview" class="match-overview"></div>
-        </section>
+      </section>
 
-            <section class="section resume-section compact-resume-card">
-        <div class="resume-row compact-row">
+      <section class="section resume-section compact-resume-card">
+        <!-- Row 1: Logo of file type, Name, Status, Badge -->
+        <div class="resume-header-row">
           <div id="resumeFileIcon" class="resume-icon doc-file-icon" aria-hidden="true"></div>
           <div class="resume-info">
             <div class="resume-title-wrap">
@@ -80,21 +81,28 @@
             <span id="resumeStatus">Choose your master resume</span>
           </div>
           <input id="resumeFile" class="file-input" type="file" accept=".pdf,.docx" />
-          <div class="resume-icon-actions">
-            <button id="viewResumeBtn" class="resume-action-btn" type="button" title="View Master Resume Details" aria-label="View Master Resume Details">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-            </button>
-            <label class="resume-action-btn replace-resume" for="resumeFile" title="Replace Master Resume" aria-label="Replace Master Resume">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></line></svg>
-            </label>
-            <button id="openNaukriProfileBtn" class="resume-action-btn" type="button" title="Open Naukri Profile" aria-label="Open Naukri Profile">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-            </button>
-            <button id="useMasterResumeBtn" class="resume-action-btn primary-icon-btn" type="button" title="Apply with Master Resume" aria-label="Apply with Master Resume">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            </button>
-          </div>
         </div>
+
+        <!-- Row 2: Action buttons below -->
+        <div class="resume-actions-row">
+          <button id="viewResumeBtn" class="resume-action-btn" type="button" title="View Master Resume Details" aria-label="View Master Resume Details">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>View</span>
+          </button>
+          <label class="resume-action-btn replace-resume" for="resumeFile" title="Replace Master Resume" aria-label="Replace Master Resume">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></line></svg>
+            <span>Replace</span>
+          </label>
+          <button id="openNaukriProfileBtn" class="resume-action-btn" type="button" title="Open Naukri Profile" aria-label="Open Naukri Profile">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            <span>Profile</span>
+          </button>
+          <button id="useMasterResumeBtn" class="resume-action-btn primary-icon-btn" type="button" title="Apply with Master Resume" aria-label="Apply with Master Resume">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <span>Apply</span>
+          </button>
+        </div>
+
         <details id="resumeDetails" class="resume-details">
           <summary class="sr-only">Master resume details</summary>
           <label class="sr-only" for="resumeText">Resume text</label>
@@ -113,7 +121,8 @@
             <div id="tailoringReviewEdits" class="tailoring-review-edits"></div>
           </section>
           <section id="activeResumePreview" class="workflow-resume-preview" aria-label="Selected resume preview">
-            <div class="resume-row compact-row">
+            <!-- Row 1: Logo of file type, Name, Status, Badge -->
+            <div class="resume-header-row">
               <div id="tailoredResumeIcon" class="resume-icon doc-file-icon" aria-hidden="true"></div>
               <div class="resume-info">
                 <div class="resume-title-wrap">
@@ -122,17 +131,22 @@
                 </div>
                 <span class="muted small">Tailored for active job</span>
               </div>
-              <div class="resume-icon-actions">
-                <button id="viewTailoredResumeBtn" class="resume-action-btn" type="button" title="View Tailored Resume" aria-label="View Tailored Resume">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                </button>
-                <button id="downloadActiveResumeBtn" class="resume-action-btn" type="button" title="Download Resume" aria-label="Download Resume">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></line></svg>
-                </button>
-                <button id="returnToJobBtn" class="resume-action-btn hidden" type="button" title="Back to Job" aria-label="Back to Job">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
-                </button>
-              </div>
+            </div>
+
+            <!-- Row 2: Action buttons below -->
+            <div class="resume-actions-row">
+              <button id="viewTailoredResumeBtn" class="resume-action-btn" type="button" title="View Tailored Resume" aria-label="View Tailored Resume">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <span>View</span>
+              </button>
+              <button id="downloadActiveResumeBtn" class="resume-action-btn" type="button" title="Download Resume" aria-label="Download Resume">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></line></svg>
+                <span>Download</span>
+              </button>
+              <button id="returnToJobBtn" class="resume-action-btn hidden" type="button" title="Back to Job" aria-label="Back to Job">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+                <span>Back</span>
+              </button>
             </div>
             <div id="applyResumePreviewContent" class="workflow-preview-content hidden" aria-label="Resume document preview"></div>
           </section>

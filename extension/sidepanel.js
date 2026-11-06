@@ -3039,7 +3039,7 @@ function invalidateAnalysis() {
   }
   $('analysis').replaceChildren();
   $('aiSuggestionsDetails').open = false;
-  $('suggestionsSummaryHint').textContent = 'Open to load';
+  if ($('suggestionsSummaryHint')) $('suggestionsSummaryHint').textContent = 'Open to load';
   activateAnalysisTab('skillsTab');
   renderAnalysisPlaceholders();
   $('generateBtn').disabled = true;
@@ -5874,7 +5874,7 @@ async function loadAiSuggestions({ forceRegenerate = false } = {}) {
   if (!resumeText || !jobDescription) return;
   const controller = new AbortController();
   suggestionController = controller;
-  $('suggestionsSummaryHint').textContent = 'Loading…';
+  if ($('suggestionsSummaryHint')) $('suggestionsSummaryHint').textContent = 'Loading…';
   const container = $('analysis'); container.replaceChildren();
   for (let index = 0; index < 3; index++) {
     const skeleton = document.createElement('div'); skeleton.className = 'suggestion-skeleton'; skeleton.setAttribute('aria-hidden', 'true'); container.append(skeleton);
@@ -5915,7 +5915,7 @@ async function loadAiSuggestions({ forceRegenerate = false } = {}) {
       suggestionData = data;
       suggestionLoadError = '';
       renderAiSuggestions(data);
-      $('suggestionsSummaryHint').textContent = data.cached ? 'Cached edits' : `${(data.suggestions || []).length} edits`;
+      if ($('suggestionsSummaryHint')) $('suggestionsSummaryHint').textContent = data.cached ? 'Cached edits' : `${(data.suggestions || []).length} edits`;
       return data;
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -5937,7 +5937,7 @@ async function loadAiSuggestions({ forceRegenerate = false } = {}) {
         suggestionData = data;
         suggestionLoadError = '';
         renderAiSuggestions(data);
-        $('suggestionsSummaryHint').textContent = `${fallbackEdits.length} edits (verified)`;
+        if ($('suggestionsSummaryHint')) $('suggestionsSummaryHint').textContent = `${fallbackEdits.length} edits (verified)`;
         return data;
       }
       suggestionLoadError = error?.message || 'The AI suggestions request failed.';
@@ -5946,7 +5946,7 @@ async function loadAiSuggestions({ forceRegenerate = false } = {}) {
       const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'suggestion-action'; retry.textContent = 'Retry';
       retry.addEventListener('click', () => { suggestionData = null; suggestionLoadError = ''; void loadAiSuggestions(); });
       container.append(message, retry);
-      $('suggestionsSummaryHint').textContent = 'Unavailable';
+      if ($('suggestionsSummaryHint')) $('suggestionsSummaryHint').textContent = 'Unavailable';
       return null;
     } finally {
       if (suggestionController === controller) {
@@ -6538,7 +6538,7 @@ function renderAnalysisPlaceholders(stateLabel = 'Analysis pending') {
   $('relatedKeywordsGroup')?.classList.add('hidden');
   $('equivalentSkillsGroup')?.classList.add('hidden');
   $('softSkillsDetails')?.classList.add('hidden');
-  $('suggestionsSummaryHint').textContent = 'Open to load';
+  if ($('suggestionsSummaryHint')) $('suggestionsSummaryHint').textContent = 'Open to load';
 }
 
 function normalizeAnalysisItems(values) {
