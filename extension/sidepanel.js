@@ -1,6 +1,10 @@
 
 const $ = (id) => document.getElementById(id);
 
+window.addEventListener('scroll', () => {
+  if (window.scrollX !== 0) window.scrollTo(0, window.scrollY);
+}, { passive: true });
+
 const DEFAULT_API = 'https://menixjobai-api.onrender.com/api';
 // Naukri's UI selectors are best-effort; this session cannot inspect a logged-in
 // profile DOM. Confirm input selectors in DevTools with:
@@ -594,7 +598,7 @@ async function performTailoringForActiveJob({ applyAfter = false, forceRegenerat
     await generateApprovedTailoredResume();
     return;
   }
-  $('tailoringReviewCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  $('tailoringReviewCard').scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
   setStatus('Resume ready to tailor.', 'success');
 }
 
@@ -629,7 +633,7 @@ async function handleTailorAction(applyAfter) {
     }
     if (workflow?.selectedType === 'master') {
       if (applyAfter) await chooseResumeForThisJob();
-      else { await loadWorkflowResumePreview(); $('tailoredResumeSection').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+      else { await loadWorkflowResumePreview(); $('tailoredResumeSection').scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' }); }
       return;
     }
     if (workflow?.temporaryResumeId && applyAfter) {
@@ -638,7 +642,7 @@ async function handleTailorAction(applyAfter) {
     }
     if (!applyAfter && workflow?.temporaryResumeId) {
       await loadWorkflowResumePreview();
-      $('tailoredResumeSection').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      $('tailoredResumeSection').scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
       return;
     }
     await tailorResumeForActiveJob({ applyAfter });
@@ -929,7 +933,7 @@ function renderTailoringReview(workflow = activeResumeWorkflow) {
         const targetIdx = askItems.findIndex(i => normalizeAnswerKey(i.name) === normalizeAnswerKey(gap.name));
         requirementConfirmationIndex = targetIdx >= 0 ? targetIdx : 0;
         renderTailoringReview(workflow);
-        requirements.scrollIntoView({ behavior: 'smooth' });
+        requirements.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
       });
       gapRow.append(gapName, confirmBtn);
       gapsCard.append(gapRow);
@@ -1176,7 +1180,7 @@ async function generateApprovedTailoredResume() {
   try {
     await generateTemporaryResumeForActiveJob();
     if (activeResumeWorkflow?.temporaryResumeId) {
-      $('tailoredResumeSection').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      $('tailoredResumeSection').scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
       setStatus(`Tailored resume ready with ${edits.length} approved edit(s). The Master Resume is unchanged.`, 'success');
       if (applyAfter) await chooseResumeForThisJob();
     }
@@ -1245,7 +1249,7 @@ $('viewTailoredResumeBtn').addEventListener('click', () => {
   const preview = $('applyResumePreviewContent');
   const open = preview.classList.contains('hidden');
   preview.classList.toggle('hidden', !open);
-  if (open) preview.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (open) preview.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
 });
 
 function renderManualUploadGuide(workflow) {
@@ -3328,7 +3332,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 $('viewResumeBtn').addEventListener('click', () => {
   const details = $('resumeDetails');
   details.open = !details.open;
-  if (details.open) details.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (details.open) details.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
 });
 
 $('jobDescription').addEventListener('input', () => {
