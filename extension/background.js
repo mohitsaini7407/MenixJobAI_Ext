@@ -324,16 +324,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.url) manuallyClosedNaukriDocks.delete(tabId);
   if (url) configurePanelForTab(tabId, url);
   if ((changeInfo.status === 'complete' || changeInfo.url) && url) {
+    // Auto-pop ONLY on Naukri job listing pages (https://www.naukri.com/job-listings*)
     const isNaukri = isNaukriJobListingUrl(url);
-    // Only auto-open on Naukri, or on the specific company application tab of an active workflow
-    let isCompanyAppTab = false;
-    try {
-      const stored = await chrome.storage.local.get(['activeResumeJobKey', 'resumeWorkflows']);
-      const workflow = (stored.resumeWorkflows || []).find(w => w.jobKey === stored.activeResumeJobKey);
-      isCompanyAppTab = Boolean(workflow && workflow.status === 'APPLICATION_IN_PROGRESS' && workflow.companyApplicationTabId === tabId);
-    } catch {}
-
-    if ((isNaukri || isCompanyAppTab) && !manuallyClosedNaukriDocks.has(tabId)) {
+    if (isNaukri && !manuallyClosedNaukriDocks.has(tabId)) {
       showNaukriDock(tabId, url);
     }
   }
@@ -344,15 +337,9 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.get(tabId).then(async tab => {
     if (tab?.id && tab.url) {
       configurePanelForTab(tab.id, tab.url);
+      // Auto-pop ONLY on Naukri job listing pages (https://www.naukri.com/job-listings*)
       const isNaukri = isNaukriJobListingUrl(tab.url);
-      let isCompanyAppTab = false;
-      try {
-        const stored = await chrome.storage.local.get(['activeResumeJobKey', 'resumeWorkflows']);
-        const workflow = (stored.resumeWorkflows || []).find(w => w.jobKey === stored.activeResumeJobKey);
-        isCompanyAppTab = Boolean(workflow && workflow.status === 'APPLICATION_IN_PROGRESS' && workflow.companyApplicationTabId === tab.id);
-      } catch {}
-
-      if ((isNaukri || isCompanyAppTab) && !manuallyClosedNaukriDocks.has(tab.id)) {
+      if (isNaukri && !manuallyClosedNaukriDocks.has(tab.id)) {
         showNaukriDock(tab.id, tab.url);
       }
     }
@@ -361,15 +348,9 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 
 chrome.webNavigation.onHistoryStateUpdated.addListener(async details => {
   if (details.frameId !== 0 || !details.url) return;
+  // Auto-pop ONLY on Naukri job listing pages (https://www.naukri.com/job-listings*)
   const isNaukri = isNaukriJobListingUrl(details.url);
-  let isCompanyAppTab = false;
-  try {
-    const stored = await chrome.storage.local.get(['activeResumeJobKey', 'resumeWorkflows']);
-    const workflow = (stored.resumeWorkflows || []).find(w => w.jobKey === stored.activeResumeJobKey);
-    isCompanyAppTab = Boolean(workflow && workflow.status === 'APPLICATION_IN_PROGRESS' && workflow.companyApplicationTabId === details.tabId);
-  } catch {}
-
-  if (isNaukri || isCompanyAppTab) {
+  if (isNaukri) {
     manuallyClosedNaukriDocks.delete(details.tabId);
     showNaukriDock(details.tabId, details.url);
   }
