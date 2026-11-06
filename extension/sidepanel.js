@@ -3163,6 +3163,13 @@ async function loadSettings() {
 
   resumeFileName = saved.masterResumeFileName || saved.resumeName || '';
   resumeFileSize = saved.masterResumeSize || saved.resumeSize || 0;
+  try {
+    const masterStored = await readResumeFile('master').catch(() => null);
+    if (masterStored?.name) {
+      resumeFileName = masterStored.name;
+      if (masterStored.file?.size) resumeFileSize = masterStored.file.size;
+    }
+  } catch {}
   resumeIsSaved = Boolean(masterText);
   generatedResumes = Array.isArray(saved.generatedResumes) ? saved.generatedResumes : [];
   resumeWorkflows = Array.isArray(saved.resumeWorkflows) ? saved.resumeWorkflows : [];
