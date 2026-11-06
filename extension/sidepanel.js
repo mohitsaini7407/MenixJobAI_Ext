@@ -1214,9 +1214,9 @@ function renderResumeWorkflow() {
     || (/^https:\/\/(?:[^/]+\.)?naukri\.com\/job-listings?-/i.test(currentJobTabUrl) && Boolean(resumeFileName))
   );
   $('applicationAnswersSection').classList.toggle('hidden', !canAnswerQuestions);
-  $('tailoredResumeSection').classList.toggle('hidden', !hasResumeSelection && !tailoring);
+  const showTailoredCard = Boolean(hasResumeSelection || (workflow?.status === 'TAILORING_REVIEW' && workflow?.edits?.length)); $('tailoredResumeSection').classList.toggle('hidden', !showTailoredCard);
   if ($('activeWorkflowHeading')) $('activeWorkflowHeading').textContent = workflow?.selectedType === 'master' ? 'Master Resume for This Job' : 'Tailored Resume';
-  $('applyResumePreview').classList.toggle('hidden', !hasResumeSelection && !tailoring);
+  $('applyResumePreview').classList.toggle('hidden', !showTailoredCard);
   renderTailoringReview(workflow);
   $('activeResumePreview').classList.toggle('hidden', !hasResumeSelection);
   $('applyResumePreviewFilename').textContent = workflow?.selectedType === 'tailored' ? workflow.temporaryResumeName : workflow?.selectedResumeName || resumeFileName;

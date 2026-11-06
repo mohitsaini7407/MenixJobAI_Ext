@@ -146,9 +146,9 @@ function showNaukriDock(tabId, url, forceRefresh = false) {
       layoutStyle.textContent = `
         html { width: calc(100vw - ${dockWidth}px) !important; max-width: calc(100vw - ${dockWidth}px) !important; overflow-x: hidden !important; }
         body { width: 100% !important; max-width: 100% !important; min-width: 0 !important; overflow-x: hidden !important; margin-left: 0 !important; margin-right: 0 !important; }
-        body > *:not(#__menixjobai_dock) { box-sizing: border-box !important; width: 100% !important; max-width: 100% !important; min-width: 0 !important; }
-        body > *:not(#__menixjobai_dock) * { min-width: 0 !important; }
-        div.drawer, [class*="drawer" i], [class*="profile-drawer" i], [class*="user-profile" i], [class*="profile-dropdown" i], .layer[class*="user" i], .naukri-drawer, div[class*="drawerRight" i], div[class*="rightDrawer" i], div[class*="RightDrawer" i], .chatbot_Drawer, [class*="chatbot" i] { right: ${dockWidth}px !important; z-index: 100000 !important; }
+        /* keep page layout natural without squishing navbar */
+        /* no universal min-width override */
+        div.chatbot_Drawer, [class*="chatbot_Drawer" i], div[class*="drawerRight" i], div[class*="rightDrawer" i], div[class*="RightDrawer" i] { right: ${dockWidth}px !important; z-index: 100000 !important; }
         [role="dialog"], .modal-container, .modal, .lightbox, [class*="modal-content" i] { z-index: 100000 !important; max-width: calc(100vw - ${dockWidth}px) !important; }
       `;
       document.documentElement.append(layoutStyle);
