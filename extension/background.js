@@ -27,7 +27,7 @@ function configurePanelForTab(tabId, url) {
   // Naukri pages use the in-page dock. Disable the native side panel there so
   // toolbar clicks and automatic opening cannot create two MenixJobAI panels.
   chrome.sidePanel.setOptions({ tabId, enabled: !isNaukri || isLogin, path: 'sidepanel.html' }).catch(() => {});
-  if (isNaukri && !isLogin && chrome.sidePanel.close) {
+  if (isNaukri && !isLogin && chrome.sidePanel.close && Number.isInteger(tabId)) {
     chrome.tabs.get(tabId).then(tab => {
       if (tab.windowId != null) chrome.sidePanel.close({ windowId: tab.windowId }).catch(() => {});
     }).catch(() => {});
@@ -278,6 +278,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
+  if (!Number.isInteger(tabId)) return;
   chrome.tabs.get(tabId).then(async tab => {
     if (tab?.id && tab.url) {
       configurePanelForTab(tab.id, tab.url);
